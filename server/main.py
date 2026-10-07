@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
     try:
         AuthService.seed_demo_users(db)
         from sqlalchemy import text
-        tables = ['tasks', 'complaints', 'users', 'items', 'notifications', 'fuel_logs', 'whatsapp_citizens']
+        tables = ['tasks', 'complaints', 'users', 'items', 'notifications', 'fuel_logs', 'whatsapp_citizens', 'whatsapp_processed_messages']
         for t in tables:
             try:
                 seq = db.execute(text(f"SELECT pg_get_serial_sequence('{t}', 'id')")).scalar()

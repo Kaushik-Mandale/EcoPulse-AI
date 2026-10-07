@@ -1,5 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime
-from sqlalchemy.sql import func
+from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, func
 from server.database.db import Base
 
 class WhatsAppCitizen(Base):
@@ -17,3 +16,12 @@ class WhatsAppCitizen(Base):
     pending_complaint_data = Column(Text, nullable=True) # JSON string for multi-step report flow
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class WhatsAppProcessedMessage(Base):
+    __tablename__ = 'whatsapp_processed_messages'
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(String(100), unique=True, index=True, nullable=False)
+    phone_number = Column(String(30), nullable=True)
+    message_type = Column(String(30), nullable=True)
+    processed_at = Column(DateTime(timezone=True), server_default=func.now())

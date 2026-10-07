@@ -2,14 +2,76 @@ import json
 import logging
 import random
 import re
+import hashlib
 import httpx
 from sqlalchemy.orm import Session
 from server.utils.config import config
 from server.models.whatsapp_session import WhatsAppCitizen
 from server.models.complaint import Complaint
 from server.models.task import DriverTask
+from server.services.media_storage import get_media_storage
 
 logger = logging.getLogger(__name__)
+
+
+class MediaValidationError(Exception):
+    """Raised when an incoming WhatsApp media fails validation rules."""
+    pass
+
+
+def validate_image_content(
+    content: bytes,
+    declared_mime_type: str = None,
+    max_size: int = None
+) -> tuple[str, str]:
+    """
+    Validates binary content against size limits, supported MIME types, and file magic numbers.
+    Returns (detected_mime_type, file_extension).
+    Allowed formats: JPEG (image/jpeg), PNG (image/png), WebP (image/webp).
+    """
+    if not content:
+        raise MediaValidationError("Empty media file received")
+
+    size_limit = max_size if max_size is not None else config.MAX_UPLOAD_SIZE
+    if len(content) > size_limit:
+        raise MediaValidationError(f"File size ({len(content)} bytes) exceeds maximum limit of {size_limit} bytes")
+
+    if len(content) < 12:
+        raise MediaValidationError("Corrupted or truncated image content (less than 12 bytes)")
+
+    # Magic byte inspection
+    detected_mime = None
+    ext = None
+
+    if content[:3] == b"\xff\xd8\xff":
+        detected_mime = "image/jpeg"
+        ext = ".jpg"
+    elif content[:8] == b"\x89PNG\r\n\x1a\n":
+        detected_mime = "image/png"
+        ext = ".png"
+    elif content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        detected_mime = "image/webp"
+        ext = ".webp"
+    else:
+        raise MediaValidationError("Unsupported image format. Allowed formats: JPEG, PNG, WebP.")
+
+    # Validate declared MIME type from Meta metadata if supplied
+    if declared_mime_type:
+        norm_declared = declared_mime_type.strip().lower()
+        allowed_mimes = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+        if norm_declared not in allowed_mimes:
+            raise MediaValidationError(f"Declared MIME type '{declared_mime_type}' is not an allowed image format.")
+
+        # Check agreement between declared and binary magic bytes
+        if norm_declared in ("image/jpeg", "image/jpg") and detected_mime != "image/jpeg":
+            raise MediaValidationError("Image binary format does not match declared JPEG MIME type.")
+        elif norm_declared == "image/png" and detected_mime != "image/png":
+            raise MediaValidationError("Image binary format does not match declared PNG MIME type.")
+        elif norm_declared == "image/webp" and detected_mime != "image/webp":
+            raise MediaValidationError("Image binary format does not match declared WebP MIME type.")
+
+    return detected_mime, ext
+
 
 # Bilingual UI Strings for Shirpur Municipal Council
 TEXTS = {
@@ -84,7 +146,11 @@ TEXTS = {
             "२. प्लास्टिक बंदी नियमांचे काटेकोर पालन करा.\n"
             "३. पाणी पुरवठा वेळ: सकाळी ६:३० ते ८:००."
         ),
-        "lang_switched": "✅ भाषा बदलून मराठी करण्यात आली आहे."
+        "lang_switched": "✅ भाषा बदलून मराठी करण्यात आली आहे.",
+        "image_error": (
+            "⚠️ *फोटो स्वीकारला नाही.*\n\n"
+            "कृपया स्पष्ट JPEG, PNG किंवा WebP स्वरूपातील फोटो पाठवा (कमाल १० MB)."
+        )
     },
     "en": {
         "unauthorized": (
@@ -157,7 +223,11 @@ TEXTS = {
             "2. Strict single-use plastic ban in effect across all 27 wards.\n"
             "3. Morning water supply schedule: 6:30 AM - 8:00 AM."
         ),
-        "lang_switched": "✅ Language switched to English."
+        "lang_switched": "✅ Language switched to English.",
+        "image_error": (
+            "⚠️ *Could not process photo.*\n\n"
+            "Please send a clear photo in JPEG, PNG, or WebP format (max 10 MB)."
+        )
     }
 }
 
@@ -197,12 +267,13 @@ class WhatsAppService:
         """Send message via official Meta WhatsApp Business Cloud API."""
         token = config.WHATSAPP_TOKEN
         phone_id = config.WHATSAPP_PHONE_NUMBER_ID
+        api_version = config.WHATSAPP_GRAPH_API_VERSION or "v20.0"
 
         if not token or not phone_id:
             logger.info(f"[MOCK META WHATSAPP] To: {to_phone} | Msg: {message_text[:80]}...")
             return {"status": "simulated", "recipient": to_phone}
 
-        url = f"https://graph.facebook.com/v20.0/{phone_id}/messages"
+        url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
@@ -225,12 +296,99 @@ class WhatsAppService:
             return {"error": str(e)}
 
     @staticmethod
+    def fetch_and_store_meta_media(media_id: str) -> dict:
+        """
+        Executes two-step Meta Graph API media retrieval:
+        1. Fetch media metadata (download URL, MIME type, size)
+        2. Download binary bytes with Authorization header
+        3. Validate binary against allowed types and maximum size
+        4. Store safely via media storage abstraction
+        """
+        token = config.WHATSAPP_TOKEN
+        api_version = config.WHATSAPP_GRAPH_API_VERSION or "v20.0"
+
+        if not token:
+            logger.warning(f"[META MEDIA] WHATSAPP_TOKEN is not configured; cannot retrieve media_id={media_id}")
+            return {"success": False, "error": "WHATSAPP_TOKEN is not configured"}
+
+        if not media_id or not str(media_id).strip():
+            return {"success": False, "error": "Invalid media_id"}
+
+        meta_url = f"https://graph.facebook.com/{api_version}/{media_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                # Step 1: Request metadata from Meta Graph API
+                meta_res = client.get(meta_url, headers=headers)
+                if meta_res.status_code != 200:
+                    logger.error(f"[META MEDIA] Metadata request failed for media_id={media_id} (status: {meta_res.status_code})")
+                    return {"success": False, "error": f"Meta metadata request failed with HTTP {meta_res.status_code}"}
+
+                try:
+                    meta_data = meta_res.json()
+                except Exception:
+                    logger.error(f"[META MEDIA] Invalid JSON response from Meta for media_id={media_id}")
+                    return {"success": False, "error": "Invalid metadata response from Meta"}
+
+                download_url = meta_data.get("url")
+                if not download_url:
+                    logger.error(f"[META MEDIA] No download URL returned for media_id={media_id}")
+                    return {"success": False, "error": "No download URL returned by Meta"}
+
+                declared_mime = meta_data.get("mime_type")
+
+                # Step 2: Download raw binary from returned download URL using Bearer token
+                bin_res = client.get(download_url, headers=headers)
+                if bin_res.status_code != 200:
+                    logger.error(f"[META MEDIA] Binary download failed for media_id={media_id} (status: {bin_res.status_code})")
+                    return {"success": False, "error": f"Media binary download failed with HTTP {bin_res.status_code}"}
+
+                content = bin_res.content
+
+            # Step 3: Server-side validation of media content & magic numbers
+            detected_mime, ext = validate_image_content(content, declared_mime_type=declared_mime)
+
+            # Step 4: Calculate SHA-256 integrity hash
+            calc_sha256 = hashlib.sha256(content).hexdigest()
+
+            # Step 5: Persist via storage abstraction
+            storage = get_media_storage()
+            storage_ref = storage.save_image(
+                content=content,
+                extension=ext,
+                mime_type=detected_mime,
+                media_id=media_id
+            )
+
+            logger.info(f"[META MEDIA] Successfully retrieved, validated, and stored media_id={media_id} (size: {len(content)} bytes)")
+            return {
+                "success": True,
+                "storage_ref": storage_ref,
+                "mime_type": detected_mime,
+                "sha256": calc_sha256,
+                "file_size": len(content),
+                "media_id": media_id
+            }
+
+        except MediaValidationError as e:
+            logger.warning(f"[META MEDIA] Validation rejected media_id={media_id}: {str(e)}")
+            return {"success": False, "error": str(e)}
+        except httpx.TimeoutException:
+            logger.error(f"[META MEDIA] Request timed out while retrieving media_id={media_id}")
+            return {"success": False, "error": "Connection timed out contacting Meta Graph API"}
+        except Exception as e:
+            logger.error(f"[META MEDIA] Unexpected failure handling media_id={media_id}: {type(e).__name__}")
+            return {"success": False, "error": "Internal error processing media binary"}
+
+    @staticmethod
     def handle_incoming_message(
         db: Session,
         sender_phone: str,
         message_type: str,
         text_body: str = "",
         media_url: str = "",
+        media_id: str = "",
         latitude: float = None,
         longitude: float = None
     ) -> dict:
@@ -275,17 +433,46 @@ class WhatsAppService:
         # ----------------------------------------------------
         # 3. Multi-Step Reporting State Machine: Photo Ingestion
         # ----------------------------------------------------
-        if message_type == "image" or "http" in media_url:
-            citizen.conversation_state = "AWAITING_LOCATION"
-            citizen.pending_complaint_data = json.dumps({
-                "image_url": media_url or "https://images.unsplash.com/photo-1530587191325-3db32d826c18?auto=format&fit=crop&w=800&q=80",
-                "waste_type": "Mixed Municipal Waste"
-            })
-            db.commit()
+        if message_type == "image" or "http" in media_url or media_id:
+            if media_id:
+                media_res = WhatsAppService.fetch_and_store_meta_media(media_id)
+                if not media_res.get("success"):
+                    reply = strings.get("image_error")
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                    return {"status": "media_error", "reply": reply, "error": media_res.get("error")}
 
-            reply = strings["ask_location"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "awaiting_location", "reply": reply}
+                stored_ref = media_res["storage_ref"]
+                citizen.conversation_state = "AWAITING_LOCATION"
+                citizen.pending_complaint_data = json.dumps({
+                    "image_url": stored_ref,
+                    "media_id": media_id,
+                    "mime_type": media_res.get("mime_type"),
+                    "sha256": media_res.get("sha256"),
+                    "file_size": media_res.get("file_size"),
+                    "waste_type": "Mixed Municipal Waste"
+                })
+                db.commit()
+
+                reply = strings["ask_location"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "awaiting_location", "reply": reply, "image_url": stored_ref}
+
+            elif media_url:
+                citizen.conversation_state = "AWAITING_LOCATION"
+                citizen.pending_complaint_data = json.dumps({
+                    "image_url": media_url,
+                    "waste_type": "Mixed Municipal Waste"
+                })
+                db.commit()
+
+                reply = strings["ask_location"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "awaiting_location", "reply": reply, "image_url": media_url}
+
+            else:
+                reply = strings.get("image_error")
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "media_error", "reply": reply, "error": "No media identifier provided"}
 
         # ----------------------------------------------------
         # 4. Multi-Step Reporting State Machine: Location Pin Ingestion
@@ -293,7 +480,15 @@ class WhatsAppService:
         if message_type == "location" or (latitude is not None and longitude is not None):
             pending_raw = citizen.pending_complaint_data
             pending = json.loads(pending_raw) if pending_raw else {}
-            image_url = pending.get("image_url", "https://images.unsplash.com/photo-1530587191325-3db32d826c18?auto=format&fit=crop&w=800&q=80")
+            image_url = pending.get("image_url")
+
+            if not image_url:
+                citizen.conversation_state = "AWAITING_PHOTO"
+                db.commit()
+                reply = strings["ask_photo"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "awaiting_photo", "reply": reply}
+
             waste_type = pending.get("waste_type", "Garbage Overflow")
 
             # Generate formatted Shirpur ticket

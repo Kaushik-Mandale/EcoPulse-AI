@@ -1,16 +1,68 @@
 from fastapi import APIRouter, Request, Response, Depends, Query, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+import hmac
+import hashlib
+import json
 import logging
+from typing import Optional
 
 from server.database.db import get_db
 from server.utils.config import config
+from server.utils.security import get_current_admin_user
 from server.services.whatsapp_service import WhatsAppService
-from server.models.whatsapp_session import WhatsAppCitizen
+from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+from server.models.user import User
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def verify_meta_signature(raw_body: bytes, signature_header: Optional[str]) -> None:
+    """
+    Validates Meta WhatsApp Cloud API X-Hub-Signature-256 HMAC-SHA256 signature.
+    """
+    secret = config.META_APP_SECRET
+    if not secret:
+        if config.ENV.lower() == "production":
+            logger.error("[META WHATSAPP] META_APP_SECRET is not configured in production.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Signature verification unavailable in production."
+            )
+        # In non-production without secret configured, bypass verification
+        return
+
+    if not signature_header:
+        logger.warning("[META WHATSAPP] Missing X-Hub-Signature-256 header.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing X-Hub-Signature-256 header"
+        )
+
+    if not signature_header.startswith("sha256="):
+        logger.warning("[META WHATSAPP] Invalid signature prefix format.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid signature format"
+        )
+
+    received_sig = signature_header[7:]
+    expected_sig = hmac.new(
+        secret.encode("utf-8"),
+        raw_body,
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(received_sig, expected_sig):
+        logger.warning("[META WHATSAPP] Webhook signature mismatch.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid signature"
+        )
+
 
 # ---------------------------------------------------------
 # 1. Meta WhatsApp Cloud API Webhook Handshake (GET)
@@ -39,9 +91,14 @@ def verify_webhook(
 async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
     """
     Receives incoming WhatsApp messages from Meta Graph API.
+    Verifies HMAC-SHA256 signature and guarantees message idempotency.
     """
+    raw_body = await request.body()
+    signature_header = request.headers.get("X-Hub-Signature-256")
+    verify_meta_signature(raw_body, signature_header)
+
     try:
-        body = await request.json()
+        body = json.loads(raw_body.decode("utf-8")) if raw_body else {}
     except Exception:
         return {"status": "ignored", "reason": "invalid_json"}
 
@@ -49,11 +106,12 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
     if "entry" not in body or not body["entry"]:
         return {"status": "ignored", "reason": "no_entry"}
 
-    for entry in body["entry"]:
+    for entry in body.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             messages = value.get("messages", [])
             for msg in messages:
+                msg_id = (msg.get("id") or "").strip()
                 sender_phone = msg.get("from", "")
                 msg_type = msg.get("type", "text")
                 text_content = ""
@@ -61,6 +119,34 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                 latitude = None
                 longitude = None
 
+                # Idempotency check: prevent duplicate message processing
+                if msg_id:
+                    existing = db.query(WhatsAppProcessedMessage).filter(
+                        WhatsAppProcessedMessage.message_id == msg_id
+                    ).first()
+                    if existing:
+                        logger.info(f"[META WHATSAPP] Duplicate message ID '{msg_id[:15]}...' ignored.")
+                        continue
+
+                    # Attempt persistent registration with unique constraint protection against race conditions
+                    try:
+                        processed_msg = WhatsAppProcessedMessage(
+                            message_id=msg_id,
+                            phone_number=sender_phone,
+                            message_type=msg_type
+                        )
+                        db.add(processed_msg)
+                        db.commit()
+                    except IntegrityError:
+                        db.rollback()
+                        logger.info(f"[META WHATSAPP] Concurrent duplicate message ID '{msg_id[:15]}...' caught by constraint.")
+                        continue
+                    except Exception as e:
+                        db.rollback()
+                        logger.error(f"[META WHATSAPP] Error registering processed message: {e}")
+                        continue
+
+                media_id = ""
                 if msg_type == "text":
                     text_content = msg.get("text", {}).get("body", "")
                 elif msg_type == "interactive":
@@ -70,8 +156,9 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                     elif "list_reply" in interactive:
                         text_content = interactive["list_reply"].get("id", "")
                 elif msg_type == "image":
-                    image_id = msg.get("image", {}).get("id", "")
-                    media_url = f"https://graph.facebook.com/v20.0/{image_id}"
+                    image_obj = msg.get("image", {})
+                    media_id = image_obj.get("id", "")
+                    media_url = f"https://graph.facebook.com/{config.WHATSAPP_GRAPH_API_VERSION}/{media_id}" if media_id else ""
                 elif msg_type == "location":
                     loc = msg.get("location", {})
                     latitude = loc.get("latitude")
@@ -83,11 +170,13 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                     message_type=msg_type,
                     text_body=text_content,
                     media_url=media_url,
+                    media_id=media_id,
                     latitude=latitude,
                     longitude=longitude
                 )
 
     return {"status": "processed"}
+
 
 
 # ---------------------------------------------------------
@@ -156,9 +245,13 @@ def generate_household_qr(payload: dict):
 # 5. List Authorized WhatsApp Citizens (GET)
 # ---------------------------------------------------------
 @router.get("/citizens")
-def list_whatsapp_citizens(db: Session = Depends(get_db)):
+def list_whatsapp_citizens(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin_user)
+):
     """
     List registered WhatsApp citizen households in Shirpur.
+    Protected: Accessible exclusively by authorized municipal administrators.
     """
     citizens = db.query(WhatsAppCitizen).order_by(WhatsAppCitizen.id.desc()).all()
     return [
@@ -185,13 +278,22 @@ def list_whatsapp_citizens(db: Session = Depends(get_db)):
 def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
     """
     Simulate a WhatsApp message without needing a live Meta account.
+    Disabled in production environments.
     Example:
     {"phone": "919876543210", "message": "JOIN SHP-W12-H1042", "type": "text"}
     """
+    if config.ENV.lower() == "production":
+        logger.warning("[META WHATSAPP] Blocked access to simulator endpoint in production.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Simulator endpoint is disabled in production."
+        )
+
     phone = payload.get("phone", "919876543210")
     message = payload.get("message", "1")
     msg_type = payload.get("type", "text")
     media_url = payload.get("media_url", "")
+    media_id = payload.get("media_id", "")
     lat = payload.get("latitude")
     lng = payload.get("longitude")
 
@@ -201,6 +303,7 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
         message_type=msg_type,
         text_body=message,
         media_url=media_url,
+        media_id=media_id,
         latitude=lat,
         longitude=lng
     )
