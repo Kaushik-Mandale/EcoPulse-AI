@@ -42,6 +42,9 @@ build/
 .DS_Store
 Thumbs.db
 
+# Editor / IDE
+.vscode/
+
 # Uploaded media assets
 uploads/
 server/uploads/*
