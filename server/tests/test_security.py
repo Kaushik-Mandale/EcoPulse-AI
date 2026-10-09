@@ -527,3 +527,223 @@ def test_scope_ga_anonymous_citizen_complaint_and_upload_flow():
     assert complaint_res.json()["location"] == "Shirpur Central Market, Ward 12"
     assert complaint_res.json()["status"] in ["In Progress", "Pending"]
     assert complaint_res.json()["image_url"] == image_url
+
+
+# ============================================================================
+# Scope G-B: Webhook, QR, Item & Notification Authorization Tests
+# ============================================================================
+
+def test_scope_gb_whatsapp_missing_secret_fails_closed(monkeypatch):
+    """If META_APP_SECRET is missing or empty, POST /api/whatsapp/webhook fails closed with HTTP 500."""
+    from server.utils.config import config
+    monkeypatch.setattr(config, "META_APP_SECRET", "")
+
+    res = client.post(
+        "/api/whatsapp/webhook",
+        content=b'{"entry":[]}',
+        headers={"X-Hub-Signature-256": "sha256=abcdef1234567890"}
+    )
+    assert res.status_code == 500
+    assert "unavailable" in res.json()["detail"].lower()
+
+
+def test_scope_gb_whatsapp_missing_signature_rejected(monkeypatch):
+    """Meta webhook without signature header is rejected with 403."""
+    from server.utils.config import config
+    monkeypatch.setattr(config, "META_APP_SECRET", "meta-test-secret-key-12345")
+
+    res = client.post(
+        "/api/whatsapp/webhook",
+        content=b'{"entry":[]}'
+    )
+    assert res.status_code == 403
+    assert "missing" in res.json()["detail"].lower()
+
+
+def test_scope_gb_whatsapp_invalid_signature_rejected(monkeypatch):
+    """Meta webhook with invalid signature is rejected with 403."""
+    from server.utils.config import config
+    monkeypatch.setattr(config, "META_APP_SECRET", "meta-test-secret-key-12345")
+
+    res = client.post(
+        "/api/whatsapp/webhook",
+        content=b'{"entry":[]}',
+        headers={"X-Hub-Signature-256": "sha256=badsignature1234567890abcdef"}
+    )
+    assert res.status_code == 403
+    assert "invalid" in res.json()["detail"].lower()
+
+
+def test_scope_gb_twilio_provider_disabled_fails_closed(monkeypatch):
+    """When Twilio is disabled, POST /api/whatsapp/twilio-webhook returns HTTP 503."""
+    from server.utils.config import config
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "meta")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", "")
+
+    res = client.post(
+        "/api/whatsapp/twilio-webhook",
+        data={"From": "whatsapp:+919876543210", "Body": "Hello"}
+    )
+    assert res.status_code == 503
+    assert "disabled" in res.json()["detail"].lower()
+
+
+def test_scope_gb_twilio_signature_verification(monkeypatch):
+    """When Twilio is enabled, validates X-Twilio-Signature correctly."""
+    import hmac
+    import hashlib
+    import base64
+    from server.utils.config import config
+
+    test_token = "twilio-auth-token-test-12345"
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", test_token)
+
+    # 1. Missing signature header
+    res_no_sig = client.post(
+        "/api/whatsapp/twilio-webhook",
+        data={"From": "whatsapp:+919876543210", "Body": "Test"}
+    )
+    assert res_no_sig.status_code == 403
+
+    # 2. Invalid signature header
+    res_bad_sig = client.post(
+        "/api/whatsapp/twilio-webhook",
+        data={"From": "whatsapp:+919876543210", "Body": "Test"},
+        headers={"X-Twilio-Signature": "invalid_sig"}
+    )
+    assert res_bad_sig.status_code == 403
+
+
+def test_scope_gb_generate_qr_requires_admin_auth():
+    """POST /api/whatsapp/generate-qr requires admin authorization."""
+    # 1. Anonymous request is rejected with 401
+    res_anon = client.post(
+        "/api/whatsapp/generate-qr",
+        json={"ward": 12, "household_number": 1042}
+    )
+    assert res_anon.status_code == 401
+
+    # 2. Citizen user is rejected with 403
+    citizen_token = create_access_token({"sub": "priya@cityswap.io", "role": "citizen"})
+    res_citizen = client.post(
+        "/api/whatsapp/generate-qr",
+        json={"ward": 12, "household_number": 1042},
+        headers={"Authorization": f"Bearer {citizen_token}"}
+    )
+    assert res_citizen.status_code == 403
+
+    # 3. Admin user succeeds with 200
+    admin_token = create_access_token({"sub": "admin@cityswap.io", "role": "admin"})
+    res_admin = client.post(
+        "/api/whatsapp/generate-qr",
+        json={"ward": 12, "household_number": 1042},
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert res_admin.status_code == 200
+    data = res_admin.json()
+    assert data["household_code"] == "SHP-W12-H1042"
+    assert "wa.me" in data["whatsapp_direct_link"]
+
+
+def test_scope_gb_item_creation_requires_auth_and_prevents_owner_spoofing():
+    """POST /api/items requires authentication and derives owner from authenticated user, ignoring spoofed client owner."""
+    # 1. Anonymous creation is rejected with 401
+    res_anon = client.post(
+        "/api/items",
+        json={
+            "title": "Unwanted Garden Hose",
+            "description": "15m reinforced garden hose",
+            "category": "Garden",
+            "offered_city": "Shirpur",
+            "desired_city": "Dhule",
+            "owner": "Spoofed Owner"
+        }
+    )
+    assert res_anon.status_code == 401
+
+    # 2. Authenticated citizen creates item with an attempted spoofed owner name
+    citizen_token = create_access_token({"sub": "priya@cityswap.io", "role": "citizen"})
+    res_auth = client.post(
+        "/api/items",
+        json={
+            "title": "Eco Friendly Planter Pot",
+            "description": "Ceramic planter pot in great condition",
+            "category": "Home",
+            "offered_city": "Shirpur",
+            "desired_city": "Dhule",
+            "owner": "Spoofed Admin Officer"
+        },
+        headers={"Authorization": f"Bearer {citizen_token}"}
+    )
+    assert res_auth.status_code == 201
+    created_item = res_auth.json()
+    assert created_item["title"] == "Eco Friendly Planter Pot"
+    # Owner must be derived from the authenticated user, NOT "Spoofed Admin Officer"
+    assert "Priya Sharma" in created_item["owner"]
+    assert created_item["owner"] != "Spoofed Admin Officer"
+
+
+def test_scope_gb_notification_privacy_isolation():
+    """Public GET /api/notifications returns only public broadcasts and isolates private notifications."""
+    from server.models.notification import Notification
+
+    db = SessionLocal()
+    try:
+        # Create a private notification
+        private_notif = Notification(
+            title="Private Driver Task Assignment",
+            message="Confidential dispatch route details for driver only.",
+            notification_type="Critical",
+            audience="Drivers",
+            priority="High",
+            icon="local_shipping",
+            is_broadcast=False,
+            recipient_id=999,
+            is_read=False
+        )
+        # Create a public broadcast notification
+        public_notif = Notification(
+            title="Public Community Clean-up Drive",
+            message="Join the municipal clean-up this Sunday at Central Park.",
+            notification_type="Info",
+            audience="All Citizens",
+            priority="Normal",
+            icon="campaign",
+            is_broadcast=True,
+            recipient_id=None,
+            is_read=False
+        )
+        db.add(private_notif)
+        db.add(public_notif)
+        db.commit()
+        db.refresh(private_notif)
+        db.refresh(public_notif)
+
+        # 1. Anonymous public endpoint GET /api/notifications
+        res_public = client.get("/api/notifications")
+        assert res_public.status_code == 200
+        public_items = res_public.json()
+
+        titles = [n["title"] for n in public_items]
+        assert "Public Community Clean-up Drive" in titles
+        assert "Private Driver Task Assignment" not in titles
+
+        # 2. Admin endpoint GET /api/admin/notifications includes all notifications
+        admin_token = create_access_token({"sub": "admin@cityswap.io", "role": "admin"})
+        res_admin = client.get(
+            "/api/admin/notifications",
+            headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert res_admin.status_code == 200
+        admin_titles = [n["title"] for n in res_admin.json()]
+        assert "Public Community Clean-up Drive" in admin_titles
+        assert "Private Driver Task Assignment" in admin_titles
+
+    finally:
+        # Clean up test notifications
+        db.query(Notification).filter(
+            Notification.title.in_(["Private Driver Task Assignment", "Public Community Clean-up Drive"])
+        ).delete(synchronize_session=False)
+        db.commit()
+        db.close()

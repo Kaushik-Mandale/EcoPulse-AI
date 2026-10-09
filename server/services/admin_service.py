@@ -380,6 +380,15 @@ class AdminService:
         return [NotificationResponse.model_validate(n) for n in notifications]
 
     @staticmethod
+    def get_public_broadcasts(db: Session) -> List[NotificationResponse]:
+        """Returns only public broadcast notifications, filtering out internal and private alerts."""
+        broadcasts = db.query(Notification).filter(
+            Notification.is_broadcast == True,
+            Notification.recipient_id == None
+        ).order_by(Notification.created_at.desc()).all()
+        return [NotificationResponse.model_validate(n) for n in broadcasts]
+
+    @staticmethod
     def send_broadcast(db: Session, sender_id: int, title: str, message: str, audience: str, priority: str) -> NotificationResponse:
         # Determine notification type from priority
         if "Emergency" in priority:

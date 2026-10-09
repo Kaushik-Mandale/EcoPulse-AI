@@ -16,4 +16,4 @@ def health_check():
 @router.get("/notifications")
 def get_public_notifications(db: Session = Depends(get_db)):
     from server.services.admin_service import AdminService
-    return AdminService.get_notifications(db)
+    return AdminService.get_public_broadcasts(db)

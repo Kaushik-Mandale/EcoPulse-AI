@@ -41,13 +41,14 @@ def test_admin_drivers_crud():
     assert isinstance(drivers, list)
 
     # Register driver
-    import random
-    rand_email = f"testdriver{random.randint(1000, 9999)}@cityswap.io"
+    import uuid
+    uid = uuid.uuid4().hex[:8]
+    rand_email = f"testdriver_{uid}@cityswap.io"
     new_driver = {
         "full_name": "Test Driver",
         "email": rand_email,
-        "phone": "9998887776",
-        "employee_id": f"EMP-TEST-{random.randint(100, 999)}",
+        "phone": f"9{uuid.uuid4().int % 1000000000:09d}",
+        "employee_id": f"EMP-TEST-{uid}",
         "ward": "Ward 12",
         "password": "Password123!"
     }

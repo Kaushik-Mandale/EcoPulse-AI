@@ -4,6 +4,8 @@ from typing import List
 from server.database.db import get_db
 from server.schemas.item import ItemCreate, ItemResponse
 from server.services.item_service import ItemService
+from server.utils.security import get_current_user
+from server.models.user import User
 
 router = APIRouter(prefix="/api/items", tags=["Items"])
 
@@ -24,6 +26,10 @@ def get_item(item_id: int, db: Session = Depends(get_db)):
     return item
 
 @router.post("", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
-def create_item(item_data: ItemCreate, db: Session = Depends(get_db)):
-    """Create a new swap item listing."""
-    return ItemService.create_item(db, item_data)
+def create_item(
+    item_data: ItemCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new swap item listing for the authenticated user."""
+    return ItemService.create_item(db, item_data, current_user)

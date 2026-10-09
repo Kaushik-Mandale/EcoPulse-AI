@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from server.models.item import Item
+from server.models.user import User
 from server.schemas.item import ItemCreate, ItemResponse
 
 class ItemService:
@@ -21,15 +22,18 @@ class ItemService:
         return None
 
     @staticmethod
-    def create_item(db: Session, payload: ItemCreate) -> ItemResponse:
+    def create_item(db: Session, payload: ItemCreate, current_user: Optional[User] = None) -> ItemResponse:
+        owner_name = (current_user.full_name or current_user.email) if current_user else "Anonymous"
+        owner_id = current_user.id if current_user else None
         new_item = Item(
+            owner_id=owner_id,
+            owner_name=owner_name,
             title=payload.title,
             category=payload.category,
             offered_city=payload.offered_city,
             desired_city=payload.desired_city,
             description=payload.description,
             image_url=payload.image_url,
-            owner_name=payload.owner or "Anonymous"
         )
         db.add(new_item)
         db.commit()

@@ -118,9 +118,18 @@ def test_photo_and_location_complaint_flow():
     assert "+20" in data["reply"]
 
 def test_generate_household_qr():
+    login_res = client.post("/api/auth/login", json={
+        "email": "admin@cityswap.io",
+        "password": "Password123!",
+        "role": "admin"
+    })
+    assert login_res.status_code == 200
+    admin_token = login_res.json()["access_token"]
+
     res = client.post(
         "/api/whatsapp/generate-qr",
-        json={"ward": 14, "household_number": 2045}
+        json={"ward": 14, "household_number": 2045},
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert res.status_code == 200
     data = res.json()

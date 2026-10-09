@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 import hmac
 import hashlib
+import base64
 import json
 import logging
 from typing import Optional
@@ -24,17 +25,15 @@ router = APIRouter()
 def verify_meta_signature(raw_body: bytes, signature_header: Optional[str]) -> None:
     """
     Validates Meta WhatsApp Cloud API X-Hub-Signature-256 HMAC-SHA256 signature.
+    Fails closed if META_APP_SECRET is not configured.
     """
-    secret = config.META_APP_SECRET
+    secret = (config.META_APP_SECRET or "").strip()
     if not secret:
-        if config.ENV.lower() == "production":
-            logger.error("[META WHATSAPP] META_APP_SECRET is not configured in production.")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Signature verification unavailable in production."
-            )
-        # In non-production without secret configured, bypass verification
-        return
+        logger.error("[META WHATSAPP] META_APP_SECRET is not configured.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook signature verification is unavailable due to missing server configuration."
+        )
 
     if not signature_header:
         logger.warning("[META WHATSAPP] Missing X-Hub-Signature-256 header.")
@@ -244,6 +243,43 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
 
 
 
+def verify_twilio_signature(url: str, params: dict, signature_header: Optional[str]) -> None:
+    """
+    Validates Twilio WhatsApp Webhook X-Twilio-Signature HMAC-SHA1 signature.
+    """
+    auth_token = (config.TWILIO_AUTH_TOKEN or "").strip()
+    if not auth_token:
+        if config.WHATSAPP_PROVIDER.lower() != "twilio":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Twilio webhook provider is disabled."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Twilio signature verification is unavailable due to missing server configuration."
+        )
+
+    if not signature_header:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing X-Twilio-Signature header"
+        )
+
+    # Twilio signature calculation: URL + concatenated key-value pairs sorted alphabetically by key
+    s = url
+    for k in sorted(params.keys()):
+        s += f"{k}{params[k]}"
+
+    mac = hmac.new(auth_token.encode("utf-8"), s.encode("utf-8"), hashlib.sha1)
+    expected_sig = base64.b64encode(mac.digest()).decode("utf-8")
+
+    if not hmac.compare_digest(signature_header, expected_sig):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid Twilio signature"
+        )
+
+
 # ---------------------------------------------------------
 # 3. Twilio WhatsApp Webhook Receiver (POST)
 # ---------------------------------------------------------
@@ -254,6 +290,10 @@ async def receive_twilio_webhook(request: Request, db: Session = Depends(get_db)
     Returns standard TwiML XML response.
     """
     form_data = await request.form()
+    params_dict = dict(form_data)
+    signature_header = request.headers.get("X-Twilio-Signature")
+    verify_twilio_signature(str(request.url), params_dict, signature_header)
+
     from_raw = form_data.get("From", "") # e.g. "whatsapp:+919876543210"
     body_text = form_data.get("Body", "")
     media_url = form_data.get("MediaUrl0", "")
@@ -285,9 +325,13 @@ async def receive_twilio_webhook(request: Request, db: Session = Depends(get_db)
 # 4. Generate Household QR Code & Direct Link (POST)
 # ---------------------------------------------------------
 @router.post("/generate-qr")
-def generate_household_qr(payload: dict):
+def generate_household_qr(
+    payload: dict,
+    current_admin: User = Depends(get_current_admin_user)
+):
     """
     Generates household QR payload and direct WhatsApp launch link.
+    Protected: Accessible exclusively by authorized municipal administrators.
     Example payload: {"ward": 12, "household_number": 1042}
     """
     ward = payload.get("ward", 12)

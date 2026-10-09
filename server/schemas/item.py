@@ -8,7 +8,7 @@ class ItemCreate(BaseModel):
     desired_city: str
     description: Optional[str] = None
     image_url: Optional[str] = None
-    owner: Optional[str] = "Anonymous"
+    owner: Optional[str] = None  # Ignored; derived strictly from authenticated user
 
 class ItemResponse(BaseModel):
     id: int
