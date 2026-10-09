@@ -45,6 +45,11 @@ Thumbs.db
 # Editor / IDE
 .vscode/
 
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
 # Uploaded media assets
 uploads/
 server/uploads/*
