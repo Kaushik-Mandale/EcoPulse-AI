@@ -4,11 +4,13 @@ import random
 import re
 import hashlib
 import httpx
+from typing import Optional
 from sqlalchemy.orm import Session
 from server.utils.config import config
 from server.models.whatsapp_session import WhatsAppCitizen
 from server.models.complaint import Complaint
 from server.models.task import DriverTask
+from server.models.user import User
 from server.services.media_storage import get_media_storage
 
 logger = logging.getLogger(__name__)
@@ -236,6 +238,8 @@ class WhatsAppService:
     @staticmethod
     def normalize_phone(phone: str) -> str:
         """Normalize phone numbers by removing spaces, dashes, and leading plus."""
+        if not phone:
+            return ""
         cleaned = re.sub(r'[^0-9]', '', str(phone))
         # Ensure 10-digit Indian numbers get country code 91
         if len(cleaned) == 10:
@@ -261,6 +265,88 @@ class WhatsAppService:
             db.commit()
             db.refresh(citizen)
         return citizen
+
+    @staticmethod
+    def find_matching_citizen_user(db: Session, sender_phone: str) -> Optional[User]:
+        """
+        Finds a registered Citizen User with a normalized phone number match.
+        Returns the User if exactly ONE unambiguous match is found.
+        Returns None if 0 matches (guest-citizen flow) or if multiple matches exist (ambiguity safety).
+        """
+        if not sender_phone:
+            return None
+        norm = WhatsAppService.normalize_phone(sender_phone)
+        if not norm or len(norm) < 10:
+            return None
+
+        candidate_phones = {norm, f"+{norm}"}
+        if norm.startswith("91") and len(norm) == 12:
+            local_10 = norm[2:]
+            candidate_phones.add(local_10)
+            candidate_phones.add(f"+91{local_10}")
+
+        matches = db.query(User).filter(
+            User.phone.in_(candidate_phones),
+            User.role == "citizen",
+            User.is_active == True
+        ).all()
+
+        # Reject any matched record whose phone is empty, whitespace, or not in candidate_phones
+        valid_matches = [
+            u for u in matches
+            if u.phone and u.phone.strip() and u.phone in candidate_phones
+        ]
+
+        if len(valid_matches) == 1:
+            return valid_matches[0]
+        elif len(valid_matches) > 1:
+            logger.warning(
+                f"[WHATSAPP IDENTITY] Ambiguous match: {len(valid_matches)} citizen accounts found for phone {sender_phone}"
+            )
+            return None
+        return None
+
+    @staticmethod
+    def select_eligible_driver(db: Session) -> Optional[User]:
+        """
+        Selects an eligible registered driver using deterministic least-active-workload.
+        Workload = count of tasks with status 'Pending' or 'In Progress'.
+        Ties are broken deterministically by driver.id ascending.
+        Returns None if no eligible driver is available.
+        """
+        eligible_drivers = db.query(User).filter(
+            User.role == "driver",
+            User.is_active == True,
+            User.is_locked == False
+        ).all()
+
+        if not eligible_drivers:
+            logger.info("[DRIVER ASSIGNMENT] No active registered drivers found; leaving complaint unassigned.")
+            return None
+
+        # Calculate active workload for each eligible driver
+        driver_workloads = []
+        for d in eligible_drivers:
+            # Strictly ensure driver role
+            if d.role != "driver":
+                continue
+            active_task_count = db.query(DriverTask).filter(
+                DriverTask.driver_id == d.id,
+                DriverTask.status.in_(["Pending", "In Progress"])
+            ).count()
+            driver_workloads.append((active_task_count, d.id, d))
+
+        if not driver_workloads:
+            return None
+
+        # Sort by least active tasks first, then by driver id ascending (deterministic)
+        driver_workloads.sort(key=lambda item: (item[0], item[1]))
+        selected_driver = driver_workloads[0][2]
+        logger.info(
+            f"[DRIVER ASSIGNMENT] Selected driver {selected_driver.full_name} "
+            f"(ID: {selected_driver.id}, active tasks: {driver_workloads[0][0]})"
+        )
+        return selected_driver
 
     @staticmethod
     def send_meta_whatsapp(to_phone: str, message_text: str, buttons: list = None) -> dict:
@@ -496,45 +582,72 @@ class WhatsAppService:
             lat_val = latitude if latitude is not None else 21.3487
             lng_val = longitude if longitude is not None else 74.8812
 
-            # Persist complaint in main municipal database
-            new_complaint = Complaint(
-                tracking_number=ticket_num,
-                ward=citizen.ward,
-                location_address=f"{citizen.ward}, Shirpur (Geotagged via WhatsApp)",
-                latitude=lat_val,
-                longitude=lng_val,
-                waste_type=waste_type,
-                description=f"Reported by authorized household {citizen.household_id} via WhatsApp.",
-                image_url=image_url,
-                ai_status="Verified",
-                ai_confidence=0.96,
-                status="Pending",
-                assigned_driver_name="Sunil Patil (MH-18-BZ-4412)"
-            )
-            db.add(new_complaint)
-            db.commit()
-            db.refresh(new_complaint)
+            # Resolve matching registered citizen User (if unambiguous phone match exists)
+            citizen_user = WhatsAppService.find_matching_citizen_user(db, citizen.phone_number)
+            citizen_user_id = citizen_user.id if citizen_user else None
 
-            # Auto-assign driver task in tasks table
-            new_task = DriverTask(
-                driver_id=1,
-                complaint_id=new_complaint.id,
-                location_name=new_complaint.location_address,
-                status="Pending",
-                route_order=1
-            )
-            db.add(new_task)
+            # Dynamically select an eligible registered driver by least active workload
+            assigned_driver = WhatsAppService.select_eligible_driver(db)
+            if assigned_driver:
+                assigned_driver_id = assigned_driver.id
+                assigned_driver_name = (
+                    f"{assigned_driver.full_name} ({assigned_driver.employee_id})"
+                    if assigned_driver.employee_id
+                    else assigned_driver.full_name
+                )
+                driver_display = assigned_driver_name
+            else:
+                assigned_driver_id = None
+                assigned_driver_name = None
+                driver_display = "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
 
-            # Award citizen +20 EcoCoins
-            citizen.eco_coins += 20
-            citizen.conversation_state = "IDLE"
-            citizen.pending_complaint_data = None
-            db.commit()
+            # Persist complaint in main municipal database atomically with driver task and coin updates
+            try:
+                new_complaint = Complaint(
+                    tracking_number=ticket_num,
+                    citizen_id=citizen_user_id,
+                    ward=citizen.ward,
+                    location_address=f"{citizen.ward}, Shirpur (Geotagged via WhatsApp)",
+                    latitude=lat_val,
+                    longitude=lng_val,
+                    waste_type=waste_type,
+                    description=f"Reported by authorized household {citizen.household_id} via WhatsApp.",
+                    image_url=image_url,
+                    ai_status="Verified",
+                    ai_confidence=0.96,
+                    status="Pending",
+                    assigned_driver_id=assigned_driver_id,
+                    assigned_driver_name=assigned_driver_name
+                )
+                db.add(new_complaint)
+                db.flush()
+
+                # Auto-assign driver task in tasks table
+                new_task = DriverTask(
+                    driver_id=assigned_driver_id,
+                    complaint_id=new_complaint.id,
+                    location_name=new_complaint.location_address,
+                    status="Pending",
+                    route_order=1
+                )
+                db.add(new_task)
+
+                # Award citizen +20 EcoCoins
+                citizen.eco_coins += 20
+                if citizen_user:
+                    citizen_user.eco_coins = (citizen_user.eco_coins or 100) + 20
+                citizen.conversation_state = "IDLE"
+                citizen.pending_complaint_data = None
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[WHATSAPP COMPLAINT] Failed to atomically persist complaint and task: {e}")
+                raise
 
             reply = strings["report_success"].format(
                 ticket=ticket_num,
                 ward=citizen.ward,
-                driver="सुनील पाटील (MH-18-BZ-4412)" if lang == "mr" else "Sunil Patil (MH-18-BZ-4412)",
+                driver=driver_display,
                 coins=citizen.eco_coins
             )
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)

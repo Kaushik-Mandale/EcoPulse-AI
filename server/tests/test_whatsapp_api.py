@@ -749,3 +749,727 @@ def test_meta_media_token_never_logged_or_exposed(caplog):
         config.WHATSAPP_TOKEN = orig_token
         if created_path and os.path.exists(created_path):
             os.remove(created_path)
+
+
+# -----------------------------------------------------------------
+# Job 1C: Dynamic Driver Assignment and WhatsApp Citizen Identity
+# -----------------------------------------------------------------
+
+def test_whatsapp_citizen_unambiguous_phone_match():
+    # 1. WhatsApp citizen with an unambiguous existing phone-number match
+    # 4. Complaint creation with the correct citizen association
+    import random
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.models.complaint import Complaint
+    from server.models.whatsapp_session import WhatsAppCitizen
+
+    run_id = uuid4().hex[:8]
+    test_phone = f"91987{random.randint(1000000, 9999999)}"
+    test_email = f"citizen_{run_id}@cityswap.io"
+
+    db = SessionLocal()
+    created_user_id = None
+    try:
+        test_user = User(
+            full_name=f"Verified Citizen {run_id}",
+            email=test_email,
+            phone=test_phone,
+            role="citizen",
+            hashed_password="dummy",
+            ward="Ward 12",
+            eco_coins=100
+        )
+        db.add(test_user)
+        db.commit()
+        db.refresh(test_user)
+        created_user_id = test_user.id
+
+        w_citizen = WhatsAppCitizen(
+            phone_number=test_phone,
+            full_name="WhatsApp Reporter",
+            ward="Ward 12",
+            household_id="SHP-W12-H1042",
+            is_authorized=True,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/test.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={
+                "phone": test_phone,
+                "message": "",
+                "type": "location",
+                "latitude": 21.3487,
+                "longitude": 74.8812
+            }
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "complaint_created"
+
+        complaint = db.query(Complaint).filter(Complaint.tracking_number == data["ticket"]).first()
+        assert complaint is not None
+        assert complaint.citizen_id == created_user_id
+
+        db.refresh(test_user)
+        assert test_user.eco_coins == 120
+
+    finally:
+        from server.models.task import DriverTask as _DT1
+        if created_user_id:
+            # Delete associated DriverTasks before deleting Complaints (avoids orphaned tasks
+            # that cause SQLite to reuse complaint IDs in subsequent tests).
+            complaints_to_delete = db.query(Complaint).filter(
+                Complaint.citizen_id == created_user_id
+            ).all()
+            for c in complaints_to_delete:
+                db.query(_DT1).filter(_DT1.complaint_id == c.id).delete()
+            db.query(Complaint).filter(Complaint.citizen_id == created_user_id).delete()
+            db.query(User).filter(User.id == created_user_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        db.commit()
+        db.close()
+
+
+def test_whatsapp_sender_no_matching_citizen_account():
+    # 2. WhatsApp sender with no matching citizen account (guest-citizen flow)
+    import random
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.whatsapp_session import WhatsAppCitizen
+
+    test_phone = f"91986{random.randint(1000000, 9999999)}"
+    db = SessionLocal()
+    ticket_created = None
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=test_phone,
+            full_name="Guest Resident",
+            ward="Ward 12",
+            household_id="SHP-W12-H9999",
+            is_authorized=True,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/test_guest.jpg", "waste_type": "Plastic Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={
+                "phone": test_phone,
+                "message": "",
+                "type": "location",
+                "latitude": 21.3487,
+                "longitude": 74.8812
+            }
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "complaint_created"
+        ticket_created = data["ticket"]
+
+        complaint = db.query(Complaint).filter(Complaint.tracking_number == ticket_created).first()
+        assert complaint is not None
+        assert complaint.citizen_id is None
+
+    finally:
+        from server.models.task import DriverTask as _DT2
+        if ticket_created:
+            c_to_del = db.query(Complaint).filter(
+                Complaint.tracking_number == ticket_created
+            ).first()
+            if c_to_del:
+                db.query(_DT2).filter(_DT2.complaint_id == c_to_del.id).delete()
+            db.query(Complaint).filter(Complaint.tracking_number == ticket_created).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        db.commit()
+        db.close()
+
+
+def test_whatsapp_sender_ambiguous_duplicate_phone_matches():
+    # 3. Ambiguous or duplicate phone-number matches safely handled
+    import random
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.models.complaint import Complaint
+    from server.models.whatsapp_session import WhatsAppCitizen
+
+    run_id = uuid4().hex[:8]
+    test_phone = f"91985{random.randint(1000000, 9999999)}"
+    user_ids = []
+    db = SessionLocal()
+    ticket_created = None
+    try:
+        u1 = User(full_name=f"Dupe 1 {run_id}", email=f"dupe1_{run_id}@cityswap.io", phone=test_phone, role="citizen", hashed_password="dummy")
+        u2 = User(full_name=f"Dupe 2 {run_id}", email=f"dupe2_{run_id}@cityswap.io", phone=test_phone, role="citizen", hashed_password="dummy")
+        db.add_all([u1, u2])
+        db.commit()
+        db.refresh(u1)
+        db.refresh(u2)
+        user_ids = [u1.id, u2.id]
+
+        w_citizen = WhatsAppCitizen(
+            phone_number=test_phone,
+            full_name="Ambiguous Reporter",
+            ward="Ward 12",
+            household_id="SHP-W12-H1111",
+            is_authorized=True,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/ambig.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={
+                "phone": test_phone,
+                "message": "",
+                "type": "location",
+                "latitude": 21.3487,
+                "longitude": 74.8812
+            }
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "complaint_created"
+        ticket_created = data["ticket"]
+
+        complaint = db.query(Complaint).filter(Complaint.tracking_number == ticket_created).first()
+        assert complaint is not None
+        assert complaint.citizen_id is None
+
+    finally:
+        from server.models.task import DriverTask as _DT3
+        if ticket_created:
+            c_to_del2 = db.query(Complaint).filter(
+                Complaint.tracking_number == ticket_created
+            ).first()
+            if c_to_del2:
+                db.query(_DT3).filter(_DT3.complaint_id == c_to_del2.id).delete()
+            db.query(Complaint).filter(Complaint.tracking_number == ticket_created).delete()
+        if user_ids:
+            db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        db.commit()
+        db.close()
+
+
+def test_dynamic_driver_assignment_least_active_workload():
+    # 5. Assignment to a real eligible driver by least active workload
+    import random
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen
+    from server.services.whatsapp_service import WhatsAppService
+
+    run_id = uuid4().hex[:8]
+    test_phone = f"91984{random.randint(1000000, 9999999)}"
+    db = SessionLocal()
+    driver_ids = []
+    task_ids = []
+    try:
+        d_busy = User(
+            full_name=f"Busy Driver {run_id}",
+            email=f"busy_{run_id}@cityswap.io",
+            employee_id=f"EMP-BSY-{run_id}",
+            role="driver",
+            is_active=True,
+            is_locked=False,
+            hashed_password="dummy"
+        )
+        d_idle = User(
+            full_name=f"Idle Driver {run_id}",
+            email=f"idle_{run_id}@cityswap.io",
+            employee_id=f"EMP-IDL-{run_id}",
+            role="driver",
+            is_active=True,
+            is_locked=False,
+            hashed_password="dummy"
+        )
+        db.add_all([d_busy, d_idle])
+        db.commit()
+        db.refresh(d_busy)
+        db.refresh(d_idle)
+        driver_ids = [d_busy.id, d_idle.id]
+
+        t1 = DriverTask(driver_id=d_busy.id, location_name="Loc 1", status="Pending")
+        t2 = DriverTask(driver_id=d_busy.id, location_name="Loc 2", status="In Progress")
+        db.add_all([t1, t2])
+        db.commit()
+        db.refresh(t1)
+        db.refresh(t2)
+        task_ids = [t1.id, t2.id]
+
+        w_citizen = WhatsAppCitizen(
+            phone_number=test_phone,
+            is_authorized=True,
+            ward="Ward 12",
+            household_id="SHP-W12-H7777",
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/workload.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        selected = WhatsAppService.select_eligible_driver(db)
+        assert selected is not None
+        assert selected.role == "driver"
+        assert selected.id != d_busy.id
+
+    finally:
+        if task_ids:
+            db.query(DriverTask).filter(DriverTask.id.in_(task_ids)).delete(synchronize_session=False)
+        if driver_ids:
+            db.query(User).filter(User.id.in_(driver_ids)).delete(synchronize_session=False)
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        db.commit()
+        db.close()
+
+
+def test_no_eligible_driver_retains_unassigned_complaint_and_task():
+    # 6. No eligible driver available: complaint and task are retained safely unassigned.
+    # Calls the service directly (not via HTTP) to avoid cross-session driver-visibility
+    # issues that arise when multiple SQLite connections see different snapshots.
+    import random
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.models.task import DriverTask
+    from server.models.complaint import Complaint
+    from server.models.whatsapp_session import WhatsAppCitizen
+    from server.services.whatsapp_service import WhatsAppService
+
+    test_ward = f"Ward {random.randint(500, 999)}"
+    test_phone = f"91983{random.randint(1000000, 9999999)}"
+    db = SessionLocal()
+    ticket_created = None
+    # Record original active state for ALL drivers so we can restore.
+    drivers = db.query(User).filter(User.role == "driver").all()
+    orig_active = {d.id: d.is_active for d in drivers}
+    try:
+        # Deactivate every driver in this session so select_eligible_driver returns None.
+        for d in drivers:
+            d.is_active = False
+        db.commit()
+
+        # Set up the WhatsApp citizen in AWAITING_LOCATION state (same session).
+        w_citizen = WhatsAppCitizen(
+            phone_number=test_phone,
+            is_authorized=True,
+            ward=test_ward,
+            household_id=f"SHP-W99-H{random.randint(1000, 9999)}",
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({
+                "image_url": "/uploads/whatsapp/nodriver.jpg",
+                "waste_type": "Mixed Waste"
+            })
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        # Call the service directly with the same db session, bypassing the HTTP layer.
+        # This guarantees select_eligible_driver sees the same committed state as above.
+        result = WhatsAppService.handle_incoming_message(
+            db=db,
+            sender_phone=test_phone,
+            message_type="location",
+            latitude=21.3487,
+            longitude=74.8812,
+        )
+        assert result["status"] == "complaint_created"
+        ticket_created = result["ticket"]
+
+        # Verify complaint is unassigned.
+        complaint = db.query(Complaint).filter(
+            Complaint.tracking_number == ticket_created
+        ).first()
+        assert complaint is not None
+        assert complaint.assigned_driver_id is None
+        assert complaint.assigned_driver_name is None
+        assert complaint.status == "Pending"
+
+        # Verify task is created and unassigned.
+        task = db.query(DriverTask).filter(
+            DriverTask.complaint_id == complaint.id
+        ).first()
+        assert task is not None
+        assert task.driver_id is None
+        assert task.status == "Pending"
+
+    finally:
+        # Restore all drivers.
+        if orig_active:
+            to_restore = db.query(User).filter(User.id.in_(list(orig_active.keys()))).all()
+            for d in to_restore:
+                d.is_active = orig_active.get(d.id, True)
+        if ticket_created:
+            complaint = db.query(Complaint).filter(
+                Complaint.tracking_number == ticket_created
+            ).first()
+            if complaint:
+                db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).delete()
+                db.query(Complaint).filter(Complaint.id == complaint.id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        db.commit()
+        db.close()
+
+
+def test_citizen_account_never_selected_as_driver():
+    # 7. A citizen account is never selected as a driver
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.services.whatsapp_service import WhatsAppService
+
+    db = SessionLocal()
+    drivers = db.query(User).filter(User.role == "driver").all()
+    orig_active = {d.id: d.is_active for d in drivers}
+    try:
+        for d in drivers:
+            d.is_active = False
+        citizen = User(
+            full_name="Active Citizen Never Driver",
+            email="citizen_never_driver@cityswap.io",
+            role="citizen",
+            is_active=True,
+            is_locked=False,
+            hashed_password="dummy"
+        )
+        db.add(citizen)
+        db.commit()
+        db.refresh(citizen)
+
+        selected = WhatsAppService.select_eligible_driver(db)
+        assert selected is None
+
+    finally:
+        for d in drivers:
+            d.is_active = orig_active.get(d.id, True)
+        db.query(User).filter(User.email == "citizen_never_driver@cityswap.io").delete()
+        db.commit()
+        db.close()
+
+
+def test_assigned_task_accessible_through_driver_workflow():
+    # 8. The assigned task is accessible through the existing driver workflow
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.models.task import DriverTask
+    from server.utils.security import create_access_token
+
+    run_id = uuid4().hex[:8]
+    db = SessionLocal()
+    driver_id = None
+    task_id = None
+    try:
+        driver = User(
+            full_name=f"Duty Driver {run_id}",
+            email=f"duty_{run_id}@cityswap.io",
+            employee_id=f"EMP-DUTY-{run_id}",
+            role="driver",
+            is_active=True,
+            is_locked=False,
+            hashed_password="dummy"
+        )
+        db.add(driver)
+        db.commit()
+        db.refresh(driver)
+        driver_id = driver.id
+
+        task = DriverTask(
+            driver_id=driver.id,
+            location_name=f"Assigned Street {run_id}",
+            status="Pending",
+            route_order=1
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id
+
+        token = create_access_token({"sub": driver.email})
+        res = client.get("/api/driver/tasks", headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 200
+        tasks = res.json()
+        assert any(t["id"] == task_id for t in tasks)
+
+    finally:
+        if task_id:
+            db.query(DriverTask).filter(DriverTask.id == task_id).delete()
+        if driver_id:
+            db.query(User).filter(User.id == driver_id).delete()
+        db.commit()
+        db.close()
+
+
+def test_duplicate_webhook_delivery_idempotency_for_tasks_and_complaints():
+    # 9. Duplicate webhook delivery does not create duplicate complaints or tasks
+    import random
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.idem_dup_{run_id}"
+    sender = f"91981{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-IDEM-{run_id}"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "idem_test_secret"
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/idem.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000002",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+
+        # 1st Delivery -> Creates complaint & task
+        res1 = client.post(
+            "/api/whatsapp/webhook",
+            content=raw_bytes,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+        )
+        assert res1.status_code == 200
+
+        # Capture the uniquely created complaint ID
+        created_c = db.query(Complaint).filter(
+            Complaint.description.like(f"%{unique_household}%")
+        ).first()
+        if created_c:
+            created_complaint_id = created_c.id
+
+        initial_complaints = db.query(Complaint).count()
+        initial_tasks = db.query(DriverTask).count()
+
+        # 2nd Delivery (exact duplicate retry)
+        res2 = client.post(
+            "/api/whatsapp/webhook",
+            content=raw_bytes,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+        )
+        assert res2.status_code == 200
+
+        # Assert no duplicate complaints or tasks were created
+        assert db.query(Complaint).count() == initial_complaints
+        assert db.query(DriverTask).count() == initial_tasks
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        else:
+            fallback_c = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).first()
+            if fallback_c:
+                db.query(DriverTask).filter(DriverTask.complaint_id == fallback_c.id).delete()
+                db.delete(fallback_c)
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+
+    # Verify no test-created complaint or task was left in the database
+    verify_db = SessionLocal()
+    try:
+        assert verify_db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).count() == 0
+        if created_complaint_id:
+            assert verify_db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).count() == 0
+    finally:
+        verify_db.close()
+
+
+def test_whatsapp_invalid_phone_normalization_never_matches_empty_phone_user():
+    # Fix 2 Regression: invalid input such as "", "+", "abc", whitespace never matches a user with phone=""
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.services.whatsapp_service import WhatsAppService
+
+    run_id = uuid4().hex[:8]
+    db = SessionLocal()
+    user_id = None
+    try:
+        # User registered with empty string phone (e.g. from web registration without phone)
+        blank_phone_user = User(
+            full_name=f"No Phone Citizen {run_id}",
+            email=f"nophone_{run_id}@cityswap.io",
+            phone="",
+            role="citizen",
+            is_active=True,
+            hashed_password="dummy"
+        )
+        db.add(blank_phone_user)
+        db.commit()
+        db.refresh(blank_phone_user)
+        user_id = blank_phone_user.id
+
+        # Verify normalize_phone outputs
+        assert WhatsAppService.normalize_phone("") == ""
+        assert WhatsAppService.normalize_phone("+") == ""
+        assert WhatsAppService.normalize_phone("abc") == ""
+        assert WhatsAppService.normalize_phone("   ") == ""
+        assert WhatsAppService.normalize_phone(None) == ""
+
+        # Verify none of these invalid inputs resolve to the user with phone=""
+        assert WhatsAppService.find_matching_citizen_user(db, "") is None
+        assert WhatsAppService.find_matching_citizen_user(db, "+") is None
+        assert WhatsAppService.find_matching_citizen_user(db, "abc") is None
+        assert WhatsAppService.find_matching_citizen_user(db, "   ") is None
+        assert WhatsAppService.find_matching_citizen_user(db, "+--") is None
+        assert WhatsAppService.find_matching_citizen_user(db, "12345") is None  # < 10 digits
+        assert WhatsAppService.find_matching_citizen_user(db, None) is None
+
+    finally:
+        if user_id:
+            db.query(User).filter(User.id == user_id).delete()
+            db.commit()
+        db.close()
+
+
+def test_whatsapp_valid_indian_phone_matching_formats():
+    # Fix 2: Preserves valid matching for +91, 91, and 10-digit Indian formats
+    from uuid import uuid4
+    import random
+    from server.database.db import SessionLocal
+    from server.models.user import User
+    from server.services.whatsapp_service import WhatsAppService
+
+    run_id = uuid4().hex[:8]
+    base_10 = f"987{random.randint(1000000, 9999999)}"
+    db = SessionLocal()
+    user_id = None
+    try:
+        # Citizen registered with raw 10-digit phone
+        user = User(
+            full_name=f"Standard Indian Citizen {run_id}",
+            email=f"indian_{run_id}@cityswap.io",
+            phone=base_10,
+            role="citizen",
+            is_active=True,
+            hashed_password="dummy"
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        user_id = user.id
+
+        # All 3 incoming formats resolve to this user
+        match_raw = WhatsAppService.find_matching_citizen_user(db, base_10)
+        assert match_raw is not None and match_raw.id == user_id
+
+        match_with_plus = WhatsAppService.find_matching_citizen_user(db, f"+91{base_10}")
+        assert match_with_plus is not None and match_with_plus.id == user_id
+
+        match_with_91 = WhatsAppService.find_matching_citizen_user(db, f"91{base_10}")
+        assert match_with_91 is not None and match_with_91.id == user_id
+
+    finally:
+        if user_id:
+            db.query(User).filter(User.id == user_id).delete()
+            db.commit()
+        db.close()
+
+
+def test_atomic_complaint_task_rollback_on_task_persistence_failure(monkeypatch):
+    # Fix 3: Simulate task persistence failure and verify atomic rollback (no partial complaint/task persisted)
+    from uuid import uuid4
+    import random
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen
+    from server.services.whatsapp_service import WhatsAppService
+
+    run_id = uuid4().hex[:8]
+    test_phone = f"91989{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-ATOMIC-{run_id}"
+
+    db = SessionLocal()
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=test_phone,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/atomic.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        # Monkeypatch DriverTask instantiation to simulate an unexpected error during task creation
+        original_init = DriverTask.__init__
+        def failing_init(self, *args, **kwargs):
+            raise RuntimeError("Simulated failure during DriverTask creation")
+
+        monkeypatch.setattr(DriverTask, "__init__", failing_init)
+
+        # Call handle_incoming_message and assert exception is raised
+        with pytest.raises(RuntimeError, match="Simulated failure during DriverTask creation"):
+            WhatsAppService.handle_incoming_message(
+                db=db,
+                sender_phone=test_phone,
+                message_type="location",
+                latitude=21.3487,
+                longitude=74.8812
+            )
+
+        # Verify that atomic rollback prevented the Complaint from being committed
+        uncommitted_complaint = db.query(Complaint).filter(
+            Complaint.description.like(f"%{unique_household}%")
+        ).first()
+        assert uncommitted_complaint is None, "Complaint was committed despite task creation failure!"
+
+        # Verify citizen state was rolled back to AWAITING_LOCATION and eco_coins unchanged
+        db.refresh(w_citizen)
+        assert w_citizen.conversation_state == "AWAITING_LOCATION"
+        assert w_citizen.eco_coins == 100
+
+    finally:
+        # Cleanup
+        db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        db.commit()
+        db.close()
