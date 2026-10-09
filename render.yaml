@@ -23,8 +23,20 @@ services:
         value: "CITY_SWAP API"
       - key: ENV
         value: "production"
+      - key: CORS_ORIGINS
+        value: "https://city-swap-frontend.onrender.com"
       - key: PORT
         value: "10000"
+      - key: WHATSAPP_PROVIDER
+        value: "meta"
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
 
   # --------------------------------------------------
   # Frontend Static Web App (React + Vite)

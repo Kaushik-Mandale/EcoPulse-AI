@@ -739,7 +739,6 @@ def test_scope_gb_notification_privacy_isolation():
         admin_titles = [n["title"] for n in res_admin.json()]
         assert "Public Community Clean-up Drive" in admin_titles
         assert "Private Driver Task Assignment" in admin_titles
-
     finally:
         # Clean up test notifications
         db.query(Notification).filter(
@@ -747,3 +746,80 @@ def test_scope_gb_notification_privacy_isolation():
         ).delete(synchronize_session=False)
         db.commit()
         db.close()
+
+
+# ============================================================================
+# Scope G-C: Deployment Configuration and CORS Validation Tests
+# ============================================================================
+
+def test_scope_gc_production_cors_origins_missing_raises(monkeypatch):
+    """In production mode, missing or empty CORS_ORIGINS must raise RuntimeError during startup/lifespan."""
+    import asyncio
+    from server.main import lifespan, app
+    from server.utils.config import config
+
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", "secure-production-secret-key-32-chars-min!!")
+    monkeypatch.setenv("CORS_ORIGINS", "")
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "")
+
+    async def run_lifespan():
+        async with lifespan(app):
+            pass
+
+    with pytest.raises(RuntimeError, match="CORS_ORIGINS"):
+        asyncio.run(run_lifespan())
+
+
+def test_scope_gc_production_cors_origins_configured_succeeds(monkeypatch):
+    """In production mode, explicitly configured CORS_ORIGINS parses correctly and lifespan succeeds."""
+    import asyncio
+    from server.main import lifespan, app
+    from server.utils.config import config
+
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", "secure-production-secret-key-32-chars-min!!")
+    monkeypatch.setenv("CORS_ORIGINS", "https://city-swap-frontend.onrender.com, https://custom-domain.org")
+
+    assert config.CORS_ORIGINS == [
+        "https://city-swap-frontend.onrender.com",
+        "https://custom-domain.org"
+    ]
+
+    async def run_lifespan():
+        async with lifespan(app):
+            pass
+
+    # Should succeed without raising
+    asyncio.run(run_lifespan())
+
+
+def test_scope_gc_environment_and_version_alias_compatibility(monkeypatch):
+    """Fallback environment variables (ENVIRONMENT, PROJECT_VERSION, BACKEND_CORS_ORIGINS) are supported."""
+    from server.utils.config import Config
+
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.delenv("VERSION", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.setenv("PROJECT_VERSION", "2.1.0")
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://staging.cityswap.io")
+
+    test_cfg = Config()
+    assert test_cfg.ENV == "staging"
+    assert test_cfg.VERSION == "2.1.0"
+    assert test_cfg.CORS_ORIGINS == ["https://staging.cityswap.io"]
+
+
+def test_scope_gc_dev_mode_default_cors_origins(monkeypatch):
+    """In development mode without explicit CORS_ORIGINS, default localhost origins are returned."""
+    from server.utils.config import config
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.setenv("CORS_ORIGINS", "")
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "")
+
+    assert "http://localhost:5173" in config.CORS_ORIGINS
+    assert "http://127.0.0.1:5173" in config.CORS_ORIGINS
+    assert "http://localhost:3000" in config.CORS_ORIGINS

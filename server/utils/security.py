@@ -16,7 +16,7 @@ def get_jwt_secret() -> str:
     secret = os.getenv("SECRET_KEY", "").strip()
     if secret:
         return secret
-    env = os.getenv("ENV", "development").strip().lower()
+    env = os.getenv("ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
     if env == "production":
         raise RuntimeError("CRITICAL: SECRET_KEY environment variable is missing or empty in production mode.")
     return "ecopulse-dev-secret-key-not-for-production"
