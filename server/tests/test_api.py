@@ -129,13 +129,14 @@ def test_otp_flow():
     assert res_send.status_code == 200
     assert res_send.json()["success"] is True
 
-    # Verify OTP
+    # Verify OTP - must be disabled / return 503 and not issue access_token
     res_verify = client.post(
         "/api/auth/verify-otp",
         json={"phone": "9876543210", "otp": "1234", "role": "citizen"}
     )
-    assert res_verify.status_code == 200
-    assert "access_token" in res_verify.json()
+    assert res_verify.status_code == 503
+    assert "unavailable" in res_verify.json().get("detail", "").lower()
+    assert "access_token" not in res_verify.json()
 
 def test_public_notifications():
     res = client.get("/api/notifications")

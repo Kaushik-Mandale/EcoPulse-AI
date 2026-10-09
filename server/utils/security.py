@@ -9,9 +9,19 @@ from sqlalchemy.orm import Session
 from server.database.db import get_db
 from server.models.user import User
 
-SECRET_KEY = os.getenv("SECRET_KEY", "ecopulse-secret-key-super-secure-change-in-prod-2026")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 hours
+
+def get_jwt_secret() -> str:
+    secret = os.getenv("SECRET_KEY", "").strip()
+    if secret:
+        return secret
+    env = os.getenv("ENV", "development").strip().lower()
+    if env == "production":
+        raise RuntimeError("CRITICAL: SECRET_KEY environment variable is missing or empty in production mode.")
+    return "ecopulse-dev-secret-key-not-for-production"
+
+SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -32,17 +42,17 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(to_encode, get_jwt_secret(), algorithm=ALGORITHM)
 
 def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Optional[User]:
     if not token:
         return None
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             return None
-    except JWTError:
+    except (JWTError, RuntimeError):
         return None
     user = db.query(User).filter(User.email == email).first()
     return user

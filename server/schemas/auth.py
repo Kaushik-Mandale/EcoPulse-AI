@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
 from typing import Optional
 import re
 
@@ -75,7 +75,8 @@ class UserProfileUpdate(BaseModel):
     full_name: Optional[str] = None
     ward: Optional[str] = None
     phone: Optional[str] = None
-    eco_coins: Optional[int] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 class UserResponse(BaseModel):
     id: int

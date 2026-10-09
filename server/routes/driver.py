@@ -26,6 +26,8 @@ def update_task_status(
 ):
     try:
         return DriverService.update_task_status(db, task_id, payload.status, payload.proof_image_url, current_user)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -48,6 +50,8 @@ def create_driver_fuel_log(
 ):
     try:
         return DriverService.create_fuel_log(db, current_user, payload.odometer, payload.liters, payload.cost)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -66,6 +70,8 @@ def send_driver_message(
 ):
     try:
         return DriverService.send_message(db, current_user, payload.body)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

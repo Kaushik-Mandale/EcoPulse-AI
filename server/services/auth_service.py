@@ -223,14 +223,12 @@ class AuthService:
 
     @staticmethod
     def update_user_profile(db: Session, user: User, payload) -> UserResponse:
-        if payload.full_name:
+        if payload.full_name is not None:
             user.full_name = payload.full_name
-        if payload.ward:
+        if payload.ward is not None:
             user.ward = payload.ward
         if payload.phone is not None:
             user.phone = payload.phone
-        if payload.eco_coins is not None:
-            user.eco_coins = payload.eco_coins
             
         db.commit()
         db.refresh(user)
@@ -287,47 +285,7 @@ class AuthService:
 
     @staticmethod
     def verify_otp(db: Session, phone: str, otp: str, role: str = "citizen") -> AuthResponse:
-        clean_phone = phone.strip().replace("+91", "").replace(" ", "").replace("-", "")
-        # Look for user with phone, or create default citizen account if new
-        user = db.query(User).filter(
-            (User.phone == clean_phone) |
-            (User.phone == f"+91{clean_phone}")
-        ).first()
-
-        if not user:
-            # Create user for valid verified mobile number
-            user = User(
-                full_name=f"Citizen {clean_phone[-4:]}",
-                email=f"{clean_phone}@citizen.cityswap.io",
-                phone=clean_phone,
-                hashed_password=hash_password("Password123!"),
-                role=role or "citizen",
-                ward="Ward 12",
-                eco_coins=100
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-
-        import time
-        session_id = f"sess_{user.id}_{int(time.time())}"
-        token = create_access_token({
-            "sub": user.email,
-            "role": user.role,
-            "id": user.id,
-            "sid": session_id
-        })
-
-        return AuthResponse(
-            access_token=token,
-            user=UserResponse(
-                id=user.id,
-                name=user.full_name,
-                email=user.email,
-                role=user.role,
-                ward=user.ward,
-                phone=user.phone,
-                employee_id=user.employee_id,
-                eco_coins=user.eco_coins or 100
-            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OTP verification is currently unavailable. Please use password-based authentication."
         )

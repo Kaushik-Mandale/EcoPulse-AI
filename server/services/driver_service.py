@@ -1,3 +1,4 @@
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from server.models.task import DriverTask
@@ -12,6 +13,8 @@ from server.schemas.driver import (
     FuelLogsSummaryResponse, FuelLogResponse, MessagesOverviewResponse, MessageResponse,
     ConversationThread
 )
+
+VALID_TASK_STATUSES = {"Pending", "In Progress", "Completed"}
 
 class DriverService:
     @staticmethod
@@ -31,7 +34,25 @@ class DriverService:
     def update_task_status(db: Session, task_id: int, new_status: str, proof_image: str = None, driver: Optional[User] = None) -> DriverTaskResponse:
         task = db.query(DriverTask).filter(DriverTask.id == task_id).first()
         if not task:
-            raise Exception(f"Task {task_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Task {task_id} not found"
+            )
+
+        if new_status not in VALID_TASK_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid task status '{new_status}'. Allowed statuses: {', '.join(sorted(VALID_TASK_STATUSES))}"
+            )
+
+        # Enforce task ownership: only the assigned driver or an admin can update the task
+        if driver:
+            is_admin = getattr(driver, "role", "").lower() in ["admin", "collector"]
+            if not is_admin and task.driver_id != driver.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You can only modify tasks assigned to you."
+                )
 
         task.status = new_status
         if proof_image:

@@ -17,6 +17,12 @@ ensure_whatsapp_processed_messages_schema(engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Enforce secure configuration in production
+    env = os.getenv("ENV", config.ENV).strip().lower()
+    secret_key = os.getenv("SECRET_KEY", config.SECRET_KEY).strip()
+    if env == "production" and not secret_key:
+        raise RuntimeError("CRITICAL CONFIGURATION ERROR: SECRET_KEY must be set to a secure, non-empty value in production environment.")
+
     db = SessionLocal()
     try:
         AuthService.seed_demo_users(db)
