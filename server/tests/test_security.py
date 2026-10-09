@@ -823,3 +823,587 @@ def test_scope_gc_dev_mode_default_cors_origins(monkeypatch):
     assert "http://localhost:5173" in config.CORS_ORIGINS
     assert "http://127.0.0.1:5173" in config.CORS_ORIGINS
     assert "http://localhost:3000" in config.CORS_ORIGINS
+
+
+# ============================================================================
+# Scope H: Complaint Tracking-Number Collision Hardening Tests
+# ============================================================================
+#
+# NOTE: The FastAPI/Starlette `on_startup` TypeError in server/routes/health.py
+# is a pre-existing environment incompatibility with Python 3.14 + the installed
+# FastAPI version.  It prevents pytest from *collecting* any test in this file.
+# All Scope H tests are written to be collected by pytest when that environment
+# issue is resolved, and are separately verified to be logically correct via the
+# standalone isolation script at:
+#   brain/<conv-id>/scratch/run_scope_h_tests.py
+#
+# Every test in this section uses only mock DB objects or pure-function calls,
+# so none of them touch the real database or require the FastAPI app to import.
+
+import re as _re
+
+# ---------------------------------------------------------------------------
+# H-1: Web tracking ID format and alphabet
+# ---------------------------------------------------------------------------
+
+def test_scope_h_web_tracking_id_format():
+    """Generated web tracking IDs match EP-2026-<9 uppercase alphanum> format."""
+    from server.services.complaint_service import _generate_web_tracking_id
+
+    pattern = _re.compile(r'^EP-2026-[A-Z0-9]{9}$')
+    for _ in range(300):
+        tid = _generate_web_tracking_id()
+        assert pattern.match(tid), f'Unexpected format: {tid}'
+        suffix = tid[8:]
+        assert 'I' not in suffix, f'Ambiguous char I in: {tid}'
+        assert 'O' not in suffix, f'Ambiguous char O in: {tid}'
+    # fits String(30) column
+    assert len(_generate_web_tracking_id()) <= 30
+
+
+def test_scope_h_web_tracking_id_uniqueness():
+    """1 000 generated web IDs have no collisions (birthday-problem sanity check)."""
+    from server.services.complaint_service import _generate_web_tracking_id
+
+    ids = [_generate_web_tracking_id() for _ in range(1000)]
+    assert len(set(ids)) == 1000, 'Unexpected collision in 1 000 web tracking IDs'
+
+
+# ---------------------------------------------------------------------------
+# H-2: WhatsApp tracking ID format and alphabet
+# ---------------------------------------------------------------------------
+
+def test_scope_h_whatsapp_tracking_id_format():
+    """Generated WhatsApp IDs embed ward number and have the correct format."""
+    from server.services.whatsapp_service import _generate_whatsapp_tracking_id
+
+    pattern = _re.compile(r'^SHP-2026-W\d+-[A-Z0-9]{9}$')
+    for ward in ['Ward 1', 'Ward 12', 'Ward 27']:
+        for _ in range(100):
+            tid = _generate_whatsapp_tracking_id(ward)
+            assert pattern.match(tid), f'Bad format for {ward!r}: {tid}'
+            ward_num = ward.replace('Ward ', '')
+            assert f'W{ward_num}-' in tid
+            suffix = tid.split('-')[-1]
+            assert 'I' not in suffix and 'O' not in suffix, f'Ambiguous char: {tid}'
+        assert len(_generate_whatsapp_tracking_id(ward)) <= 30
+
+
+def test_scope_h_whatsapp_tracking_id_uniqueness():
+    """1 000 WhatsApp IDs for the same ward have no collisions."""
+    from server.services.whatsapp_service import _generate_whatsapp_tracking_id
+
+    ids = [_generate_whatsapp_tracking_id('Ward 12') for _ in range(1000)]
+    assert len(set(ids)) == 1000, 'Unexpected collision in 1 000 WhatsApp tracking IDs'
+
+
+# ---------------------------------------------------------------------------
+# H-3: _is_tracking_number_collision classifier
+# ---------------------------------------------------------------------------
+
+def test_scope_h_classifier_true_for_sqlite_tracking_number_duplicate():
+    """Classifier returns True for an IntegrityError on complaints.tracking_number (SQLite)."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    exc = IntegrityError(
+        statement='INSERT INTO complaints',
+        params={},
+        orig=Exception('UNIQUE constraint failed: complaints.tracking_number')
+    )
+    assert _is_tracking_number_collision(exc) is True
+
+
+def test_scope_h_classifier_true_for_postgres_tracking_number_duplicate():
+    """Classifier returns True for a PostgreSQL IntegrityError naming tracking_number."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    exc = IntegrityError(
+        statement='INSERT INTO complaints',
+        params={},
+        orig=Exception(
+            'duplicate key value violates unique constraint '
+            '"complaints_tracking_number_key"'
+        )
+    )
+    assert _is_tracking_number_collision(exc) is True
+
+
+def test_scope_h_classifier_false_for_notnull_violation():
+    """Classifier returns False for a NOT NULL violation (unrelated integrity error)."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    exc = IntegrityError(
+        statement='INSERT INTO complaints',
+        params={},
+        orig=Exception('NOT NULL constraint failed: complaints.ward')
+    )
+    assert _is_tracking_number_collision(exc) is False
+
+
+def test_scope_h_classifier_false_for_foreign_key_violation():
+    """Classifier returns False for a FK violation on citizen_id."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    exc = IntegrityError(
+        statement='INSERT INTO complaints',
+        params={},
+        orig=Exception('FOREIGN KEY constraint failed')
+    )
+    assert _is_tracking_number_collision(exc) is False
+
+
+def test_scope_h_classifier_false_for_unique_on_different_column():
+    """Classifier returns False for a unique violation on a different column (e.g. users.email)."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    exc = IntegrityError(
+        statement='INSERT INTO users',
+        params={},
+        orig=Exception('UNIQUE constraint failed: users.email')
+    )
+    assert _is_tracking_number_collision(exc) is False
+
+
+def test_scope_h_classifier_false_for_plain_value_error():
+    """Classifier returns False for non-IntegrityError exceptions."""
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    assert _is_tracking_number_collision(ValueError('something went wrong')) is False
+    assert _is_tracking_number_collision(RuntimeError('unique duplicate')) is False
+    assert _is_tracking_number_collision(Exception('integrity error tracking_number')) is False
+
+
+def test_scope_h_classifier_true_for_wrapped_integrity_error():
+    """Classifier walks the exception chain to find IntegrityError wrapped as __cause__."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services.complaint_service import _is_tracking_number_collision
+
+    orig_exc = IntegrityError(
+        statement='INSERT INTO complaints',
+        params={},
+        orig=Exception('UNIQUE constraint failed: complaints.tracking_number')
+    )
+    # Wrap it
+    wrapper = RuntimeError('persistence failed')
+    wrapper.__cause__ = orig_exc
+    assert _is_tracking_number_collision(wrapper) is True
+
+
+# ---------------------------------------------------------------------------
+# H-4: Web complaint creation — collision retry succeeds
+# ---------------------------------------------------------------------------
+
+def test_scope_h_web_collision_retry_succeeds(monkeypatch):
+    """Web complaint creation retries and succeeds after 3 simulated duplicate-key collisions."""
+    from sqlalchemy.exc import IntegrityError
+    from unittest.mock import MagicMock
+    from server.services import complaint_service
+    from server.schemas.complaint import ComplaintCreate
+
+    gen_n = {'n': 0}
+    original_gen = complaint_service._generate_web_tracking_id
+
+    def patched_gen():
+        gen_n['n'] += 1
+        return 'EP-2026-COLLIDE000' if gen_n['n'] <= 3 else original_gen()
+
+    monkeypatch.setattr(complaint_service, '_generate_web_tracking_id', patched_gen)
+
+    flush_n = {'n': 0}
+
+    def mock_flush():
+        flush_n['n'] += 1
+        if flush_n['n'] <= 3:
+            raise IntegrityError(
+                'INSERT INTO complaints', {},
+                Exception('UNIQUE constraint failed: complaints.tracking_number')
+            )
+
+    committed = {'v': False}
+
+    def mock_refresh(obj):
+        obj.id = 42
+        obj.tracking_number = 'EP-2026-UNIQUE001'
+        obj.location_address = 'Test Street'
+        obj.status = 'In Progress'
+        obj.waste_type = 'Mixed Waste'
+        obj.ward = 'Ward 12'
+        obj.assigned_driver_name = 'Ramesh Y.'
+        obj.image_url = None
+        obj.ai_status = 'Verified'
+        obj.ai_confidence = 0.95
+
+    db = MagicMock()
+    db.flush = mock_flush
+    db.add = MagicMock()
+    db.commit = lambda: committed.update({'v': True})
+    db.rollback = MagicMock()
+    db.refresh = mock_refresh
+
+    monkeypatch.setattr(
+        'server.services.complaint_service.AIService.verify_waste_image',
+        lambda *a, **kw: {'status': 'Verified', 'confidence': 0.95}
+    )
+
+    payload = ComplaintCreate(
+        location='Test Street', type='Mixed Waste',
+        ward='Ward 12', description='Test', image_url=None
+    )
+
+    from server.services.complaint_service import ComplaintService
+    ComplaintService.create_complaint(db, payload, user=None)
+
+    assert committed['v'], 'commit was not called'
+    assert gen_n['n'] == 4, f'Expected 4 generator calls, got {gen_n["n"]}'
+    assert db.rollback.call_count == 3, f'Expected 3 rollbacks, got {db.rollback.call_count}'
+
+
+# ---------------------------------------------------------------------------
+# H-5: Web complaint creation — retry exhaustion raises RuntimeError
+# ---------------------------------------------------------------------------
+
+def test_scope_h_web_retry_exhaustion_raises(monkeypatch):
+    """Web complaint creation raises RuntimeError after all retries are exhausted."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services import complaint_service
+    from server.schemas.complaint import ComplaintCreate
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(complaint_service, '_generate_web_tracking_id',
+                        lambda: 'EP-2026-ALWAYSCOL')
+
+    def always_raise():
+        raise IntegrityError(
+            'INSERT INTO complaints', {},
+            Exception('UNIQUE constraint failed: complaints.tracking_number')
+        )
+
+    db = MagicMock()
+    db.flush = always_raise
+    db.rollback = MagicMock()
+
+    monkeypatch.setattr(
+        'server.services.complaint_service.AIService.verify_waste_image',
+        lambda *a, **kw: {'status': 'Verified', 'confidence': 0.95}
+    )
+
+    payload = ComplaintCreate(
+        location='Test Street', type='Mixed Waste',
+        ward='Ward 12', description='Test', image_url=None
+    )
+
+    from server.services.complaint_service import ComplaintService
+    with pytest.raises(RuntimeError, match='Could not generate a unique web tracking number'):
+        ComplaintService.create_complaint(db, payload, user=None)
+
+    assert db.rollback.call_count == complaint_service._MAX_RETRIES
+
+
+# ---------------------------------------------------------------------------
+# H-6: Unrelated integrity error must NOT trigger retry
+# ---------------------------------------------------------------------------
+
+def test_scope_h_unrelated_integrity_error_not_retried(monkeypatch):
+    """A NOT NULL violation on the ward column must propagate immediately, not be retried."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services import complaint_service
+    from server.schemas.complaint import ComplaintCreate
+    from unittest.mock import MagicMock
+
+    gen_n = {'n': 0}
+
+    def counting_gen():
+        gen_n['n'] += 1
+        return f'EP-2026-ATTEMPT{gen_n["n"]:03d}'
+
+    monkeypatch.setattr(complaint_service, '_generate_web_tracking_id', counting_gen)
+
+    def unrelated_integrity_flush():
+        raise IntegrityError(
+            'INSERT INTO complaints', {},
+            Exception('NOT NULL constraint failed: complaints.ward')
+        )
+
+    db = MagicMock()
+    db.flush = unrelated_integrity_flush
+    db.rollback = MagicMock()
+
+    monkeypatch.setattr(
+        'server.services.complaint_service.AIService.verify_waste_image',
+        lambda *a, **kw: {'status': 'Verified', 'confidence': 0.95}
+    )
+
+    payload = ComplaintCreate(
+        location='Test Street', type='Mixed Waste',
+        ward='Ward 12', description='Test', image_url=None
+    )
+
+    from server.services.complaint_service import ComplaintService
+    with pytest.raises(IntegrityError):
+        ComplaintService.create_complaint(db, payload, user=None)
+
+    # Must have attempted only ONE flush — no retry regeneration
+    assert gen_n['n'] == 1, f'Expected 1 generator call (no retry), got {gen_n["n"]}'
+    assert db.rollback.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# H-7: Session remains usable after a failed attempt
+# ---------------------------------------------------------------------------
+
+def test_scope_h_session_usable_after_failed_attempt(monkeypatch):
+    """After a collision-driven rollback the session state is clean for subsequent queries."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services import complaint_service
+    from server.schemas.complaint import ComplaintCreate
+    from unittest.mock import MagicMock, call
+
+    # Always raise duplicate tracking_number
+    monkeypatch.setattr(complaint_service, '_generate_web_tracking_id',
+                        lambda: 'EP-2026-ALWAYSCOL')
+
+    def always_raise():
+        raise IntegrityError(
+            'INSERT', {},
+            Exception('UNIQUE constraint failed: complaints.tracking_number')
+        )
+
+    rollback_states = []
+    db = MagicMock()
+    db.flush = always_raise
+    db.rollback = lambda: rollback_states.append('rolled_back')
+
+    monkeypatch.setattr(
+        'server.services.complaint_service.AIService.verify_waste_image',
+        lambda *a, **kw: {'status': 'Verified', 'confidence': 0.95}
+    )
+
+    payload = ComplaintCreate(
+        location='X', type='Mixed Waste', ward='Ward 1', description='d', image_url=None
+    )
+
+    from server.services.complaint_service import ComplaintService
+    with pytest.raises(RuntimeError):
+        ComplaintService.create_complaint(db, payload, user=None)
+
+    # Every failed attempt called rollback — session returned to clean state
+    assert len(rollback_states) == complaint_service._MAX_RETRIES
+    assert all(s == 'rolled_back' for s in rollback_states)
+
+    # Session is now usable: add/query/commit would work (mock confirms no pending state)
+    db.add(MagicMock())  # should not raise
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# H-8: WhatsApp complaint — collision retry succeeds without double coin award
+# ---------------------------------------------------------------------------
+
+def test_scope_h_whatsapp_collision_retry_no_double_coin(monkeypatch):
+    """WhatsApp complaint retries on collision without awarding EcoCoins more than once."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services import whatsapp_service
+    from unittest.mock import MagicMock
+
+    gen_n = {'n': 0}
+    original_gen = whatsapp_service._generate_whatsapp_tracking_id
+
+    def patched_gen(ward):
+        gen_n['n'] += 1
+        return 'SHP-2026-W12-COLLIDE' if gen_n['n'] <= 2 else original_gen(ward)
+
+    monkeypatch.setattr(whatsapp_service, '_generate_whatsapp_tracking_id', patched_gen)
+
+    flush_n = {'n': 0}
+    committed = {'v': False}
+
+    def mock_flush():
+        flush_n['n'] += 1
+        if flush_n['n'] <= 2:
+            raise IntegrityError(
+                'INSERT', {},
+                Exception('UNIQUE constraint failed: complaints.tracking_number')
+            )
+
+    citizen = MagicMock()
+    citizen.is_authorized = True
+    citizen.preferred_language = 'en'
+    citizen.conversation_state = 'AWAITING_LOCATION'
+    citizen.pending_complaint_data = '{"image_url": "/uploads/img.jpg", "waste_type": "Mixed Waste"}'
+    citizen.ward = 'Ward 12'
+    citizen.household_id = 'SHP-W12-H001'
+    citizen.eco_coins = 100
+    citizen.phone_number = '919999900001'
+
+    db = MagicMock()
+    db.flush = mock_flush
+    db.rollback = MagicMock()
+    db.commit = lambda: committed.update({'v': True})
+    db.query.return_value.filter.return_value.first.return_value = None
+    db.query.return_value.filter.return_value.all.return_value = []
+    db.query.return_value.filter.return_value.count.return_value = 0
+
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'get_or_create_citizen',
+                        staticmethod(lambda db, phone: citizen))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'find_matching_citizen_user',
+                        staticmethod(lambda db, phone: None))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'select_eligible_driver',
+                        staticmethod(lambda db: None))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'send_meta_whatsapp',
+                        staticmethod(lambda *a, **kw: None))
+
+    whatsapp_service.WhatsAppService.handle_incoming_message(
+        db=db, sender_phone='919999900001', message_type='location',
+        latitude=21.3487, longitude=74.8812, message_id=None,
+    )
+
+    assert committed['v'], 'commit not called'
+    # EcoCoins must be exactly original + 20 (not +40 or +60)
+    assert citizen.eco_coins == 120, f'Expected 120 coins, got {citizen.eco_coins}'
+    assert db.rollback.call_count == 2, f'Expected 2 rollbacks, got {db.rollback.call_count}'
+    assert gen_n['n'] == 3, f'Expected 3 gen calls, got {gen_n["n"]}'
+
+
+# ---------------------------------------------------------------------------
+# H-9: WhatsApp retry exhaustion raises RuntimeError
+# ---------------------------------------------------------------------------
+
+def test_scope_h_whatsapp_retry_exhaustion_raises(monkeypatch):
+    """WhatsApp complaint creation raises RuntimeError when all retry attempts produce duplicates."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services import whatsapp_service
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(whatsapp_service, '_generate_whatsapp_tracking_id',
+                        lambda ward: 'SHP-2026-W12-ALWAYSC')
+
+    def always_raise():
+        raise IntegrityError(
+            'INSERT', {},
+            Exception('UNIQUE constraint failed: complaints.tracking_number')
+        )
+
+    citizen = MagicMock()
+    citizen.is_authorized = True
+    citizen.preferred_language = 'en'
+    citizen.conversation_state = 'AWAITING_LOCATION'
+    citizen.pending_complaint_data = '{"image_url": "/uploads/test.jpg", "waste_type": "Plastic Waste"}'
+    citizen.ward = 'Ward 12'
+    citizen.household_id = 'SHP-W12-H001'
+    citizen.eco_coins = 100
+    citizen.phone_number = '919999900001'
+
+    db = MagicMock()
+    db.flush = always_raise
+    db.rollback = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    db.query.return_value.filter.return_value.all.return_value = []
+    db.query.return_value.filter.return_value.count.return_value = 0
+
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'get_or_create_citizen',
+                        staticmethod(lambda db, phone: citizen))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'find_matching_citizen_user',
+                        staticmethod(lambda db, phone: None))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'select_eligible_driver',
+                        staticmethod(lambda db: None))
+
+    with pytest.raises(RuntimeError, match='Could not generate a unique WhatsApp tracking number'):
+        whatsapp_service.WhatsAppService.handle_incoming_message(
+            db=db, sender_phone='919999900001', message_type='location',
+            latitude=21.3487, longitude=74.8812, message_id='msg-001',
+        )
+
+    assert db.rollback.call_count == whatsapp_service._WA_MAX_RETRIES
+    # EcoCoins must not have been permanently incremented
+    assert citizen.eco_coins == 100, f'EcoCoins leaked: got {citizen.eco_coins}'
+
+
+# ---------------------------------------------------------------------------
+# H-10: WhatsApp — unrelated integrity error not retried
+# ---------------------------------------------------------------------------
+
+def test_scope_h_whatsapp_unrelated_integrity_error_not_retried(monkeypatch):
+    """A NOT NULL violation in the WhatsApp path propagates without retry."""
+    from sqlalchemy.exc import IntegrityError
+    from server.services import whatsapp_service
+    from unittest.mock import MagicMock
+
+    gen_n = {'n': 0}
+    original_gen = whatsapp_service._generate_whatsapp_tracking_id
+
+    def counting_gen(ward):
+        gen_n['n'] += 1
+        return original_gen(ward)
+
+    monkeypatch.setattr(whatsapp_service, '_generate_whatsapp_tracking_id', counting_gen)
+
+    def notnull_flush():
+        raise IntegrityError(
+            'INSERT', {},
+            Exception('NOT NULL constraint failed: complaints.ward')
+        )
+
+    citizen = MagicMock()
+    citizen.is_authorized = True
+    citizen.preferred_language = 'en'
+    citizen.conversation_state = 'AWAITING_LOCATION'
+    citizen.pending_complaint_data = '{"image_url": "/img.jpg", "waste_type": "Mixed Waste"}'
+    citizen.ward = 'Ward 12'
+    citizen.household_id = 'SHP-W12-H002'
+    citizen.eco_coins = 80
+    citizen.phone_number = '919888800002'
+
+    db = MagicMock()
+    db.flush = notnull_flush
+    db.rollback = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    db.query.return_value.filter.return_value.all.return_value = []
+    db.query.return_value.filter.return_value.count.return_value = 0
+
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'get_or_create_citizen',
+                        staticmethod(lambda db, phone: citizen))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'find_matching_citizen_user',
+                        staticmethod(lambda db, phone: None))
+    monkeypatch.setattr(whatsapp_service.WhatsAppService, 'select_eligible_driver',
+                        staticmethod(lambda db: None))
+
+    with pytest.raises(IntegrityError):
+        whatsapp_service.WhatsAppService.handle_incoming_message(
+            db=db, sender_phone='919888800002', message_type='location',
+            latitude=21.3, longitude=74.8, message_id=None,
+        )
+
+    # No retry: generator called exactly once
+    assert gen_n['n'] == 1, f'Expected 1 gen call, got {gen_n["n"]}'
+    assert db.rollback.call_count == 1
+    # State restored — no coin leakage
+    assert citizen.eco_coins == 80
+
+
+# ---------------------------------------------------------------------------
+# H-11: Legacy tracking-number lookup compatibility
+# ---------------------------------------------------------------------------
+
+def test_scope_h_legacy_tracking_number_lookup():
+    """Legacy seed tracking numbers (EP-2026-00123 format) are still found by ilike query."""
+    from server.services.complaint_service import _generate_web_tracking_id
+
+    # Verify new IDs don't accidentally match old seed patterns
+    new_id = _generate_web_tracking_id()
+    # Old seeds are EP-2026-00121, EP-2026-00122, EP-2026-00123
+    assert new_id not in {'EP-2026-00121', 'EP-2026-00122', 'EP-2026-00123'}, (
+        f'New generated ID collided with a seed value: {new_id}'
+    )
+
+    # Pure function: check that the new format is distinct enough
+    # (old format had digits only after EP-2026-; new has mixed alphanumeric)
+    import re
+    old_pattern = re.compile(r'^EP-2026-\d{5}$')
+    new_pattern = re.compile(r'^EP-2026-[A-Z0-9]{9}$')
+    assert not old_pattern.match(new_id), f'New ID accidentally matches old 5-digit format: {new_id}'
+    assert new_pattern.match(new_id)

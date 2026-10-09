@@ -27,6 +27,12 @@ def create_complaint(
 ):
     try:
         return ComplaintService.create_complaint(db, payload, current_user)
+    except RuntimeError:
+        # Retry exhaustion after max attempts — return 503 without leaking internals
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Complaint could not be created at this time. Please try again."
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -1,19 +1,41 @@
 import json
 import logging
-import random
 import re
+import secrets
+import string
 import hashlib
 import httpx
 from typing import Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from server.utils.config import config
 from server.models.whatsapp_session import WhatsAppCitizen
 from server.models.complaint import Complaint
 from server.models.task import DriverTask
 from server.models.user import User
 from server.services.media_storage import get_media_storage
+from server.services.complaint_service import _is_tracking_number_collision
 
 logger = logging.getLogger(__name__)
+
+# Shared alphabet for tracking IDs: uppercase alphanumeric minus ambiguous I and O.
+_ID_ALPHABET = (string.ascii_uppercase + string.digits).translate(
+    str.maketrans("", "", "IO")
+)
+_ID_SUFFIX_LEN = 9
+_WA_MAX_RETRIES = 5
+
+
+def _generate_whatsapp_tracking_id(ward: str) -> str:
+    """Generate a collision-resistant WhatsApp complaint tracking number.
+
+    Format: SHP-2026-W<ward_number>-<9 uppercase alphanumeric chars>
+    Example: SHP-2026-W12-A7BZ3XKQR
+    Total length: ≤ 28 chars — fits String(30).
+    """
+    ward_num = ward.replace("Ward ", "").strip()
+    suffix = "".join(secrets.choice(_ID_ALPHABET) for _ in range(_ID_SUFFIX_LEN))
+    return f"SHP-2026-W{ward_num}-{suffix}"
 
 
 class MediaValidationError(Exception):
@@ -610,8 +632,6 @@ class WhatsAppService:
 
             waste_type = pending.get("waste_type", "Garbage Overflow")
 
-            # Generate formatted Shirpur ticket
-            ticket_num = f"SHP-2026-W{citizen.ward.replace('Ward ', '')}-{random.randint(1000, 9999)}"
             lat_val = latitude if latitude is not None else 21.3487
             lng_val = longitude if longitude is not None else 74.8812
 
@@ -634,58 +654,91 @@ class WhatsAppService:
                 assigned_driver_name = None
                 driver_display = "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
 
-            # Persist complaint in main municipal database atomically with driver task and coin updates
-            try:
-                new_complaint = Complaint(
-                    tracking_number=ticket_num,
-                    citizen_id=citizen_user_id,
-                    ward=citizen.ward,
-                    location_address=f"{citizen.ward}, Shirpur (Geotagged via WhatsApp)",
-                    latitude=lat_val,
-                    longitude=lng_val,
-                    waste_type=waste_type,
-                    description=f"Reported by authorized household {citizen.household_id} via WhatsApp.",
-                    image_url=image_url,
-                    ai_status="Verified",
-                    ai_confidence=0.96,
-                    status="Pending",
-                    assigned_driver_id=assigned_driver_id,
-                    assigned_driver_name=assigned_driver_name
-                )
-                db.add(new_complaint)
-                db.flush()
+            # Persist complaint atomically: complaint + driver task + EcoCoin award +
+            # processed-message correlation.  A bounded retry loop retries only when
+            # the database raises a duplicate-key error specifically for tracking_number;
+            # all other errors propagate immediately.
+            new_complaint = None
+            ticket_num = None
+            # Snapshot mutable citizen state so we can restore it on a failed attempt
+            _coins_before = citizen.eco_coins
+            _state_before = citizen.conversation_state
+            _pending_before = citizen.pending_complaint_data
+            for _attempt in range(_WA_MAX_RETRIES):
+                ticket_num = _generate_whatsapp_tracking_id(citizen.ward)
+                try:
+                    new_complaint = Complaint(
+                        tracking_number=ticket_num,
+                        citizen_id=citizen_user_id,
+                        ward=citizen.ward,
+                        location_address=f"{citizen.ward}, Shirpur (Geotagged via WhatsApp)",
+                        latitude=lat_val,
+                        longitude=lng_val,
+                        waste_type=waste_type,
+                        description=f"Reported by authorized household {citizen.household_id} via WhatsApp.",
+                        image_url=image_url,
+                        ai_status="Verified",
+                        ai_confidence=0.96,
+                        status="Pending",
+                        assigned_driver_id=assigned_driver_id,
+                        assigned_driver_name=assigned_driver_name
+                    )
+                    db.add(new_complaint)
+                    db.flush()  # raises IntegrityError here on duplicate tracking_number
 
-                # Auto-assign driver task in tasks table
-                new_task = DriverTask(
-                    driver_id=assigned_driver_id,
-                    complaint_id=new_complaint.id,
-                    location_name=new_complaint.location_address,
-                    status="Pending",
-                    route_order=1
-                )
-                db.add(new_task)
+                    # --- all writes below are inside the same transaction ---
+                    # Auto-assign driver task in tasks table
+                    new_task = DriverTask(
+                        driver_id=assigned_driver_id,
+                        complaint_id=new_complaint.id,
+                        location_name=new_complaint.location_address,
+                        status="Pending",
+                        route_order=1
+                    )
+                    db.add(new_task)
 
-                # Award citizen +20 EcoCoins
-                citizen.eco_coins += 20
-                if citizen_user:
-                    citizen_user.eco_coins = (citizen_user.eco_coins or 100) + 20
-                citizen.conversation_state = "IDLE"
-                citizen.pending_complaint_data = None
+                    # Award citizen +20 EcoCoins (in-memory mutations inside the transaction)
+                    citizen.eco_coins = _coins_before + 20
+                    if citizen_user:
+                        citizen_user.eco_coins = (citizen_user.eco_coins or 100) + 20
+                    citizen.conversation_state = "IDLE"
+                    citizen.pending_complaint_data = None
 
-                # Atomically correlate inbound message with created complaint in dedicated correlation column
-                if message_id:
-                    from server.models.whatsapp_session import WhatsAppProcessedMessage
-                    db.query(WhatsAppProcessedMessage).filter(
-                        WhatsAppProcessedMessage.message_id == message_id
-                    ).update({
-                        "complaint_id": new_complaint.id
-                    })
+                    # Correlate processed-message record with this complaint
+                    if message_id:
+                        from server.models.whatsapp_session import WhatsAppProcessedMessage
+                        db.query(WhatsAppProcessedMessage).filter(
+                            WhatsAppProcessedMessage.message_id == message_id
+                        ).update({
+                            "complaint_id": new_complaint.id
+                        })
 
-                db.commit()
-            except Exception as e:
-                db.rollback()
-                logger.error(f"[WHATSAPP COMPLAINT] Failed to atomically persist complaint and task: {e}")
-                raise
+                    db.commit()  # single atomic commit for all writes above
+                    break  # success — exit retry loop
+
+                except Exception as exc:
+                    db.rollback()
+                    # Restore in-memory citizen state so a retry starts clean
+                    citizen.eco_coins = _coins_before
+                    citizen.conversation_state = _state_before
+                    citizen.pending_complaint_data = _pending_before
+
+                    if _is_tracking_number_collision(exc):
+                        if _attempt < _WA_MAX_RETRIES - 1:
+                            logger.warning(
+                                "[WHATSAPP COMPLAINT] Tracking number collision on attempt %d/%d (%s); retrying.",
+                                _attempt + 1,
+                                _WA_MAX_RETRIES,
+                                ticket_num,
+                            )
+                            continue
+                        raise RuntimeError(
+                            f"Could not generate a unique WhatsApp tracking number after {_WA_MAX_RETRIES} attempts."
+                        ) from exc
+                    logger.error(
+                        "[WHATSAPP COMPLAINT] Failed to atomically persist complaint and task: %s", exc
+                    )
+                    raise
 
             reply = strings["report_success"].format(
                 ticket=ticket_num,
