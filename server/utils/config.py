@@ -9,11 +9,19 @@ class Config:
     ENV: str = os.getenv("ENV", "development")
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     PORT: int = int(os.getenv("PORT", 8000))
-    CORS_ORIGINS: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000"
-    ]
+    @property
+    def CORS_ORIGINS(self) -> list[str]:
+        raw = os.getenv("CORS_ORIGINS", os.getenv("BACKEND_CORS_ORIGINS", "")).strip()
+        if raw:
+            return [orig.strip() for orig in raw.split(",") if orig.strip()]
+        env = os.getenv("ENV", self.ENV).strip().lower()
+        if env == "production":
+            return []
+        return [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000"
+        ]
 
     # WhatsApp Business Cloud API & Twilio Settings
     WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta")
