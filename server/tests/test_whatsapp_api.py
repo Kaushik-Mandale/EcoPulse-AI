@@ -1473,3 +1473,634 @@ def test_atomic_complaint_task_rollback_on_task_persistence_failure(monkeypatch)
         db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
         db.commit()
         db.close()
+
+
+# =================================================================
+# Job 1D: Webhook Idempotency State Machine & Retry Hardening Tests
+# =================================================================
+
+def test_webhook_transient_failure_then_successful_retry():
+    # Job 1D: Transient failure allows safe retry with same message ID
+    # Verifies failure does not leave message permanently unretryable or completed
+    from uuid import uuid4
+    import random
+    from unittest.mock import patch
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.retry_test_{run_id}"
+    sender = f"91971{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-RETRY-{run_id}"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1d_retry_secret"
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        # Pre-create authorized citizen awaiting location
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/retry.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000100",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        # ----------------------------------------------------
+        # Attempt 1: Transient processing error occurs
+        # ----------------------------------------------------
+        with patch.object(WhatsAppService, "handle_incoming_message", side_effect=RuntimeError("Transient DB connection glitch")):
+            res1 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+            assert res1.status_code == 500
+
+        # Verify DB state after failure:
+        # 1. Message recorded as FAILED with error detail
+        msg_record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
+        assert msg_record is not None
+        assert msg_record.status == "FAILED"
+        assert "Transient DB connection glitch" in (msg_record.error_message or "")
+
+        # 2. No complaint or task created
+        assert db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).count() == 0
+
+        # 3. Citizen coins NOT awarded
+        db.refresh(w_citizen)
+        assert w_citizen.eco_coins == 100
+
+        # ----------------------------------------------------
+        # Attempt 2: Meta retries with the SAME message ID (success)
+        # ----------------------------------------------------
+        res2 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert res2.status_code == 200
+        assert res2.json()["status"] == "processed"
+
+        # Verify DB state after retry success:
+        # 1. Message status updated to COMPLETED
+        db.refresh(msg_record)
+        assert msg_record.status == "COMPLETED"
+        assert msg_record.error_message is None
+
+        # 2. Exactly one complaint created
+        complaint = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).first()
+        assert complaint is not None
+        created_complaint_id = complaint.id
+
+        # 3. Exactly one task created
+        task = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).first()
+        assert task is not None
+
+        # 4. Citizen coins awarded once (+20)
+        db.refresh(w_citizen)
+        assert w_citizen.eco_coins == 120
+
+        # ----------------------------------------------------
+        # Attempt 3: Duplicate delivery after COMPLETED (idempotency replay)
+        # ----------------------------------------------------
+        res3 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert res3.status_code == 200
+
+        # Verify no duplicates were created
+        assert db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).count() == 1
+        assert db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).count() == 1
+        db.refresh(w_citizen)
+        assert w_citizen.eco_coins == 120
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+
+
+def test_webhook_processing_failure_records_failed_status_with_error_detail():
+    # Job 1D: A processing failure must not leave the message marked as COMPLETED
+    from uuid import uuid4
+    from unittest.mock import patch
+    from server.database.db import SessionLocal
+    from server.models.whatsapp_session import WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.fail_audit_{run_id}"
+    sender = "919720001122"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1d_fail_secret"
+
+    payload = _make_meta_payload(msg_id, sender, "test message")
+    raw_bytes = json.dumps(payload).encode("utf-8")
+    sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+    headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+    db = SessionLocal()
+    try:
+        with patch.object(WhatsAppService, "handle_incoming_message", side_effect=ValueError("Custom processing failure")):
+            res = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+            assert res.status_code == 500
+
+        record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
+        assert record is not None
+        assert record.status == "FAILED"
+        assert "Custom processing failure" in (record.error_message or "")
+    finally:
+        config.META_APP_SECRET = orig_secret
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.commit()
+        db.close()
+
+
+def test_webhook_concurrent_duplicate_delivery_state_machine_safety():
+    # Job 1D: Concurrent duplicate deliveries do not create duplicate complaints or tasks
+    from concurrent.futures import ThreadPoolExecutor
+    from uuid import uuid4
+    import random
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.concurrent_idem_{run_id}"
+    sender = f"91973{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-CONC-{run_id}"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1d_conc_secret"
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/conc.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000200",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        def _send():
+            return client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+
+        # Send 4 duplicate deliveries simultaneously
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(_send) for _ in range(4)]
+            responses = [f.result() for f in futures]
+
+        for r in responses:
+            assert r.status_code == 200
+
+        # Assert exactly one complaint and one task were created across all concurrent requests
+        complaints = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).all()
+        assert len(complaints) == 1
+        created_complaint_id = complaints[0].id
+
+        tasks = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
+        assert len(tasks) == 1
+
+        # Assert message record is COMPLETED
+        record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
+        assert record is not None
+        assert record.status == "COMPLETED"
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+
+
+def test_webhook_failure_after_handler_commit_does_not_duplicate_on_retry(monkeypatch):
+    # Job 1D: Verifies that if a failure occurs after business logic commits but before
+    # the message is marked COMPLETED, retrying with the same message ID does not create duplicate complaints.
+    from uuid import uuid4
+    import random
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.post_commit_fail_{run_id}"
+    sender = f"91974{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-PFAIL-{run_id}"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1d_pfail_secret"
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/pfail.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000300",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        # -------------------------------------------------------------------------
+        # Attempt 1: Handler commits complaint, but status update to COMPLETED raises
+        # -------------------------------------------------------------------------
+        real_handle = WhatsAppService.handle_incoming_message
+        def handle_and_explode(*args, **kwargs):
+            real_handle(*args, **kwargs)
+            # Simulate unexpected failure after complaint commits but before route marks COMPLETED
+            raise RuntimeError("Post-business-commit network glitch")
+
+        monkeypatch.setattr(WhatsAppService, "handle_incoming_message", handle_and_explode)
+
+        res1 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert res1.status_code == 500
+
+        # Complaint exists from attempt 1
+        complaint = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).first()
+        assert complaint is not None
+        created_complaint_id = complaint.id
+
+        # Message is FAILED in DB but complaint_id is preserved
+        msg_record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
+        assert msg_record.status == "FAILED"
+        assert msg_record.complaint_id == created_complaint_id
+
+        # -------------------------------------------------------------------------
+        # Attempt 2: Meta retries with same message ID (un-patched)
+        # -------------------------------------------------------------------------
+        monkeypatch.undo()
+
+        res2 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert res2.status_code == 200
+
+        # Verify that NO duplicate complaint or task was created on retry
+        complaints_after = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).all()
+        assert len(complaints_after) == 1, "Duplicate complaint was created on retry!"
+
+        tasks_after = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
+        assert len(tasks_after) == 1, "Duplicate task was created on retry!"
+
+        # Message is now marked COMPLETED
+        db.refresh(msg_record)
+        assert msg_record.status == "COMPLETED"
+
+        # Verify correct recovery behavior: conversation state remains IDLE and coins not duplicated
+        db.refresh(w_citizen)
+        assert w_citizen.conversation_state == "IDLE", "Conversation state should remain IDLE, not reset to AWAITING_PHOTO"
+        assert w_citizen.eco_coins == 120, "Eco coins should not be awarded multiple times on retry"
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+
+
+def test_ensure_whatsapp_processed_messages_schema_repeatable():
+    # Job 1D: Schema helper is idempotent, repeatable, and ensures required columns exist
+    from sqlalchemy import inspect
+    from server.database.db import engine
+    from server.models.whatsapp_session import ensure_whatsapp_processed_messages_schema
+
+    # Call twice to prove idempotence and safety
+    ensure_whatsapp_processed_messages_schema(engine)
+    ensure_whatsapp_processed_messages_schema(engine)
+
+    insp = inspect(engine)
+    cols = {col["name"] for col in insp.get_columns("whatsapp_processed_messages")}
+    assert "status" in cols
+    assert "complaint_id" in cols
+    assert "error_message" in cols
+    assert "updated_at" in cols
+    assert "message_id" in cols
+
+
+def test_webhook_concurrent_failed_retry_ownership():
+    # Job 1D: Verifies that when a message in FAILED status is retried concurrently by multiple workers,
+    # exactly one worker wins the atomic update claim and executes the business logic.
+    from concurrent.futures import ThreadPoolExecutor
+    from uuid import uuid4
+    import random
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.conc_retry_{run_id}"
+    sender = f"91975{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-CRETRY-{run_id}"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1d_cretry_secret"
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/cretry.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        # Pre-seed a FAILED message record
+        w_msg = WhatsAppProcessedMessage(
+            message_id=msg_id,
+            phone_number=sender,
+            message_type="location",
+            status="FAILED",
+            error_message="Previous timeout"
+        )
+        db.add(w_msg)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000400",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        def _send():
+            return client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+
+        # 3 workers race to retry the failed message simultaneously
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(_send) for _ in range(3)]
+            responses = [f.result() for f in futures]
+
+        for r in responses:
+            assert r.status_code == 200
+
+        # Verify exactly one complaint and one task created across all concurrent retries
+        complaints = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).all()
+        assert len(complaints) == 1
+        created_complaint_id = complaints[0].id
+
+        tasks = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
+        assert len(tasks) == 1
+
+        # Verify citizen was awarded coins exactly once (+20 -> 120)
+        db.refresh(w_citizen)
+        assert w_citizen.eco_coins == 120
+
+        # Verify message status transitioned to COMPLETED
+        db.refresh(w_msg)
+        assert w_msg.status == "COMPLETED"
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+
+
+def test_webhook_post_commit_failure_recovery_returns_original_confirmation_and_preserves_state(monkeypatch):
+    # Job 1D Final Check: Verifies that after a post-commit processing failure, a retry:
+    # 1. Distinguishes the already-applied business operation from an unassisted message
+    # 2. Recovers and delivers the original complaint confirmation (not "ask_photo")
+    # 3. Leaves conversation state as IDLE (not reset to AWAITING_PHOTO)
+    # 4. Does not create duplicate complaints, tasks, or coin awards
+    from uuid import uuid4
+    import random
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.recovery_check_{run_id}"
+    sender = f"91976{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-RECOV-{run_id}"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1d_recov_secret"
+
+    outbound_messages = []
+    def mock_send(to_phone, msg_text, *args, **kwargs):
+        outbound_messages.append({"to": to_phone, "text": msg_text})
+        return {"status": "simulated", "recipient": to_phone}
+
+    monkeypatch.setattr(WhatsAppService, "send_meta_whatsapp", mock_send)
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/recov.jpg", "waste_type": "Mixed Waste"})
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000500",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        # Attempt 1: Handler commits complaint, but raises right after
+        real_handle = WhatsAppService.handle_incoming_message
+        def handle_and_crash(*args, **kwargs):
+            real_handle(*args, **kwargs)
+            raise RuntimeError("Post-business-commit network crash")
+
+        monkeypatch.setattr(WhatsAppService, "handle_incoming_message", handle_and_crash)
+
+        res1 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert res1.status_code == 500
+
+        # Verify Attempt 1 created complaint and marked message FAILED with complaint_id correlated
+        complaint = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).first()
+        assert complaint is not None
+        assert "[msg:" not in complaint.description, "Complaint description must remain clean civic text without technical message ID tags"
+        created_complaint_id = complaint.id
+        original_ticket = complaint.tracking_number
+
+        msg_rec = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
+        assert msg_rec.status == "FAILED"
+        assert msg_rec.complaint_id == created_complaint_id
+
+        # Attempt 2: Meta retries with same message ID
+        monkeypatch.setattr(WhatsAppService, "handle_incoming_message", real_handle)
+        outbound_messages.clear()
+
+        res2 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert res2.status_code == 200
+
+        # Verify no duplicate business records
+        complaints_after = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).all()
+        assert len(complaints_after) == 1
+        assert complaints_after[0].tracking_number == original_ticket
+
+        tasks_after = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
+        assert len(tasks_after) == 1
+
+        # Verify citizen state and coin rewards
+        db.refresh(w_citizen)
+        assert w_citizen.conversation_state == "IDLE", "State should remain IDLE, not reset to AWAITING_PHOTO"
+        assert w_citizen.eco_coins == 120, "Eco coins should not be awarded twice"
+
+        # Verify message status is COMPLETED
+        db.refresh(msg_rec)
+        assert msg_rec.status == "COMPLETED"
+
+        # Verify outbound WhatsApp message delivered was the ticket confirmation, NOT ask_photo
+        assert len(outbound_messages) >= 1
+        last_outbound = outbound_messages[-1]["text"]
+        assert original_ticket in last_outbound
+        assert "कचऱ्याचा" not in last_outbound and "photo" not in last_outbound.lower()
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()

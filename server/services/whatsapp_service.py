@@ -476,7 +476,8 @@ class WhatsAppService:
         media_url: str = "",
         media_id: str = "",
         latitude: float = None,
-        longitude: float = None
+        longitude: float = None,
+        message_id: str = None
     ) -> dict:
         """Central message handling engine for WhatsApp."""
         citizen = WhatsAppService.get_or_create_citizen(db, sender_phone)
@@ -564,6 +565,38 @@ class WhatsAppService:
         # 4. Multi-Step Reporting State Machine: Location Pin Ingestion
         # ----------------------------------------------------
         if message_type == "location" or (latitude is not None and longitude is not None):
+            # Recovery Check: If this inbound message already created a complaint (e.g. post-commit failure retry),
+            # recover and return the original confirmation without repeating business side-effects or re-prompting.
+            if message_id:
+                from server.models.whatsapp_session import WhatsAppProcessedMessage
+                proc_msg = db.query(WhatsAppProcessedMessage).filter(
+                    WhatsAppProcessedMessage.message_id == message_id
+                ).first()
+                if proc_msg and proc_msg.complaint_id:
+                    existing_complaint = db.query(Complaint).filter(
+                        Complaint.id == proc_msg.complaint_id
+                    ).first()
+                    if existing_complaint:
+                        logger.info(
+                            f"[WHATSAPP RETRY] Message ID '{message_id}' already applied to complaint "
+                            f"#{existing_complaint.tracking_number} (ID: {existing_complaint.id}); recovering original confirmation."
+                        )
+                        reply = strings["report_success"].format(
+                            ticket=existing_complaint.tracking_number,
+                            ward=existing_complaint.ward,
+                            driver=existing_complaint.assigned_driver_name or (
+                                "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
+                            ),
+                            coins=citizen.eco_coins
+                        )
+                        WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                        return {
+                            "status": "complaint_created",
+                            "ticket": existing_complaint.tracking_number,
+                            "reply": reply,
+                            "recovered": True
+                        }
+
             pending_raw = citizen.pending_complaint_data
             pending = json.loads(pending_raw) if pending_raw else {}
             image_url = pending.get("image_url")
@@ -638,6 +671,16 @@ class WhatsAppService:
                     citizen_user.eco_coins = (citizen_user.eco_coins or 100) + 20
                 citizen.conversation_state = "IDLE"
                 citizen.pending_complaint_data = None
+
+                # Atomically correlate inbound message with created complaint in dedicated correlation column
+                if message_id:
+                    from server.models.whatsapp_session import WhatsAppProcessedMessage
+                    db.query(WhatsAppProcessedMessage).filter(
+                        WhatsAppProcessedMessage.message_id == message_id
+                    ).update({
+                        "complaint_id": new_complaint.id
+                    })
+
                 db.commit()
             except Exception as e:
                 db.rollback()

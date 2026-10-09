@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 
 # Create database tables automatically if they don't exist
 Base.metadata.create_all(bind=engine)
+from server.models.whatsapp_session import ensure_whatsapp_processed_messages_schema
+ensure_whatsapp_processed_messages_schema(engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

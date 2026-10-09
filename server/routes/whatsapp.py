@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, Response, Depends, Query, HTTPException,
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 import hmac
 import hashlib
 import json
@@ -119,32 +120,59 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                 latitude = None
                 longitude = None
 
-                # Idempotency check: prevent duplicate message processing
+                # Idempotency and atomic message-claim engine
                 if msg_id:
                     existing = db.query(WhatsAppProcessedMessage).filter(
                         WhatsAppProcessedMessage.message_id == msg_id
                     ).first()
-                    if existing:
-                        logger.info(f"[META WHATSAPP] Duplicate message ID '{msg_id[:15]}...' ignored.")
-                        continue
 
-                    # Attempt persistent registration with unique constraint protection against race conditions
-                    try:
-                        processed_msg = WhatsAppProcessedMessage(
-                            message_id=msg_id,
-                            phone_number=sender_phone,
-                            message_type=msg_type
-                        )
-                        db.add(processed_msg)
-                        db.commit()
-                    except IntegrityError:
-                        db.rollback()
-                        logger.info(f"[META WHATSAPP] Concurrent duplicate message ID '{msg_id[:15]}...' caught by constraint.")
-                        continue
-                    except Exception as e:
-                        db.rollback()
-                        logger.error(f"[META WHATSAPP] Error registering processed message: {e}")
-                        continue
+                    if existing:
+                        # 1. Already completed: ignore duplicate cleanly
+                        if existing.status == "COMPLETED" or not existing.status:
+                            logger.info(f"[META WHATSAPP] Duplicate message ID '{msg_id[:15]}...' already completed; ignored.")
+                            continue
+
+                        # 2. In-flight processing: skip duplicate delivery to prevent double-processing
+                        elif existing.status == "PROCESSING":
+                            logger.info(f"[META WHATSAPP] Message ID '{msg_id[:15]}...' is currently processing; skipping concurrent duplicate.")
+                            continue
+
+                        # 3. Previous attempt failed: allow retry, claiming atomically
+                        elif existing.status == "FAILED":
+                            claimed = db.query(WhatsAppProcessedMessage).filter(
+                                WhatsAppProcessedMessage.message_id == msg_id,
+                                WhatsAppProcessedMessage.status == "FAILED"
+                            ).update({
+                                "status": "PROCESSING",
+                                "error_message": None,
+                                "updated_at": func.now()
+                            })
+                            db.commit()
+                            if not claimed:
+                                logger.info(f"[META WHATSAPP] Concurrent retry race for message ID '{msg_id[:15]}...'; another worker claimed it.")
+                                continue
+                    else:
+                        # 4. New message: attempt persistent claim with status='PROCESSING'
+                        try:
+                            processed_msg = WhatsAppProcessedMessage(
+                                message_id=msg_id,
+                                phone_number=sender_phone,
+                                message_type=msg_type,
+                                status="PROCESSING"
+                            )
+                            db.add(processed_msg)
+                            db.commit()
+                        except IntegrityError:
+                            db.rollback()
+                            logger.info(f"[META WHATSAPP] Concurrent new message ID '{msg_id[:15]}...' caught by constraint; skipping duplicate.")
+                            continue
+                        except Exception as e:
+                            db.rollback()
+                            logger.error(f"[META WHATSAPP] Error registering processed message: {e}")
+                            raise HTTPException(
+                                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="Database error registering message ID"
+                            )
 
                 media_id = ""
                 if msg_type == "text":
@@ -164,16 +192,53 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                     latitude = loc.get("latitude")
                     longitude = loc.get("longitude")
 
-                WhatsAppService.handle_incoming_message(
-                    db=db,
-                    sender_phone=sender_phone,
-                    message_type=msg_type,
-                    text_body=text_content,
-                    media_url=media_url,
-                    media_id=media_id,
-                    latitude=latitude,
-                    longitude=longitude
-                )
+                try:
+                    WhatsAppService.handle_incoming_message(
+                        db=db,
+                        sender_phone=sender_phone,
+                        message_type=msg_type,
+                        text_body=text_content,
+                        media_url=media_url,
+                        media_id=media_id,
+                        latitude=latitude,
+                        longitude=longitude,
+                        message_id=msg_id
+                    )
+
+                    # Mark as COMPLETED upon successful processing
+                    if msg_id:
+                        db.query(WhatsAppProcessedMessage).filter(
+                            WhatsAppProcessedMessage.message_id == msg_id
+                        ).update({
+                            "status": "COMPLETED",
+                            "error_message": None,
+                            "updated_at": func.now()
+                        })
+                        db.commit()
+
+                except Exception as exc:
+                    db.rollback()
+                    logger.error(f"[META WHATSAPP] Failed to process message {msg_id}: {exc}")
+                    if msg_id:
+                        try:
+                            db.query(WhatsAppProcessedMessage).filter(
+                                WhatsAppProcessedMessage.message_id == msg_id
+                            ).update({
+                                "status": "FAILED",
+                                "error_message": str(exc)[:500],
+                                "updated_at": func.now()
+                            })
+                            db.commit()
+                        except Exception as update_err:
+                            db.rollback()
+                            logger.error(f"[META WHATSAPP] Failed to update message {msg_id} to FAILED: {update_err}")
+
+                    if isinstance(exc, HTTPException):
+                        raise exc
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Webhook message processing failed"
+                    )
 
     return {"status": "processed"}
 

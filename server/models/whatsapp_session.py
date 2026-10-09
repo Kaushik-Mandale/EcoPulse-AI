@@ -24,4 +24,33 @@ class WhatsAppProcessedMessage(Base):
     message_id = Column(String(100), unique=True, index=True, nullable=False)
     phone_number = Column(String(30), nullable=True)
     message_type = Column(String(30), nullable=True)
+    status = Column(String(20), default='COMPLETED', index=True) # 'PROCESSING', 'COMPLETED', 'FAILED'
+    complaint_id = Column(Integer, nullable=True, index=True)
+    error_message = Column(Text, nullable=True)
     processed_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+def ensure_whatsapp_processed_messages_schema(engine):
+    """
+    Lightweight, backward-compatible schema helper ensuring 'status', 'complaint_id',
+    'error_message', and 'updated_at' exist in existing SQLite/PostgreSQL tables without requiring manual migration.
+    """
+    from sqlalchemy import inspect, text
+    try:
+        insp = inspect(engine)
+        if 'whatsapp_processed_messages' in insp.get_table_names():
+            cols = {col['name'] for col in insp.get_columns('whatsapp_processed_messages')}
+            with engine.connect() as conn:
+                if 'status' not in cols:
+                    conn.execute(text("ALTER TABLE whatsapp_processed_messages ADD COLUMN status VARCHAR(20) DEFAULT 'COMPLETED'"))
+                if 'complaint_id' not in cols:
+                    conn.execute(text("ALTER TABLE whatsapp_processed_messages ADD COLUMN complaint_id INTEGER"))
+                if 'error_message' not in cols:
+                    conn.execute(text("ALTER TABLE whatsapp_processed_messages ADD COLUMN error_message TEXT"))
+                if 'updated_at' not in cols:
+                    conn.execute(text("ALTER TABLE whatsapp_processed_messages ADD COLUMN updated_at TIMESTAMP"))
+                conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"[SCHEMA] WhatsApp processed messages schema check warning: {e}")
