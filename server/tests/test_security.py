@@ -598,6 +598,11 @@ def test_scope_gb_twilio_signature_verification(monkeypatch):
     test_token = "twilio-auth-token-test-12345"
     monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
     monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", test_token)
+    monkeypatch.setattr(
+        config,
+        "TWILIO_WEBHOOK_URL",
+        "https://twilio.example.test/api/whatsapp/twilio-webhook",
+    )
 
     # 1. Missing signature header
     res_no_sig = client.post(
@@ -613,6 +618,388 @@ def test_scope_gb_twilio_signature_verification(monkeypatch):
         headers={"X-Twilio-Signature": "invalid_sig"}
     )
     assert res_bad_sig.status_code == 403
+
+
+def _make_twilio_signature(url, params, auth_token):
+    import base64
+    import hashlib
+    import hmac
+
+    signed_data = url
+    for key in sorted(params):
+        values = params[key]
+        if not isinstance(values, (list, tuple)):
+            values = [values]
+        for value in sorted(values):
+            signed_data += f"{key}{value}"
+
+    digest = hmac.new(
+        auth_token.encode("utf-8"), signed_data.encode("utf-8"), hashlib.sha1
+    ).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def test_scope_gb_twilio_signature_uses_exact_public_https_url_and_query(
+    monkeypatch,
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    token = "twilio-auth-token-test-12345"
+    public_url = (
+        "https://whatsapp.example.test/api/whatsapp/twilio-webhook"
+        "?source=twilio&tenant=green"
+    )
+    params = {"From": "whatsapp:+919876543210", "Body": "Hello"}
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", token)
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", public_url)
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: {"reply": "Received"},
+    )
+
+    response = client.post(
+        public_url,
+        data=params,
+        headers={
+            "X-Twilio-Signature": _make_twilio_signature(
+                public_url, params, token
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert "<Message>Received</Message>" in response.text
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://8.8.8.8/api/whatsapp/twilio-webhook?source=twilio",
+        "https://[2001:4860:4860::8888]/api/whatsapp/twilio-webhook?source=twilio",
+    ],
+    ids=["public-ipv4", "public-ipv6"],
+)
+def test_scope_gb_twilio_accepts_public_ip_callback_urls(callback_url, monkeypatch):
+    from server.routes.whatsapp import verify_twilio_signature
+    from server.utils.config import config
+
+    token = "twilio-auth-token-test-12345"
+    params = {"From": "whatsapp:+919876543210", "Body": "Hello"}
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", token)
+
+    verify_twilio_signature(
+        callback_url,
+        params,
+        _make_twilio_signature(callback_url, params, token),
+    )
+
+
+def test_scope_gb_twilio_missing_public_url_fails_closed_before_processing(
+    monkeypatch,
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    token = "twilio-auth-token-test-12345"
+    params = {"From": "whatsapp:+919876543210", "Body": "Hello"}
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", token)
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", "")
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: pytest.fail("Missing callback URL reached processing"),
+    )
+
+    response = client.post(
+        "/api/whatsapp/twilio-webhook",
+        data=params,
+        headers={
+            "X-Twilio-Signature": _make_twilio_signature(
+                "https://twilio.example.test/api/whatsapp/twilio-webhook",
+                params,
+                token,
+            )
+        },
+    )
+
+    assert response.status_code == 500
+
+
+@pytest.mark.parametrize(
+    "configured_url",
+    [
+        "http://whatsapp.example.test/api/whatsapp/twilio-webhook",
+        "not-a-url",
+        "https://.",
+        "https://..",
+        "https:///api/whatsapp/twilio-webhook",
+        "https://?source=twilio",
+        "https://bad..example/api/whatsapp/twilio-webhook",
+        "https://-bad.example/api/whatsapp/twilio-webhook",
+        "https://localhost/api/whatsapp/twilio-webhook",
+        "https://127.0.0.1/api/whatsapp/twilio-webhook",
+        "https://[::1]/api/whatsapp/twilio-webhook",
+        "https://[fe80::1]/api/whatsapp/twilio-webhook",
+        "https://[fe80::1%25eth0]/api/whatsapp/twilio-webhook",
+        "https://10.0.0.1/api/whatsapp/twilio-webhook",
+        "https://[2001:db8::1]/api/whatsapp/twilio-webhook",
+        "https://whatsapp.example.test:invalid/api/whatsapp/twilio-webhook",
+        "https://whatsapp.example.test:99999/api/whatsapp/twilio-webhook",
+        "https://user@whatsapp.example.test/api/whatsapp/twilio-webhook",
+        "https://user:password@whatsapp.example.test/api/whatsapp/twilio-webhook",
+        "https://whatsapp.example.test/api/whatsapp/twilio-webhook#fragment",
+        "https://whatsapp.example.test/api/whatsapp/%path",
+    ],
+    ids=[
+        "unsupported-scheme",
+        "relative-url",
+        "dot-only-hostname",
+        "double-dot-hostname",
+        "empty-host-before-path",
+        "empty-host-with-query",
+        "empty-host-label",
+        "hostname-label-starts-with-hyphen",
+        "non-public-single-label-host",
+        "ipv4-loopback",
+        "ipv6-loopback",
+        "ipv6-link-local",
+        "ipv6-scoped-link-local",
+        "ipv4-private",
+        "ipv6-documentation-range",
+        "invalid-port",
+        "port-out-of-range",
+        "userinfo",
+        "username-and-password",
+        "fragment",
+        "malformed-escape",
+    ],
+)
+def test_scope_gb_twilio_invalid_public_url_fails_closed_before_processing(
+    monkeypatch, configured_url
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", "twilio-auth-token-test-12345")
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", configured_url)
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: pytest.fail("Invalid callback URL reached processing"),
+    )
+
+    response = client.post(
+        "/api/whatsapp/twilio-webhook",
+        data={"From": "whatsapp:+919876543210", "Body": "Hello"},
+        headers={"X-Twilio-Signature": "any-signature"},
+    )
+
+    assert response.status_code == 500
+
+
+@pytest.mark.parametrize(
+    "signed_url",
+    [
+        "http://whatsapp.example.test/api/whatsapp/twilio-webhook?source=twilio",
+        "https://internal.example.test/api/whatsapp/twilio-webhook?source=twilio",
+        "https://whatsapp.example.test:8443/api/whatsapp/twilio-webhook?source=twilio",
+    ],
+    ids=["wrong-scheme", "wrong-hostname", "wrong-port"],
+)
+def test_scope_gb_twilio_rejects_signature_for_different_callback_url(
+    monkeypatch, signed_url
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    token = "twilio-auth-token-test-12345"
+    public_url = (
+        "https://whatsapp.example.test/api/whatsapp/twilio-webhook?source=twilio"
+    )
+    params = {"From": "whatsapp:+919876543210", "Body": "Hello"}
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", token)
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", public_url)
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: pytest.fail("Invalid signature reached processing"),
+    )
+
+    response = client.post(
+        public_url,
+        data=params,
+        headers={
+            "X-Twilio-Signature": _make_twilio_signature(
+                signed_url, params, token
+            ),
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "whatsapp.example.test",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_scope_gb_twilio_uses_configured_public_url_not_forwarded_headers(
+    monkeypatch,
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    token = "twilio-auth-token-test-12345"
+    public_url = "https://whatsapp.example.test/api/whatsapp/twilio-webhook"
+    internal_url = "http://whatsapp.internal/api/whatsapp/twilio-webhook"
+    params = {"From": "whatsapp:+919876543210", "Body": "Hello"}
+    processed = []
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", token)
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", public_url)
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: processed.append(kwargs) or {"reply": "Received"},
+    )
+
+    response = client.post(
+        internal_url,
+        data=params,
+        headers={
+            "X-Twilio-Signature": _make_twilio_signature(public_url, params, token),
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "whatsapp.example.test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(processed) == 1
+
+
+def test_scope_gb_twilio_duplicate_form_values_do_not_match_collapsed_params(
+    monkeypatch,
+):
+    from urllib.parse import urlencode
+
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    token = "twilio-auth-token-test-12345"
+    callback_url = "https://whatsapp.example.test/api/whatsapp/twilio-webhook"
+    duplicate_params = [
+        ("From", "whatsapp:+919876543210"),
+        ("Body", "First value"),
+        ("Body", "Second value"),
+    ]
+    signed_params = {
+        "From": "whatsapp:+919876543210",
+        "Body": ["First value", "Second value"],
+    }
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", token)
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", callback_url)
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: pytest.fail("Duplicate form values reached processing"),
+    )
+
+    response = client.post(
+        callback_url,
+        content=urlencode(duplicate_params),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Twilio-Signature": _make_twilio_signature(
+                callback_url, signed_params, token
+            ),
+        },
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type", "expected_status", "signed"),
+    [
+        (
+            b'{"From":"whatsapp:+919876543210","Body":"Hello"}',
+            "application/json",
+            415,
+            True,
+        ),
+        (b"--malformed", "multipart/form-data", 415, False),
+        (b"From=%ZZ&Body=Hello", "application/x-www-form-urlencoded", 403, False),
+    ],
+    ids=["unsupported-json", "unsupported-multipart", "malformed-urlencoded"],
+)
+def test_scope_gb_twilio_rejects_unsupported_or_malformed_requests_before_processing(
+    monkeypatch, content, content_type, expected_status, signed
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", "twilio-auth-token-test-12345")
+    process_message = []
+    callback_url = "https://whatsapp.example.test/api/whatsapp/twilio-webhook"
+    monkeypatch.setattr(config, "TWILIO_WEBHOOK_URL", callback_url)
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: process_message.append(kwargs),
+    )
+
+    headers = {"Content-Type": content_type}
+    if signed:
+        headers["X-Twilio-Signature"] = _make_twilio_signature(
+            callback_url, {}, config.TWILIO_AUTH_TOKEN
+        )
+    response = client.post(
+        callback_url,
+        content=content,
+        headers=headers,
+    )
+
+    assert response.status_code == expected_status
+    assert process_message == []
+
+
+@pytest.mark.parametrize("signature", [None, "invalid-signature"])
+def test_scope_gb_twilio_missing_or_invalid_signature_never_processes_message(
+    monkeypatch, signature
+):
+    from server.services.whatsapp_service import WhatsAppService
+    from server.utils.config import config
+
+    monkeypatch.setattr(config, "WHATSAPP_PROVIDER", "twilio")
+    monkeypatch.setattr(config, "TWILIO_AUTH_TOKEN", "twilio-auth-token-test-12345")
+    monkeypatch.setattr(
+        config,
+        "TWILIO_WEBHOOK_URL",
+        "https://twilio.example.test/api/whatsapp/twilio-webhook",
+    )
+    process_message = []
+    monkeypatch.setattr(
+        WhatsAppService,
+        "handle_incoming_message",
+        lambda **kwargs: process_message.append(kwargs),
+    )
+
+    headers = {}
+    if signature is not None:
+        headers["X-Twilio-Signature"] = signature
+    response = client.post(
+        "/api/whatsapp/twilio-webhook",
+        data={"From": "whatsapp:+919876543210", "Body": "Hello"},
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert process_message == []
 
 
 def test_scope_gb_generate_qr_requires_admin_auth():

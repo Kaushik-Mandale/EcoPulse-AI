@@ -371,6 +371,39 @@ def test_simulator_environment_protection():
     config.ENV = orig_env
 
 
+@pytest.mark.parametrize(
+    ("env_name", "env_value"),
+    [
+        ("ENV", "production"),
+        ("ENV", "Production"),
+        ("ENV", "pRoDuCtIoN"),
+        ("ENV", "  PrOdUcTiOn  "),
+        ("ENVIRONMENT", " PrOdUcTiOn "),
+    ],
+)
+def test_simulator_remains_disabled_for_normalized_production_environment(
+    monkeypatch, env_name, env_value
+):
+    from server.utils.config import Config
+
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv(env_name, env_value)
+    monkeypatch.setenv("WHATSAPP_SIMULATOR_ENABLED", "true")
+
+    normalized_config = Config()
+    assert normalized_config.ENV == "production"
+    monkeypatch.setattr(config, "ENV", normalized_config.ENV)
+
+    response = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={"phone": "919988776655", "message": "1", "type": "text"},
+    )
+
+    assert response.status_code == 403
+    assert "disabled in production" in response.json()["detail"]
+
+
 # =================================================================
 # Job 1B: Real WhatsApp Media Pipeline Tests (A through Q)
 # =================================================================
@@ -2103,6 +2136,140 @@ def test_webhook_post_commit_failure_recovery_returns_original_confirmation_and_
         last_outbound = outbound_messages[-1]["text"]
         assert original_ticket in last_outbound
         assert "कचऱ्याचा" not in last_outbound and "photo" not in last_outbound.lower()
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+
+
+def test_whatsapp_complaint_visible_in_admin_complaints_api():
+    """Verify that a complaint created via the WhatsApp webhook is returned by GET /api/admin/complaints.
+
+    Tests the end-to-end backend integration path:
+    1. Delivers a signed Meta WhatsApp location event (following an image upload state).
+    2. Verifies the complaint is persisted with a unique tracking number.
+    3. Unauthenticated requests to GET /api/admin/complaints are rejected (401).
+    4. Authenticates as an admin user to obtain a JWT bearer token.
+    5. Queries GET /api/admin/complaints and asserts the WhatsApp complaint appears
+       with its exact tracking number, ward, type, status, location address, and image URL.
+    6. Cleans up all test data to leave the database in a clean state.
+    """
+    import json
+    import random
+    from uuid import uuid4
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+    from server.services.auth_service import AuthService
+
+    run_id = uuid4().hex[:12]
+    msg_id = f"wamid.admin_vis_{run_id}"
+    sender = f"91983{random.randint(1000000, 9999999)}"
+    unique_household = f"SHP-ADMIN-{run_id}"
+    image_url = f"/uploads/whatsapp/complaint_{run_id}.jpg"
+
+    orig_secret = config.META_APP_SECRET
+    config.META_APP_SECRET = "job1jb_admin_vis_secret"
+
+    db = SessionLocal()
+    created_complaint_id = None
+    try:
+        # Ensure demo users (including admin@cityswap.io) exist in the database
+        AuthService.seed_demo_users(db)
+
+        # Pre-create authorized WhatsApp citizen in AWAITING_LOCATION state
+        w_citizen = WhatsAppCitizen(
+            phone_number=sender,
+            is_authorized=True,
+            household_id=unique_household,
+            ward="Ward 12",
+            eco_coins=100,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({
+                "image_url": image_url,
+                "waste_type": "Plastic Waste"
+            })
+        )
+        db.add(w_citizen)
+        db.commit()
+
+        # Build and sign a Meta WhatsApp location pin payload
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000300",
+                            "type": "location",
+                            "location": {"latitude": 21.3487, "longitude": 74.8812}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(loc_payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        # Step 1: Deliver webhook to create complaint
+        webhook_res = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+        assert webhook_res.status_code == 200, f"Webhook delivery failed: {webhook_res.text}"
+
+        # Step 2: Confirm complaint created in database and extract tracking number
+        complaint = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).first()
+        assert complaint is not None, "Complaint was not created by WhatsApp webhook"
+        created_complaint_id = complaint.id
+        tracking_number = complaint.tracking_number
+        assert tracking_number.startswith("SHP-2026-W12-")
+
+        # Step 3: Unauthenticated access to admin complaints API must be rejected
+        unauth_res = client.get("/api/admin/complaints")
+        assert unauth_res.status_code == 401
+
+        # Step 4: Authenticate as admin
+        login_res = client.post("/api/auth/login", json={
+            "email": "admin@cityswap.io",
+            "password": "Password123!",
+            "role": "admin"
+        })
+        assert login_res.status_code == 200, f"Admin login failed: {login_res.text}"
+        admin_token = login_res.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # Step 5: Query admin complaints API
+        admin_res = client.get("/api/admin/complaints", headers=admin_headers)
+        assert admin_res.status_code == 200, f"Admin complaints API failed: {admin_res.text}"
+        admin_complaints = admin_res.json()
+        assert isinstance(admin_complaints, list)
+
+        # Step 6: Assert the WhatsApp complaint is returned with matching fields
+        matching = [c for c in admin_complaints if c.get("id") == tracking_number]
+        assert len(matching) == 1, (
+            f"Expected complaint {tracking_number} in admin complaints response, but got IDs: "
+            f"{[c.get('id') for c in admin_complaints]}"
+        )
+        item = matching[0]
+        assert item["id"] == tracking_number
+        assert item["db_id"] == created_complaint_id
+        assert item["ward"] == "Ward 12"
+        assert item["type"] == "Plastic Waste"
+        assert item["status"] == "Pending"
+        assert item["location"] == complaint.location_address
+        assert item["image_url"] == image_url
 
     finally:
         config.META_APP_SECRET = orig_secret

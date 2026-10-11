@@ -3,6 +3,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def normalize_environment(value: str) -> str:
+    return value.strip().lower()
+
+
 class Config:
     def __init__(self):
         self.reload()
@@ -10,7 +15,9 @@ class Config:
     def reload(self):
         self.PROJECT_NAME: str = os.getenv("PROJECT_NAME", "CITY_SWAP API")
         self.VERSION: str = os.getenv("VERSION", os.getenv("PROJECT_VERSION", "1.0.0"))
-        self.ENV: str = os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
+        self.ENV: str = normalize_environment(
+            os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
+        )
         self.SECRET_KEY: str = os.getenv("SECRET_KEY", "")
         self.PORT: int = int(os.getenv("PORT", 8000))
         self.WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta")
@@ -25,13 +32,14 @@ class Config:
         self.TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
         self.TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
         self.TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+        self.TWILIO_WEBHOOK_URL: str = os.getenv("TWILIO_WEBHOOK_URL", "")
 
     @property
     def CORS_ORIGINS(self) -> list[str]:
         raw = os.getenv("CORS_ORIGINS", os.getenv("BACKEND_CORS_ORIGINS", "")).strip()
         if raw:
             return [orig.strip() for orig in raw.split(",") if orig.strip()]
-        env = os.getenv("ENV", os.getenv("ENVIRONMENT", self.ENV)).strip().lower()
+        env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", self.ENV)))
         if env == "production":
             return []
         return [

@@ -428,6 +428,16 @@ To connect the platform to Meta's live **WhatsApp Cloud API**:
 5. Add your **System User Access Token** and **Phone Number ID** to `server/.env`.
 6. For detailed troubleshooting, refer to [`WHATSAPP_SETUP_GUIDE.txt`](file:///c:/Users/Hi/Desktop/CITY_SWAP/WHATSAPP_SETUP_GUIDE.txt).
 
+For the optional Twilio provider, set `WHATSAPP_PROVIDER=twilio`, configure
+`TWILIO_AUTH_TOKEN`, and set `TWILIO_WEBHOOK_URL` to the exact public HTTPS
+callback URL configured in Twilio, including its path and query string if used.
+For Render, configure `TWILIO_WEBHOOK_URL` in the backend service environment.
+Do not derive it from forwarded request headers; requests fail closed if the URL
+is missing or invalid. Use a value such as
+`https://<your-public-domain>/api/whatsapp/twilio-webhook` only after confirming
+that it exactly matches the callback URL configured in Twilio. The repository's
+`.env.example` contains only a placeholder.
+
 ---
 
 ## 🧪 Testing & Quality Verification

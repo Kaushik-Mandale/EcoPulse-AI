@@ -6,7 +6,7 @@ from server.database.db import engine, Base, SessionLocal
 import server.models  # Import all SQLAlchemy models to register them with Base.metadata
 from server.routes import health, item, auth, complaint, driver, admin, uploads, whatsapp
 from server.services.auth_service import AuthService
-from server.utils.config import config
+from server.utils.config import config, normalize_environment
 
 from contextlib import asynccontextmanager
 
@@ -18,7 +18,7 @@ ensure_whatsapp_processed_messages_schema(engine)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Enforce secure configuration in production
-    env = os.getenv("ENV", os.getenv("ENVIRONMENT", config.ENV)).strip().lower()
+    env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", config.ENV)))
     secret_key = os.getenv("SECRET_KEY", config.SECRET_KEY).strip()
     if env == "production":
         if not secret_key:

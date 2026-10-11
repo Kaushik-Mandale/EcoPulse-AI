@@ -7,11 +7,14 @@ import hmac
 import hashlib
 import base64
 import json
+import ipaddress
 import logging
+import re
 from typing import Optional
+from urllib.parse import urlsplit
 
 from server.database.db import get_db
-from server.utils.config import config
+from server.utils.config import config, normalize_environment
 from server.utils.security import get_current_admin_user
 from server.services.whatsapp_service import WhatsAppService
 from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
@@ -259,6 +262,54 @@ def verify_twilio_signature(url: str, params: dict, signature_header: Optional[s
             detail="Twilio signature verification is unavailable due to missing server configuration."
         )
 
+    url = (url or "").strip()
+    try:
+        parsed_url = urlsplit(url)
+        hostname = parsed_url.hostname or ""
+        try:
+            address = ipaddress.ip_address(hostname)
+            valid_hostname = address.is_global and not getattr(
+                address, "scope_id", None
+            )
+        except ValueError:
+            ascii_hostname = hostname.encode("idna").decode("ascii").lower()
+            if ascii_hostname.endswith("."):
+                ascii_hostname = ascii_hostname[:-1]
+            labels = ascii_hostname.split(".")
+            valid_hostname = (
+                len(labels) >= 2
+                and len(ascii_hostname) <= 253
+                and all(
+                    len(label) <= 63
+                    and re.fullmatch(
+                        r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label
+                    )
+                    for label in labels
+                )
+            )
+        valid_url = (
+            parsed_url.scheme == "https"
+            and valid_hostname
+            and parsed_url.username is None
+            and parsed_url.password is None
+            and not parsed_url.fragment
+            and "#" not in url
+            and "\\" not in parsed_url.netloc
+            and not parsed_url.netloc.endswith(":")
+            and not any(character.isspace() for character in url)
+            and not re.search(r"%(?![0-9A-Fa-f]{2})", url)
+        )
+        port = parsed_url.port
+        valid_url = valid_url and (port is None or 1 <= port <= 65535)
+    except ValueError:
+        valid_url = False
+
+    if not valid_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Twilio signature verification requires a valid public HTTPS callback URL."
+        )
+
     if not signature_header:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -289,10 +340,21 @@ async def receive_twilio_webhook(request: Request, db: Session = Depends(get_db)
     Receives incoming WhatsApp messages from Twilio Sandbox / Number.
     Returns standard TwiML XML response.
     """
+    content_type = (
+        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    )
+    if content_type != "application/x-www-form-urlencoded":
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Twilio webhook must use application/x-www-form-urlencoded."
+        )
+
     form_data = await request.form()
     params_dict = dict(form_data)
     signature_header = request.headers.get("X-Twilio-Signature")
-    verify_twilio_signature(str(request.url), params_dict, signature_header)
+    verify_twilio_signature(
+        config.TWILIO_WEBHOOK_URL, params_dict, signature_header
+    )
 
     from_raw = form_data.get("From", "") # e.g. "whatsapp:+919876543210"
     body_text = form_data.get("Body", "")
@@ -391,7 +453,7 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
     Example:
     {"phone": "919876543210", "message": "JOIN SHP-W12-H1042", "type": "text"}
     """
-    if config.ENV.lower() == "production":
+    if normalize_environment(config.ENV) == "production":
         logger.warning("[META WHATSAPP] Blocked access to simulator endpoint in production.")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
