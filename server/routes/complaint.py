@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from server.database.db import get_db
-from server.schemas.complaint import ComplaintCreate, ComplaintResponse
+from server.schemas.complaint import ComplaintCreate, ComplaintResponse, ComplaintImageResponse
 from server.services.complaint_service import ComplaintService
 from server.utils.security import get_current_user_optional
 from server.models.user import User
@@ -48,6 +49,40 @@ def track_complaint(tracking_id: str, db: Session = Depends(get_db)):
             detail=f"Complaint with reference '{tracking_id}' not found."
         )
     return result
+
+@router.get("/{complaint_id}/image-url", response_model=ComplaintImageResponse)
+def get_complaint_image_url(
+    complaint_id: str,
+    token: Optional[str] = Query(None, description="Tracking token for anonymous citizen complaints"),
+    x_tracking_token: Optional[str] = Header(None, alias="X-Tracking-Token"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """Authorized endpoint to resolve a complaint image.
+    Enforces role-based and complaint-level access control:
+      - Admin / Collector: full administrative visibility
+      - Assigned Driver: access to images for complaints linked to their tasks
+      - Citizen: access strictly to their own submitted complaint images
+      - Anonymous Citizen Tracking: requires high-entropy tracking token
+    Generates a short-lived signed URL for Supabase storage or returns local path.
+    """
+    tracking_token = token or x_tracking_token
+    return ComplaintService.authorize_and_resolve_image(db, complaint_id, current_user, tracking_token)
+
+@router.get("/{complaint_id}/image")
+def get_complaint_image(
+    complaint_id: str,
+    token: Optional[str] = Query(None, description="Tracking token for anonymous citizen complaints"),
+    x_tracking_token: Optional[str] = Header(None, alias="X-Tracking-Token"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """Authorized image redirect endpoint.
+    Redirects browser to short-lived signed URL or local path upon successful authorization.
+    """
+    tracking_token = token or x_tracking_token
+    resolved = ComplaintService.authorize_and_resolve_image(db, complaint_id, current_user, tracking_token)
+    return RedirectResponse(url=resolved["url"], status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 @router.get("/{complaint_id}", response_model=ComplaintResponse)
 def get_complaint(complaint_id: str, db: Session = Depends(get_db)):

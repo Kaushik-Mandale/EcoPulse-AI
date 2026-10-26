@@ -1,7 +1,13 @@
+import logging
 import os
+from typing import Optional
+
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables explicitly from server/.env and root .env
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,35 +20,118 @@ if os.path.exists(root_env):
     load_dotenv(root_env)
 load_dotenv()
 
-# Read DATABASE_URL from environment
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not SQLALCHEMY_DATABASE_URL:
-    SQLALCHEMY_DATABASE_URL = "sqlite:///./ecopulse.db"
+def normalize_environment(value: Optional[str]) -> str:
+    return (value or "").strip().lower()
 
-# Normalize PostgreSQL URL for psycopg2 driver
-if SQLALCHEMY_DATABASE_URL.startswith("postgresql+psycopg://"):
-    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgresql+psycopg://", "postgresql+psycopg2://")
-elif SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
-    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://")
 
+def get_database_url() -> str:
+    raw_url = (os.getenv("DATABASE_URL") or "").strip()
+    env_name = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", "development")))
+
+    if not raw_url:
+        if env_name == "production":
+            raise RuntimeError("CRITICAL CONFIGURATION ERROR: DATABASE_URL is required in production mode.")
+        return "sqlite:///./ecopulse.db"
+
+    normalized = raw_url
+    if normalized.startswith("postgresql+psycopg://"):
+        normalized = normalized.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+    elif normalized.startswith("postgres://"):
+        normalized = normalized.replace("postgres://", "postgresql://", 1)
+
+    if normalized.startswith("sqlite"):
+        if env_name == "production":
+            raise RuntimeError("CRITICAL CONFIGURATION ERROR: SQLite is not allowed in production; set DATABASE_URL to a PostgreSQL connection string.")
+        return normalized
+
+    if normalized.startswith(("postgresql://", "postgresql+psycopg2://")):
+        try:
+            import psycopg2  # noqa: F401
+        except ModuleNotFoundError:
+            if env_name == "production":
+                raise RuntimeError("CRITICAL CONFIGURATION ERROR: PostgreSQL driver psycopg2 is required in production but is not installed.")
+            return "sqlite:///./ecopulse.db"
+
+    return normalized
+
+
+def safe_database_url_for_logging(database_url: str) -> str:
+    try:
+        parsed = make_url(database_url)
+        return f"{parsed.drivername}://***"
+    except Exception:
+        return "<invalid-database-url>"
+
+
+def validate_database_connection(engine) -> None:
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        url = safe_database_url_for_logging(str(engine.url))
+        raise RuntimeError(
+            f"Database connectivity validation failed for {url} ({type(exc).__name__})."
+        ) from None
+
+
+SQLALCHEMY_DATABASE_URL = get_database_url()
 connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
-
-try:
-    engine = create_engine(
-        SQLALCHEMY_DATABASE_URL,
-        connect_args=connect_args,
-        pool_pre_ping=True
-    )
-    print(f"PostgreSQL Database Connection Initialized: {SQLALCHEMY_DATABASE_URL.split('@')[-1] if '@' in SQLALCHEMY_DATABASE_URL else SQLALCHEMY_DATABASE_URL}")
-except Exception as e:
-    print(f"Warning: Failed to connect to primary database URL ({e}). Falling back to SQLite...")
-    SQLALCHEMY_DATABASE_URL = "sqlite:///./ecopulse.db"
-    engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+)
+validate_database_connection(engine)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+
+def ensure_complaints_schema(engine) -> None:
+    """
+    Idempotent startup migration: ensures the `complaints` table has the
+    `whatsapp_citizen_id` column and its index.
+
+    This column was added to the SQLAlchemy model after the initial Neon
+    schema was created. The `ADD COLUMN IF NOT EXISTS` syntax is safe to
+    call on every startup — it is a no-op when the column already exists.
+
+    Uses raw DDL rather than Alembic to stay consistent with the existing
+    inline-migration approach used by ensure_whatsapp_processed_messages_schema().
+    """
+    from sqlalchemy import inspect
+    try:
+        insp = inspect(engine)
+        if 'complaints' not in insp.get_table_names():
+            # Table does not exist yet — create_all will handle it.
+            return
+        existing_cols = {col['name'] for col in insp.get_columns('complaints')}
+        with engine.connect() as conn:
+            if 'whatsapp_citizen_id' not in existing_cols:
+                logger.info(
+                    "[SCHEMA] Adding missing column complaints.whatsapp_citizen_id"
+                )
+                col_clause = (
+                    "ADD COLUMN whatsapp_citizen_id INTEGER REFERENCES whatsapp_citizens(id) ON DELETE SET NULL"
+                    if engine.dialect.name == "sqlite"
+                    else "ADD COLUMN IF NOT EXISTS whatsapp_citizen_id INTEGER REFERENCES whatsapp_citizens(id) ON DELETE SET NULL"
+                )
+                conn.execute(text(f"ALTER TABLE complaints {col_clause}"))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_complaints_whatsapp_citizen_id "
+                    "ON complaints (whatsapp_citizen_id)"
+                ))
+                conn.commit()
+                logger.info(
+                    "[SCHEMA] complaints.whatsapp_citizen_id added successfully."
+                )
+    except Exception as exc:
+        logger.warning(
+            "[SCHEMA] complaints schema check warning: %s", type(exc).__name__
+        )
+
 
 def get_db():
     """Dependency that provides a database session to FastAPI routes."""

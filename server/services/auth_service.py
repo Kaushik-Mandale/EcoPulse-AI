@@ -1,3 +1,5 @@
+import os
+
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi import HTTPException, status
@@ -9,8 +11,15 @@ DUMMY_HASH = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW" # Pr
 
 class AuthService:
     @staticmethod
+    def should_seed_demo_users() -> bool:
+        env_name = (os.getenv("ENV", os.getenv("ENVIRONMENT", "development")) or "development").strip().lower()
+        return env_name not in {"production", "prod"}
+
+    @staticmethod
     def seed_demo_users(db: Session):
         """Seeds standard demo accounts if they do not exist."""
+        if not AuthService.should_seed_demo_users():
+            return
         demo_accounts = [
             {
                 "full_name": "Priya Patil",
@@ -125,8 +134,9 @@ class AuthService:
 
     @staticmethod
     def login_user(db: Session, payload: LoginRequest) -> AuthResponse:
-        # Ensure demo accounts exist
-        AuthService.seed_demo_users(db)
+        # Ensure demo accounts exist only in local/dev/test workflows.
+        if AuthService.should_seed_demo_users():
+            AuthService.seed_demo_users(db)
 
         clean_ident = payload.email.strip()
         clean_phone = clean_ident.replace("+91", "").replace(" ", "").replace("-", "")

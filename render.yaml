@@ -1,5 +1,6 @@
-# Render Blueprint Specification for CITY_SWAP
+# Render Blueprint Specification for CITY_SWAP / EcoPulse AI
 # https://render.com/docs/blueprint-spec
+# Only this file (render.yaml) is read by Render. render.ecopulse.yaml is unused.
 
 services:
   # --------------------------------------------------
@@ -12,6 +13,7 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
@@ -24,6 +26,7 @@ services:
       - key: ENV
         value: "production"
       - key: CORS_ORIGINS
+        # REQUIRED: Update this to your actual frontend URL before deploying
         value: "https://city-swap-frontend.onrender.com"
       - key: PORT
         value: "10000"
@@ -37,9 +40,35 @@ services:
         sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
         sync: false
-      # Set this in Render to the exact public URL configured in Twilio.
+      - key: WHATSAPP_BUSINESS_PHONE
+        sync: false
+      - key: WHATSAPP_GRAPH_API_VERSION
+        value: "v20.0"
+      # Set this in Render only if using Twilio (WHATSAPP_PROVIDER=twilio)
       - key: TWILIO_WEBHOOK_URL
         sync: false
+      # Cloudflare R2 Object Storage (Set MEDIA_STORAGE_BACKEND to 'r2' for production)
+      - key: MEDIA_STORAGE_BACKEND
+        value: "supabase"
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
+      # Supabase Storage (Set MEDIA_STORAGE_BACKEND to 'supabase' for production)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: "complaint-images"
+      - key: SUPABASE_SIGNED_URL_TTL_SECONDS
+        value: "900" 
 
   # --------------------------------------------------
   # Frontend Static Web App (React + Vite)
@@ -59,3 +88,4 @@ services:
     envVars:
       - key: VITE_API_URL
         value: https://city-swap-backend.onrender.com/api
+

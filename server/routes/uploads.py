@@ -4,6 +4,7 @@ import time
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
 from server.utils.config import config
 from server.services.whatsapp_service import validate_image_content, MediaValidationError
+from server.services.media_storage import get_media_storage, LocalMediaStorage, SupabaseMediaStorage
 
 router = APIRouter(prefix="/api/uploads", tags=["Uploads"])
 
@@ -84,30 +85,47 @@ async def upload_file(file: UploadFile = File(...)):
                 detail=f"File extension '{raw_ext}' does not match detected image format '{detected_ext}'."
             )
 
-    # 5. Generate collision-resistant server-controlled filename
-    safe_filename = f"img_{int(time.time())}_{uuid.uuid4().hex[:12]}{detected_ext}"
-    target_path = os.path.abspath(os.path.join(UPLOAD_DIR, safe_filename))
+    # 5. Persist through active storage backend (LocalMediaStorage or R2MediaStorage)
+    storage = get_media_storage()
+    if isinstance(storage, LocalMediaStorage):
+        safe_filename = f"img_{int(time.time())}_{uuid.uuid4().hex[:12]}{detected_ext}"
+        target_path = os.path.abspath(os.path.join(UPLOAD_DIR, safe_filename))
 
-    # Guard against directory traversal
-    if os.path.commonpath([UPLOAD_DIR, target_path]) != UPLOAD_DIR:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid target file destination."
-        )
+        # Guard against directory traversal
+        if os.path.commonpath([UPLOAD_DIR, target_path]) != UPLOAD_DIR:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid target file destination."
+            )
 
-    # 6. Atomic file write with cleanup on error
-    try:
-        with open(target_path, "wb") as buffer:
-            buffer.write(content)
-    except Exception as write_err:
-        if os.path.exists(target_path):
-            try:
-                os.remove(target_path)
-            except OSError:
-                pass
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to persist uploaded image: {str(write_err)}"
-        )
+        try:
+            with open(target_path, "wb") as buffer:
+                buffer.write(content)
+        except Exception as write_err:
+            if os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except OSError:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to persist uploaded image: {str(write_err)}"
+            )
 
-    return {"url": f"/uploads/{safe_filename}", "filename": safe_filename}
+        return {"url": f"/uploads/{safe_filename}", "filename": safe_filename}
+    else:
+        # Cloud storage backend (Cloudflare R2 / Supabase)
+        try:
+            storage_ref = storage.save_image(
+                content=content,
+                extension=detected_ext,
+                mime_type=detected_mime,
+            )
+            filename = os.path.basename(storage_ref.split("?")[0].split(":")[-1])
+            return {"url": storage_ref, "filename": filename}
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to persist uploaded image to cloud storage: {str(exc)}"
+            )
+

@@ -10,7 +10,8 @@ from server.services.auth_service import AuthService
 
 def initialize_database():
     print("Connecting to database and creating tables...", flush=True)
-    print(f"Target Database: {engine.url.render_as_string(hide_password=True)}", flush=True)
+    from server.database.db import safe_database_url_for_logging
+    print(f"Target Database: {safe_database_url_for_logging(str(engine.url))}", flush=True)
     
     # Create all tables in PostgreSQL
     Base.metadata.create_all(bind=engine)

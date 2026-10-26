@@ -1,11 +1,55 @@
 import os
+from urllib.parse import urlparse
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
-def normalize_environment(value: str) -> str:
-    return value.strip().lower()
+def normalize_environment(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def is_production_environment(value: str | None = None) -> bool:
+    env_value = value if value is not None else os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
+    return normalize_environment(env_value) == "production"
+
+
+def is_local_or_test_environment(value: str | None = None) -> bool:
+    env_value = value if value is not None else os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
+    return normalize_environment(env_value) in {"development", "test", "testing", "local"}
+
+
+def is_insecure_secret(value: str | None) -> bool:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return True
+    insecure_values = {
+        "secret",
+        "changeme",
+        "password",
+        "default",
+        "development",
+        "test",
+        "replace_with_long_random_secret_key",
+        "ecopulse-dev-secret-key-not-for-production",
+    }
+    return normalized in insecure_values or len((value or "").strip()) < 32
+
+
+def is_valid_http_origin(value: str) -> bool:
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not parsed.netloc:
+        return False
+    return True
 
 
 class Config:
@@ -18,34 +62,127 @@ class Config:
         self.ENV: str = normalize_environment(
             os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
         )
-        self.SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+        self.SECRET_KEY: str = (os.getenv("SECRET_KEY", "") or "").strip()
         self.PORT: int = int(os.getenv("PORT", 8000))
-        self.WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta")
-        self.WHATSAPP_TOKEN: str = os.getenv("WHATSAPP_TOKEN", "")
-        self.WHATSAPP_PHONE_NUMBER_ID: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-        self.WHATSAPP_VERIFY_TOKEN: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "ecopulse_whatsapp_token_2026")
+        self.WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta").strip().lower()
+        self.WHATSAPP_TOKEN: str = (os.getenv("WHATSAPP_TOKEN", "") or "").strip()
+        self.WHATSAPP_PHONE_NUMBER_ID: str = (os.getenv("WHATSAPP_PHONE_NUMBER_ID", "") or "").strip()
+        self.WHATSAPP_VERIFY_TOKEN: str = (os.getenv("WHATSAPP_VERIFY_TOKEN") or "").strip()
+        if not self.WHATSAPP_VERIFY_TOKEN and not is_production_environment(self.ENV):
+            self.WHATSAPP_VERIFY_TOKEN = "dev-whatsapp-verify-token"
         self.WHATSAPP_BUSINESS_PHONE: str = os.getenv("WHATSAPP_BUSINESS_PHONE", "+919876543210")
         self.WHATSAPP_GRAPH_API_VERSION: str = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v20.0")
-        self.META_APP_SECRET: str = os.getenv("META_APP_SECRET", "")
+        self.META_APP_SECRET: str = (os.getenv("META_APP_SECRET", "") or "").strip()
         self.UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
         self.MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", 10 * 1024 * 1024))
-        self.TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
-        self.TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
+        self.MEDIA_STORAGE_BACKEND: str = os.getenv("MEDIA_STORAGE_BACKEND", "local").strip().lower()
+        self.R2_ACCOUNT_ID: str = (os.getenv("R2_ACCOUNT_ID", "") or "").strip()
+        self.R2_ENDPOINT_URL: str = (os.getenv("R2_ENDPOINT_URL", "") or "").strip()
+        self.R2_BUCKET_NAME: str = (os.getenv("R2_BUCKET_NAME", os.getenv("R2_BUCKET", "")) or "").strip()
+        self.R2_ACCESS_KEY_ID: str = (os.getenv("R2_ACCESS_KEY_ID", "") or "").strip()
+        self.R2_SECRET_ACCESS_KEY: str = (os.getenv("R2_SECRET_ACCESS_KEY", "") or "").strip()
+        self.R2_PUBLIC_URL: str = (os.getenv("R2_PUBLIC_URL", os.getenv("R2_CUSTOM_DOMAIN", "")) or "").strip()
+        # Supabase Storage settings
+        self.SUPABASE_URL: str = (os.getenv("SUPABASE_URL", "") or "").strip()
+        self.SUPABASE_SERVICE_ROLE_KEY: str = (os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+        self.SUPABASE_STORAGE_BUCKET: str = (os.getenv("SUPABASE_STORAGE_BUCKET", "complaint-images") or "").strip()
+        self.SUPABASE_SIGNED_URL_TTL_SECONDS: int = int(os.getenv("SUPABASE_SIGNED_URL_TTL_SECONDS", "900"))
+        self.TWILIO_ACCOUNT_SID: str = (os.getenv("TWILIO_ACCOUNT_SID", "") or "").strip()
+        self.TWILIO_AUTH_TOKEN: str = (os.getenv("TWILIO_AUTH_TOKEN", "") or "").strip()
         self.TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
-        self.TWILIO_WEBHOOK_URL: str = os.getenv("TWILIO_WEBHOOK_URL", "")
+        self.TWILIO_WEBHOOK_URL: str = (os.getenv("TWILIO_WEBHOOK_URL", "") or "").strip()
 
     @property
     def CORS_ORIGINS(self) -> list[str]:
         raw = os.getenv("CORS_ORIGINS", os.getenv("BACKEND_CORS_ORIGINS", "")).strip()
+        parsed: list[str] = []
         if raw:
-            return [orig.strip() for orig in raw.split(",") if orig.strip()]
-        env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", self.ENV)))
-        if env == "production":
-            return []
-        return [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:3000"
-        ]
+            parsed = [orig.strip() for orig in raw.split(",") if orig.strip()]
+        if not parsed:
+            env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", self.ENV)))
+            if env == "production":
+                return []
+            parsed = [
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://localhost:3000",
+            ]
+        invalid = [origin for origin in parsed if not is_valid_http_origin(origin)]
+        if invalid:
+            raise ValueError(f"Invalid CORS origin configured: {invalid[0]}")
+        return parsed
+
+    def validate_production_settings(self) -> None:
+        self.reload()
+        env_name = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", self.ENV)))
+        if env_name != "production":
+            return
+
+        secret_key = (os.getenv("SECRET_KEY", self.SECRET_KEY) or "").strip()
+        if is_insecure_secret(secret_key):
+            raise RuntimeError("CRITICAL CONFIGURATION ERROR: SECRET_KEY must be set to a strong, non-empty value in production environment.")
+
+        cors_origins = self.CORS_ORIGINS
+        if not cors_origins:
+            raise RuntimeError("CRITICAL CONFIGURATION ERROR: CORS_ORIGINS (or BACKEND_CORS_ORIGINS) must be set to a non-empty list of allowed origins in production environment.")
+
+        if any("localhost" in origin.lower() or "127.0.0.1" in origin.lower() for origin in cors_origins):
+            raise RuntimeError("CRITICAL CONFIGURATION ERROR: localhost development origins are not permitted in production CORS configuration.")
+
+        provider = (os.getenv("WHATSAPP_PROVIDER") or "").strip().lower()
+        if provider == "meta":
+            missing = [
+                name for name, value in {
+                    "WHATSAPP_VERIFY_TOKEN": (os.getenv("WHATSAPP_VERIFY_TOKEN") or self.WHATSAPP_VERIFY_TOKEN or "").strip(),
+                    "META_APP_SECRET": (os.getenv("META_APP_SECRET") or self.META_APP_SECRET or "").strip(),
+                    "WHATSAPP_TOKEN": (os.getenv("WHATSAPP_TOKEN") or self.WHATSAPP_TOKEN or "").strip(),
+                    "WHATSAPP_PHONE_NUMBER_ID": (os.getenv("WHATSAPP_PHONE_NUMBER_ID") or self.WHATSAPP_PHONE_NUMBER_ID or "").strip(),
+                }.items() if not value
+            ]
+            if missing:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION ERROR: Meta WhatsApp production settings are incomplete: "
+                    + ", ".join(missing)
+                )
+
+        if provider == "twilio":
+            twilio_account_sid = (os.getenv("TWILIO_ACCOUNT_SID") or self.TWILIO_ACCOUNT_SID or "").strip()
+            twilio_auth_token = (os.getenv("TWILIO_AUTH_TOKEN") or self.TWILIO_AUTH_TOKEN or "").strip()
+            twilio_webhook_url = (os.getenv("TWILIO_WEBHOOK_URL") or self.TWILIO_WEBHOOK_URL or "").strip()
+            if not twilio_account_sid or not twilio_auth_token or not twilio_webhook_url:
+                raise RuntimeError("CRITICAL CONFIGURATION ERROR: Twilio production settings require TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_URL.")
+
+        storage_backend = (os.getenv("MEDIA_STORAGE_BACKEND") or self.MEDIA_STORAGE_BACKEND or "local").strip().lower()
+        if storage_backend in ("r2", "s3", "cloudflare"):
+            missing_r2 = []
+            if not (os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET") or self.R2_BUCKET_NAME):
+                missing_r2.append("R2_BUCKET_NAME")
+            if not (os.getenv("R2_ACCESS_KEY_ID") or self.R2_ACCESS_KEY_ID):
+                missing_r2.append("R2_ACCESS_KEY_ID")
+            if not (os.getenv("R2_SECRET_ACCESS_KEY") or self.R2_SECRET_ACCESS_KEY):
+                missing_r2.append("R2_SECRET_ACCESS_KEY")
+            if not (os.getenv("R2_ENDPOINT_URL") or self.R2_ENDPOINT_URL) and not (os.getenv("R2_ACCOUNT_ID") or self.R2_ACCOUNT_ID):
+                missing_r2.append("R2_ACCOUNT_ID (or R2_ENDPOINT_URL)")
+            if missing_r2:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION ERROR: Cloudflare R2 storage settings are incomplete: "
+                    + ", ".join(missing_r2)
+                )
+
+        if storage_backend == "supabase":
+            missing_sb = []
+            if not (os.getenv("SUPABASE_URL") or self.SUPABASE_URL):
+                missing_sb.append("SUPABASE_URL")
+            if not (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or self.SUPABASE_SERVICE_ROLE_KEY):
+                missing_sb.append("SUPABASE_SERVICE_ROLE_KEY")
+            if not (os.getenv("SUPABASE_STORAGE_BUCKET") or self.SUPABASE_STORAGE_BUCKET):
+                missing_sb.append("SUPABASE_STORAGE_BUCKET")
+            if missing_sb:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION ERROR: Supabase storage settings are incomplete: "
+                    + ", ".join(missing_sb)
+                )
+
 
 config = Config()
+

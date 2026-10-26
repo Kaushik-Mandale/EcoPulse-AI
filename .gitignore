@@ -54,3 +54,14 @@ Thumbs.db
 uploads/
 server/uploads/*
 !server/uploads/.gitkeep
+.neon
+
+# Temporary tooling & agent files
+.agents/
+skills-lock.json
+neon.ts
+render.ecopulse.yaml
+
+# Root-level temporary npm files (real frontend package files live in client/)
+/package.json
+/package-lock.json

@@ -4,10 +4,13 @@ import re
 import secrets
 import string
 import hashlib
+import math
 import httpx
 from typing import Optional
+from urllib.parse import urlsplit
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 from server.utils.config import config
 from server.models.whatsapp_session import WhatsAppCitizen
 from server.models.complaint import Complaint
@@ -41,6 +44,31 @@ def _generate_whatsapp_tracking_id(ward: str) -> str:
 class MediaValidationError(Exception):
     """Raised when an incoming WhatsApp media fails validation rules."""
     pass
+
+
+class RetryableWhatsAppError(Exception):
+    """Raised when Meta is temporarily unavailable and webhook redelivery is useful."""
+    pass
+
+
+def _is_trusted_meta_media_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        trusted_domain = (
+            hostname == "lookaside.fbsbx.com"
+            or hostname.endswith(".fbcdn.net")
+        )
+        return (
+            parsed.scheme == "https"
+            and trusted_domain
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in (None, 443)
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
 
 
 def validate_image_content(
@@ -133,6 +161,9 @@ TEXTS = {
             "📍 *फोटो प्राप्त झाला!*\n\n"
             "आता कृपया खालील अटॅचमेंट चिन्हावर क्लिक करून *WhatsApp Location (आपले सध्याचे स्थान)* पाठवा."
         ),
+        "invalid_location": (
+            "⚠️ वैध स्थान मिळाले नाही. कृपया अटॅचमेंट (+) मधून आपले सध्याचे WhatsApp Location पुन्हा पाठवा."
+        ),
         "report_success": (
             "✅ *तक्रार यशस्वीरित्या नोंदवली गेली!*\n\n"
             "🎫 *तक्रार क्र.:* #{ticket}\n"
@@ -209,6 +240,10 @@ TEXTS = {
         "ask_location": (
             "📍 *Photo Received!*\n\n"
             "Now click the (+) attachment icon and share your *WhatsApp Location*."
+        ),
+        "invalid_location": (
+            "⚠️ I couldn't read a valid location. Please share your current WhatsApp location pin "
+            "using the attachment (+) menu."
         ),
         "report_success": (
             "✅ *Complaint Logged Successfully!*\n\n"
@@ -323,7 +358,8 @@ class WhatsAppService:
             return valid_matches[0]
         elif len(valid_matches) > 1:
             logger.warning(
-                f"[WHATSAPP IDENTITY] Ambiguous match: {len(valid_matches)} citizen accounts found for phone {sender_phone}"
+                "[WHATSAPP IDENTITY] Ambiguous citizen phone match (%d accounts).",
+                len(valid_matches),
             )
             return None
         return None
@@ -378,8 +414,8 @@ class WhatsAppService:
         api_version = config.WHATSAPP_GRAPH_API_VERSION or "v20.0"
 
         if not token or not phone_id:
-            logger.info(f"[MOCK META WHATSAPP] To: {to_phone} | Msg: {message_text[:80]}...")
-            return {"status": "simulated", "recipient": to_phone}
+            logger.info("[MOCK META WHATSAPP] Outbound message simulated; provider credentials are not configured.")
+            return {"status": "simulated"}
 
         url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
         headers = {
@@ -398,10 +434,22 @@ class WhatsAppService:
         try:
             with httpx.Client(timeout=10.0) as client:
                 res = client.post(url, headers=headers, json=payload)
+                res.raise_for_status()
                 return res.json()
-        except Exception as e:
-            logger.error(f"Error sending Meta WhatsApp message: {e}")
-            return {"error": str(e)}
+        except httpx.HTTPStatusError as exc:
+            logger.error("[META WHATSAPP] Outbound request failed (HTTP %d).", exc.response.status_code)
+            raise RetryableWhatsAppError(
+                f"Meta outbound request failed with HTTP {exc.response.status_code}"
+            ) from None
+        except httpx.TimeoutException:
+            logger.warning("[META WHATSAPP] Outbound request timed out.")
+            raise RetryableWhatsAppError("Meta outbound request timed out") from None
+        except httpx.RequestError as exc:
+            logger.warning("[META WHATSAPP] Outbound request failed (%s).", type(exc).__name__)
+            raise RetryableWhatsAppError("Meta outbound request failed") from None
+        except ValueError:
+            logger.error("[META WHATSAPP] Outbound response was not valid JSON.")
+            raise RetryableWhatsAppError("Meta returned an invalid outbound response") from None
 
     @staticmethod
     def fetch_and_store_meta_media(media_id: str) -> dict:
@@ -416,7 +464,7 @@ class WhatsAppService:
         api_version = config.WHATSAPP_GRAPH_API_VERSION or "v20.0"
 
         if not token:
-            logger.warning(f"[META MEDIA] WHATSAPP_TOKEN is not configured; cannot retrieve media_id={media_id}")
+            logger.warning("[META MEDIA] WHATSAPP_TOKEN is not configured; cannot retrieve image.")
             return {"success": False, "error": "WHATSAPP_TOKEN is not configured"}
 
         if not media_id or not str(media_id).strip():
@@ -426,31 +474,51 @@ class WhatsAppService:
         headers = {"Authorization": f"Bearer {token}"}
 
         try:
-            with httpx.Client(timeout=15.0) as client:
+            with httpx.Client(timeout=15.0, follow_redirects=False) as client:
                 # Step 1: Request metadata from Meta Graph API
                 meta_res = client.get(meta_url, headers=headers)
                 if meta_res.status_code != 200:
-                    logger.error(f"[META MEDIA] Metadata request failed for media_id={media_id} (status: {meta_res.status_code})")
-                    return {"success": False, "error": f"Meta metadata request failed with HTTP {meta_res.status_code}"}
+                    retryable = meta_res.status_code == 429 or meta_res.status_code >= 500
+                    logger.warning("[META MEDIA] Metadata request failed (HTTP %d).", meta_res.status_code)
+                    return {
+                        "success": False,
+                        "retryable": retryable,
+                        "error": f"Meta metadata request failed with HTTP {meta_res.status_code}",
+                    }
 
                 try:
                     meta_data = meta_res.json()
                 except Exception:
-                    logger.error(f"[META MEDIA] Invalid JSON response from Meta for media_id={media_id}")
+                    logger.error("[META MEDIA] Invalid metadata response from Meta.")
                     return {"success": False, "error": "Invalid metadata response from Meta"}
 
                 download_url = meta_data.get("url")
                 if not download_url:
-                    logger.error(f"[META MEDIA] No download URL returned for media_id={media_id}")
+                    logger.error("[META MEDIA] No download URL returned.")
                     return {"success": False, "error": "No download URL returned by Meta"}
+                if not _is_trusted_meta_media_url(download_url):
+                    logger.error("[META MEDIA] Rejected an untrusted media download host.")
+                    return {"success": False, "error": "Untrusted media download URL"}
+
+                try:
+                    declared_size = int(meta_data.get("file_size", 0) or 0)
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "Invalid media size returned by Meta"}
+                if declared_size < 0 or declared_size > config.MAX_UPLOAD_SIZE:
+                    return {"success": False, "error": "Media exceeds the configured upload limit"}
 
                 declared_mime = meta_data.get("mime_type")
 
                 # Step 2: Download raw binary from returned download URL using Bearer token
                 bin_res = client.get(download_url, headers=headers)
                 if bin_res.status_code != 200:
-                    logger.error(f"[META MEDIA] Binary download failed for media_id={media_id} (status: {bin_res.status_code})")
-                    return {"success": False, "error": f"Media binary download failed with HTTP {bin_res.status_code}"}
+                    retryable = bin_res.status_code == 429 or bin_res.status_code >= 500
+                    logger.warning("[META MEDIA] Binary download failed (HTTP %d).", bin_res.status_code)
+                    return {
+                        "success": False,
+                        "retryable": retryable,
+                        "error": f"Media binary download failed with HTTP {bin_res.status_code}",
+                    }
 
                 content = bin_res.content
 
@@ -469,7 +537,7 @@ class WhatsAppService:
                 media_id=media_id
             )
 
-            logger.info(f"[META MEDIA] Successfully retrieved, validated, and stored media_id={media_id} (size: {len(content)} bytes)")
+            logger.info("[META MEDIA] Image retrieved, validated, and stored (%d bytes).", len(content))
             return {
                 "success": True,
                 "storage_ref": storage_ref,
@@ -480,14 +548,17 @@ class WhatsAppService:
             }
 
         except MediaValidationError as e:
-            logger.warning(f"[META MEDIA] Validation rejected media_id={media_id}: {str(e)}")
+            logger.warning("[META MEDIA] Validation rejected image: %s", str(e))
             return {"success": False, "error": str(e)}
         except httpx.TimeoutException:
-            logger.error(f"[META MEDIA] Request timed out while retrieving media_id={media_id}")
-            return {"success": False, "error": "Connection timed out contacting Meta Graph API"}
+            logger.warning("[META MEDIA] Request timed out while retrieving image.")
+            return {"success": False, "retryable": True, "error": "Connection timed out contacting Meta Graph API"}
+        except httpx.RequestError as e:
+            logger.warning("[META MEDIA] Request failed (%s).", type(e).__name__)
+            return {"success": False, "retryable": True, "error": "Could not retrieve image from Meta"}
         except Exception as e:
-            logger.error(f"[META MEDIA] Unexpected failure handling media_id={media_id}: {type(e).__name__}")
-            return {"success": False, "error": "Internal error processing media binary"}
+            logger.error("[META MEDIA] Unexpected failure processing image (%s).", type(e).__name__)
+            return {"success": False, "error": "Internal error processing media"}
 
     @staticmethod
     def handle_incoming_message(
@@ -506,6 +577,7 @@ class WhatsAppService:
         lang = citizen.preferred_language or "mr"
         strings = TEXTS.get(lang, TEXTS["mr"])
         clean_text = (text_body or "").strip()
+        media_url = (media_url or "").strip()
 
         # ----------------------------------------------------
         # 1. Household QR Code Registration (e.g. JOIN SHP-W12-H1042)
@@ -539,13 +611,29 @@ class WhatsAppService:
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
             return {"status": "unauthorized_prompt", "reply": reply}
 
+        if citizen.conversation_state == "AWAITING_LOCATION" and message_type == "text":
+            reply = strings["ask_location"]
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {"status": "awaiting_location", "reply": reply}
+
         # ----------------------------------------------------
         # 3. Multi-Step Reporting State Machine: Photo Ingestion
         # ----------------------------------------------------
         if message_type == "image" or "http" in media_url or media_id:
             if media_id:
+                pending = json.loads(citizen.pending_complaint_data or "{}")
+                if (
+                    citizen.conversation_state == "AWAITING_LOCATION"
+                    and pending.get("media_id") == media_id
+                ):
+                    reply = strings["ask_location"]
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                    return {"status": "awaiting_location", "reply": reply, "image_url": pending["image_url"]}
+
                 media_res = WhatsAppService.fetch_and_store_meta_media(media_id)
                 if not media_res.get("success"):
+                    if media_res.get("retryable"):
+                        raise RetryableWhatsAppError("Meta image retrieval temporarily failed")
                     reply = strings.get("image_error")
                     WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
                     return {"status": "media_error", "reply": reply, "error": media_res.get("error")}
@@ -587,6 +675,23 @@ class WhatsAppService:
         # 4. Multi-Step Reporting State Machine: Location Pin Ingestion
         # ----------------------------------------------------
         if message_type == "location" or (latitude is not None and longitude is not None):
+            try:
+                lat_val = float(latitude)
+                lng_val = float(longitude)
+                valid_location = (
+                    math.isfinite(lat_val)
+                    and math.isfinite(lng_val)
+                    and -90 <= lat_val <= 90
+                    and -180 <= lng_val <= 180
+                )
+            except (TypeError, ValueError):
+                valid_location = False
+
+            if not valid_location:
+                reply = strings["invalid_location"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "invalid_location", "reply": reply}
+
             # Recovery Check: If this inbound message already created a complaint (e.g. post-commit failure retry),
             # recover and return the original confirmation without repeating business side-effects or re-prompting.
             if message_id:
@@ -632,9 +737,6 @@ class WhatsAppService:
 
             waste_type = pending.get("waste_type", "Garbage Overflow")
 
-            lat_val = latitude if latitude is not None else 21.3487
-            lng_val = longitude if longitude is not None else 74.8812
-
             # Resolve matching registered citizen User (if unambiguous phone match exists)
             citizen_user = WhatsAppService.find_matching_citizen_user(db, citizen.phone_number)
             citizen_user_id = citizen_user.id if citizen_user else None
@@ -670,6 +772,7 @@ class WhatsAppService:
                     new_complaint = Complaint(
                         tracking_number=ticket_num,
                         citizen_id=citizen_user_id,
+                        whatsapp_citizen_id=citizen.id,
                         ward=citizen.ward,
                         location_address=f"{citizen.ward}, Shirpur (Geotagged via WhatsApp)",
                         latitude=lat_val,
@@ -764,7 +867,13 @@ class WhatsAppService:
 
         # Option 2: Track Complaints
         if clean_text == "2" or "track" in lowered or "स्थिती" in lowered:
-            complaints = db.query(Complaint).filter(Complaint.ward == citizen.ward).order_by(Complaint.id.desc()).limit(3).all()
+            identity_filters = [Complaint.whatsapp_citizen_id == citizen.id]
+            citizen_user = WhatsAppService.find_matching_citizen_user(db, citizen.phone_number)
+            if citizen_user:
+                identity_filters.append(Complaint.citizen_id == citizen_user.id)
+            complaints = db.query(Complaint).filter(
+                or_(*identity_filters)
+            ).order_by(Complaint.id.desc()).limit(3).all()
             if not complaints:
                 reply = strings["no_complaints"]
             else:

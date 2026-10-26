@@ -8,6 +8,12 @@ class Complaint(Base):
     id = Column(Integer, primary_key=True, index=True)
     tracking_number = Column(String(30), unique=True, index=True, nullable=False)
     citizen_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    whatsapp_citizen_id = Column(
+        Integer,
+        ForeignKey("whatsapp_citizens.id"),
+        nullable=True,
+        index=True,
+    )
     ward = Column(String(50), nullable=False)
     location_address = Column(String(255), nullable=False)
     latitude = Column(Float, nullable=True)

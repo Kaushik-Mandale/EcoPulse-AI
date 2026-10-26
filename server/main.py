@@ -1,8 +1,9 @@
 import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from server.database.db import engine, Base, SessionLocal
+from server.database.db import engine, Base, SessionLocal, ensure_complaints_schema
 import server.models  # Import all SQLAlchemy models to register them with Base.metadata
 from server.routes import health, item, auth, complaint, driver, admin, uploads, whatsapp
 from server.services.auth_service import AuthService
@@ -10,25 +11,40 @@ from server.utils.config import config, normalize_environment
 
 from contextlib import asynccontextmanager
 
+# Configure structured logging early so all startup messages are visible in Render logs
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+config.validate_production_settings()
+
 # Create database tables automatically if they don't exist
 Base.metadata.create_all(bind=engine)
+
+# Apply idempotent startup migrations for tables added after initial schema creation
 from server.models.whatsapp_session import ensure_whatsapp_processed_messages_schema
 ensure_whatsapp_processed_messages_schema(engine)
+ensure_complaints_schema(engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Enforce secure configuration in production
+    config.reload()
     env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", config.ENV)))
-    secret_key = os.getenv("SECRET_KEY", config.SECRET_KEY).strip()
+    from server.database.db import safe_database_url_for_logging, SQLALCHEMY_DATABASE_URL
+    logger.info(
+        "[STARTUP] EcoPulse AI starting | env=%s | db=%s",
+        env,
+        safe_database_url_for_logging(SQLALCHEMY_DATABASE_URL),
+    )
     if env == "production":
-        if not secret_key:
-            raise RuntimeError("CRITICAL CONFIGURATION ERROR: SECRET_KEY must be set to a secure, non-empty value in production environment.")
-        if not config.CORS_ORIGINS:
-            raise RuntimeError("CRITICAL CONFIGURATION ERROR: CORS_ORIGINS (or BACKEND_CORS_ORIGINS) must be set to a non-empty list of allowed origins in production environment.")
+        config.validate_production_settings()
 
     db = SessionLocal()
     try:
-        AuthService.seed_demo_users(db)
+        if AuthService.should_seed_demo_users():
+            AuthService.seed_demo_users(db)
         from sqlalchemy import text
         tables = ['tasks', 'complaints', 'users', 'items', 'notifications', 'fuel_logs', 'whatsapp_citizens', 'whatsapp_processed_messages']
         for t in tables:

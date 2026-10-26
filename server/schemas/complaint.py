@@ -24,5 +24,12 @@ class ComplaintResponse(BaseModel):
     image_url: Optional[str] = None
     ai_status: str = "Verified"
     ai_confidence: float = 0.95
+    tracking_token: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class ComplaintImageResponse(BaseModel):
+    url: str
+    complaint_id: str
+    storage_type: str
+    expires_in: Optional[int] = None

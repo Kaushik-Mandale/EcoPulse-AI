@@ -74,6 +74,86 @@ def test_scope_a_jwt_tampered_or_wrong_secret_rejected(monkeypatch):
         db.close()
 
 
+def test_scope_a_database_connection_validation_executes_select_1():
+    """Database validation opens a live connection and executes a minimal query, without exposing secrets."""
+    from server.database import db as db_module
+
+    class DummyConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, statement):
+            assert "SELECT 1" in str(statement)
+            return object()
+
+    class DummyEngine:
+        url = "sqlite:///./ecopulse-test.db"
+
+        def connect(self):
+            return DummyConnection()
+
+    db_module.validate_database_connection(DummyEngine())
+
+
+def test_scope_a_database_connection_failure_hides_credentials():
+    from server.database import db as db_module
+
+    secret = "do-not-display-this"
+
+    class BrokenEngine:
+        url = f"postgresql://test-user:{secret}@db.example.invalid/test_db"
+
+        def connect(self):
+            raise RuntimeError(f"connection rejected; password={secret}")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        db_module.validate_database_connection(BrokenEngine())
+
+    assert secret not in str(exc_info.value)
+    assert "***" in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__
+
+
+def test_scope_a_demo_seed_disabled_in_production(monkeypatch):
+    """Production mode must never create demo accounts implicitly at startup or login."""
+    from server.services.auth_service import AuthService
+
+    monkeypatch.setenv("ENV", "production")
+    demo_emails = ["priya@cityswap.io", "ramesh@cityswap.io", "collector@cityswap.io", "admin@cityswap.io"]
+
+    db = SessionLocal()
+    try:
+        before = db.query(User).filter(User.email.in_(demo_emails)).count()
+        AuthService.seed_demo_users(db)
+        after = db.query(User).filter(User.email.in_(demo_emails)).count()
+        assert after == before
+        assert AuthService.should_seed_demo_users() is False
+    finally:
+        db.close()
+
+
+def test_scope_a_demo_seed_allowed_in_dev_and_test(monkeypatch):
+    """Development and test environments keep explicit demo seeding enabled for local workflows."""
+    from server.services.auth_service import AuthService
+
+    db = SessionLocal()
+    try:
+        for env_name in ("development", "test"):
+            monkeypatch.setenv("ENV", env_name)
+            demo_emails = ["priya@cityswap.io", "ramesh@cityswap.io", "collector@cityswap.io", "admin@cityswap.io"]
+            before = db.query(User).filter(User.email.in_(demo_emails)).count()
+            AuthService.seed_demo_users(db)
+            after = db.query(User).filter(User.email.in_(demo_emails)).count()
+            assert after >= before
+            assert AuthService.should_seed_demo_users() is True
+    finally:
+        db.close()
+
+
 # ============================================================================
 # Scope B: Driver Task Ownership and Status Validation Tests
 # ============================================================================
@@ -1145,6 +1225,7 @@ def test_scope_gc_production_cors_origins_missing_raises(monkeypatch):
     from server.main import lifespan, app
     from server.utils.config import config
 
+    monkeypatch.setattr(config, "ENV", config.ENV)
     monkeypatch.setenv("ENV", "production")
     monkeypatch.setenv("SECRET_KEY", "secure-production-secret-key-32-chars-min!!")
     monkeypatch.setenv("CORS_ORIGINS", "")
@@ -1164,6 +1245,7 @@ def test_scope_gc_production_cors_origins_configured_succeeds(monkeypatch):
     from server.main import lifespan, app
     from server.utils.config import config
 
+    monkeypatch.setattr(config, "ENV", config.ENV)
     monkeypatch.setenv("ENV", "production")
     monkeypatch.setenv("SECRET_KEY", "secure-production-secret-key-32-chars-min!!")
     monkeypatch.setenv("CORS_ORIGINS", "https://city-swap-frontend.onrender.com, https://custom-domain.org")

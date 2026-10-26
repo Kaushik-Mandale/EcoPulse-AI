@@ -87,6 +87,19 @@ def test_authorized_dashboard_navigation():
 def test_photo_and_location_complaint_flow():
     test_phone = "919988776655"
 
+    # Authorize the citizen explicitly in this test so it is self-contained and does not
+    # depend on previous tests mutating shared database state.
+    res_auth = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={
+            "phone": test_phone,
+            "message": "JOIN SHP-W14-H2045",
+            "type": "text"
+        }
+    )
+    assert res_auth.status_code == 200
+    assert res_auth.json()["status"] == "authorized"
+
     # Step 1: Send Photo
     res_photo = client.post(
         "/api/whatsapp/simulate-incoming",
@@ -116,6 +129,228 @@ def test_photo_and_location_complaint_flow():
     assert data["status"] == "complaint_created"
     assert "SHP-2026-W14" in data["ticket"]
     assert "+20" in data["reply"]
+
+
+def test_text_followup_while_waiting_for_location_repeats_location_prompt():
+    import uuid
+
+    phone = f"91988{uuid.uuid4().int % 1000000000:09d}"
+    auth = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={"phone": phone, "message": "JOIN SHP-W12-HFOLLOWUP", "type": "text"},
+    )
+    assert auth.status_code == 200
+
+    photo = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={
+            "phone": phone,
+            "message": "",
+            "type": "image",
+            "media_url": "/uploads/whatsapp/test-followup.jpg",
+        },
+    )
+    assert photo.status_code == 200
+    assert photo.json()["status"] == "awaiting_location"
+
+    followup = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={"phone": phone, "message": "How do I share my location?", "type": "text"},
+    )
+    assert followup.status_code == 200
+    assert followup.json()["status"] == "awaiting_location"
+    assert "Location" in followup.json()["reply"]
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude"),
+    [(91, 181), (None, None), ("nan", 0), (21.3, None)],
+)
+def test_invalid_location_does_not_create_complaint_or_use_fallback_coordinates(
+    latitude, longitude
+):
+    import uuid
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.whatsapp_session import WhatsAppCitizen
+
+    phone = f"91989{uuid.uuid4().int % 1000000000:09d}"
+    household = f"SHP-W12-H{uuid.uuid4().hex[:8]}"
+    auth = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={"phone": phone, "message": f"JOIN {household}", "type": "text"},
+    )
+    assert auth.status_code == 200
+    photo = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={
+            "phone": phone,
+            "message": "",
+            "type": "image",
+            "media_url": "/uploads/whatsapp/test-invalid-location.jpg",
+        },
+    )
+    assert photo.status_code == 200
+
+    invalid = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={
+            "phone": phone,
+            "message": "",
+            "type": "location",
+            "latitude": latitude,
+            "longitude": longitude,
+        },
+    )
+    assert invalid.status_code == 200
+    assert invalid.json()["status"] == "invalid_location"
+
+    db = SessionLocal()
+    try:
+        citizen = db.query(WhatsAppCitizen).filter_by(phone_number=phone).one()
+        assert citizen.conversation_state == "AWAITING_LOCATION"
+        assert citizen.pending_complaint_data
+        assert db.query(Complaint).filter(Complaint.description.contains(household)).count() == 0
+    finally:
+        db.query(WhatsAppCitizen).filter_by(phone_number=phone).delete()
+        db.commit()
+        db.close()
+
+
+def test_whatsapp_tracking_only_returns_the_current_household_complaints(monkeypatch):
+    import uuid
+    from server.database.db import SessionLocal
+    from server.models.complaint import Complaint
+    from server.models.whatsapp_session import WhatsAppCitizen
+
+    run_id = uuid.uuid4().hex[:10]
+    phone = f"91{int(run_id, 16) % 10**10:010d}"
+    own_ticket = f"SHP-2026-W12-OWN{run_id}"
+    other_ticket = f"SHP-2026-W12-OTHER{run_id}"
+    sent = []
+    monkeypatch.setattr(
+        WhatsAppService,
+        "send_meta_whatsapp",
+        lambda phone, message, *args, **kwargs: sent.append(message),
+    )
+
+    db = SessionLocal()
+    try:
+        citizen = WhatsAppCitizen(
+            phone_number=phone,
+            household_id=f"SHP-W12-H{run_id}",
+            ward="Ward 12",
+            is_authorized=True,
+        )
+        other_citizen = WhatsAppCitizen(
+            phone_number=f"91{(int(run_id, 16) + 1) % 10**10:010d}",
+            household_id=f"SHP-W12-HOTHER{run_id}",
+            ward="Ward 12",
+            is_authorized=True,
+        )
+        db.add_all([citizen, other_citizen])
+        db.flush()
+        db.add_all([
+            Complaint(
+                tracking_number=own_ticket,
+                whatsapp_citizen_id=citizen.id,
+                ward="Ward 12",
+                location_address="Ward 12",
+                waste_type="Mixed Waste",
+                status="Pending",
+            ),
+            Complaint(
+                tracking_number=other_ticket,
+                whatsapp_citizen_id=other_citizen.id,
+                ward="Ward 12",
+                location_address="Ward 12",
+                waste_type="Mixed Waste",
+                status="Pending",
+            ),
+        ])
+        db.commit()
+
+        result = WhatsAppService.handle_incoming_message(
+            db=db,
+            sender_phone=phone,
+            message_type="text",
+            text_body="2",
+        )
+        assert result["status"] == "track_complaints"
+        assert own_ticket in sent[-1]
+        assert other_ticket not in sent[-1]
+    finally:
+        db.query(Complaint).filter(
+            Complaint.tracking_number.in_([own_ticket, other_ticket])
+        ).delete(synchronize_session=False)
+        db.query(WhatsAppCitizen).filter(
+            WhatsAppCitizen.phone_number.in_([
+                phone,
+                f"91{(int(run_id, 16) + 1) % 10**10:010d}",
+            ])
+        ).delete(synchronize_session=False)
+        db.commit()
+        db.close()
+
+
+def test_outbound_meta_message_uses_cloud_api_and_surfaces_failure_safely(monkeypatch, caplog):
+    from server.services.whatsapp_service import RetryableWhatsAppError
+
+    token = "mock-outbound-token-never-log"
+    monkeypatch.setattr(config, "WHATSAPP_TOKEN", token)
+    monkeypatch.setattr(config, "WHATSAPP_PHONE_NUMBER_ID", "1234567890")
+
+    def successful_post(self, url, headers, json):
+        assert url.endswith("/1234567890/messages")
+        assert headers["Authorization"] == f"Bearer {token}"
+        assert json["messaging_product"] == "whatsapp"
+        assert json["to"] == "919876543210"
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"messages": [{"id": "wamid.mock-outbound"}]},
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", successful_post)
+    response = WhatsAppService.send_meta_whatsapp("919876543210", "Test response")
+    assert response["messages"][0]["id"] == "wamid.mock-outbound"
+
+    def failed_post(self, url, headers, json):
+        return httpx.Response(
+            401,
+            request=httpx.Request("POST", url),
+            json={"error": {"message": token}},
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", failed_post)
+    with pytest.raises(RetryableWhatsAppError):
+        WhatsAppService.send_meta_whatsapp("919876543210", "Test response")
+    assert token not in caplog.text
+
+
+def test_meta_media_metadata_cannot_redirect_bearer_token_to_untrusted_host(monkeypatch):
+    token = "mock-media-token"
+    monkeypatch.setattr(config, "WHATSAPP_TOKEN", token)
+    requested = []
+
+    def fake_get(self, url, headers):
+        requested.append((url, headers))
+        return httpx.Response(
+            200,
+            request=httpx.Request("GET", url),
+            json={
+                "url": "https://attacker.example/collect",
+                "mime_type": "image/jpeg",
+                "file_size": len(SAMPLE_JPEG),
+            },
+        )
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    result = WhatsAppService.fetch_and_store_meta_media("test-untrusted-media-id")
+    assert result["success"] is False
+    assert "Untrusted" in result["error"]
+    assert len(requested) == 1
+    assert "graph.facebook.com" in requested[0][0]
 
 def test_generate_household_qr():
     login_res = client.post("/api/auth/login", json={
@@ -585,7 +820,7 @@ def test_meta_media_pipeline_failures_handled_safely():
         config.WHATSAPP_TOKEN = orig_token
 
 
-def test_meta_webhook_image_to_location_real_pipeline():
+def test_meta_webhook_image_to_location_real_pipeline(monkeypatch):
     # K. Pending complaint data contains real stored image reference
     # L. Location message creates complaint using stored image reference
     # M. Unsplash fallback is NOT used
@@ -595,36 +830,36 @@ def test_meta_webhook_image_to_location_real_pipeline():
     orig_token = config.WHATSAPP_TOKEN
     config.META_APP_SECRET = "webhook_real_pipeline_secret"
     config.WHATSAPP_TOKEN = "webhook_real_pipeline_meta_token"
+    outbound_messages = []
+    monkeypatch.setattr(
+        WhatsAppService,
+        "send_meta_whatsapp",
+        lambda phone, message, *args, **kwargs: (
+            outbound_messages.append((phone, message)) or {"status": "simulated"}
+        ),
+    )
     created_path = None
-    media_id = "wamid_real_pipeline_media_555"
-    sender = "919988776655"
     # Use unique message IDs per test run to avoid idempotency false-positives
     run_id = uuid.uuid4().hex[:12]
+    media_id = f"wamid_real_pipeline_media_{run_id}"
+    sender = f"91{int(run_id, 16) % 10**10:010d}"
     img_msg_id = f"wamid.img_event_{run_id}"
     loc_msg_id = f"wamid.loc_event_{run_id}"
+    created_complaint_id = None
 
     try:
         # -- Setup: Pre-create & authorize the citizen in DB --
         from server.database.db import SessionLocal as _SessionLocal
         _setup_db = _SessionLocal()
         try:
-            existing = _setup_db.query(_WhatsAppCitizenModel).filter(
-                _WhatsAppCitizenModel.phone_number == sender
-            ).first()
-            if existing:
-                existing.is_authorized = True
-                existing.household_id = "SHP-W99-H5555"
-                existing.ward = "Ward 99"
-                existing.conversation_state = "IDLE"
-            else:
-                _setup_db.add(_WhatsAppCitizenModel(
-                    phone_number=sender,
-                    full_name="Test Citizen Real Pipeline",
-                    ward="Ward 99",
-                    household_id="SHP-W99-H5555",
-                    is_authorized=True,
-                    conversation_state="IDLE",
-                ))
+            _setup_db.add(_WhatsAppCitizenModel(
+                phone_number=sender,
+                full_name="Test Citizen Real Pipeline",
+                ward="Ward 99",
+                household_id=f"SHP-W99-H{run_id}",
+                is_authorized=True,
+                conversation_state="IDLE",
+            ))
             _setup_db.commit()
         finally:
             _setup_db.close()
@@ -682,6 +917,8 @@ def test_meta_webhook_image_to_location_real_pipeline():
             assert "unsplash.com" not in stored_url
             assert pending["media_id"] == media_id
             assert pending["mime_type"] == "image/jpeg"
+            assert outbound_messages[-1][0] == sender
+            assert "Location" in outbound_messages[-1][1]
 
             filename = os.path.basename(stored_url)
             created_path = os.path.join(get_media_storage().upload_dir, filename)
@@ -732,12 +969,19 @@ def test_meta_webhook_image_to_location_real_pipeline():
         # Check Complaint created in DB (L, M)
         db = SessionLocal()
         try:
-            complaint = db.query(Complaint).order_by(Complaint.id.desc()).first()
+            complaint = db.query(Complaint).filter(
+                Complaint.whatsapp_citizen_id == citizen.id
+            ).one()
+            created_complaint_id = complaint.id
             assert complaint is not None
             assert complaint.image_url == stored_url
             assert "unsplash" not in complaint.image_url
             assert complaint.latitude == 21.3487
             assert complaint.longitude == 74.8812
+            assert complaint.citizen_id is None
+            assert complaint.created_at is not None
+            assert complaint.status == "Pending"
+            assert complaint.tracking_number in outbound_messages[-1][1]
         finally:
             db.close()
 
@@ -749,6 +993,14 @@ def test_meta_webhook_image_to_location_real_pipeline():
         # Cleanup: remove test citizen and processed message records to avoid pollution
         _cleanup_db = SessionLocal()
         try:
+            if created_complaint_id:
+                from server.models.task import DriverTask
+                _cleanup_db.query(DriverTask).filter(
+                    DriverTask.complaint_id == created_complaint_id
+                ).delete(synchronize_session=False)
+                _cleanup_db.query(Complaint).filter(
+                    Complaint.id == created_complaint_id
+                ).delete(synchronize_session=False)
             _cleanup_db.query(_WhatsAppCitizenModel).filter(
                 _WhatsAppCitizenModel.phone_number == sender
             ).delete()
@@ -1592,7 +1844,7 @@ def test_webhook_transient_failure_then_successful_retry():
         msg_record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
         assert msg_record is not None
         assert msg_record.status == "FAILED"
-        assert "Transient DB connection glitch" in (msg_record.error_message or "")
+        assert msg_record.error_message == "RuntimeError"
 
         # 2. No complaint or task created
         assert db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).count() == 0
@@ -1678,7 +1930,7 @@ def test_webhook_processing_failure_records_failed_status_with_error_detail():
         record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
         assert record is not None
         assert record.status == "FAILED"
-        assert "Custom processing failure" in (record.error_message or "")
+        assert record.error_message == "ValueError"
     finally:
         config.META_APP_SECRET = orig_secret
         db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()

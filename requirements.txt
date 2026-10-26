@@ -10,3 +10,5 @@ python-jose[cryptography]
 python-multipart
 httpx
 pytest
+boto3
+supabase

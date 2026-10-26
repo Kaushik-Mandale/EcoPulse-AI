@@ -297,11 +297,14 @@ DATABASE_URL="postgresql://your_db_user:your_db_password@ep-your-database-id.reg
 
 # WhatsApp Cloud API (Optional - For Live Meta Webhook)
 WHATSAPP_PROVIDER="meta"
-WHATSAPP_TOKEN="your_meta_system_user_token"
-WHATSAPP_PHONE_NUMBER_ID="your_meta_phone_number_id"
-WHATSAPP_VERIFY_TOKEN="ecopulse_whatsapp_token_2026"
-WHATSAPP_BUSINESS_PHONE="+919876543210"
+META_APP_SECRET=
+WHATSAPP_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_VERIFY_TOKEN=
+WHATSAPP_BUSINESS_PHONE=
 ```
+Configure secret values privately in ignored `server/.env` or the deployment's
+environment settings. Never use a checked-in example value as a production secret.
 
 > [!CAUTION]
 > **Security Notice**: Never commit `server/.env` to public version control. It is explicitly listed in `.gitignore` to prevent credential exposure.
@@ -312,15 +315,15 @@ WHATSAPP_BUSINESS_PHONE="+919876543210"
 
 ### Start Backend Development Server
 ```powershell
-# Ensure myenv is activated:
-.\myenv\Scripts\activate
-
-# Launch Uvicorn with hot reloading:
-uvicorn server.main:app --reload --port 8000
-
-# OR run directly via module entry point:
-python -m server.main
+$localDb = Join-Path $env:TEMP "ecopulse-local.sqlite3"
+$env:ENV = "development"
+$env:DATABASE_URL = "sqlite:///$($localDb -replace '\\','/')"
+$env:WHATSAPP_TOKEN = ""
+$env:WHATSAPP_PHONE_NUMBER_ID = ""
+& ".\server\myenv\Scripts\python.exe" -m uvicorn server.main:app --reload --port 8000
 ```
+This explicitly selects local SQLite and disables outbound WhatsApp delivery. Configure
+Meta credentials privately only when ready to test with an authorized Meta test number.
 - **Backend API**: `http://127.0.0.1:8000`
 - **Swagger Interactive API Docs**: `http://127.0.0.1:8000/docs`
 - **ReDoc Alternative Docs**: `http://127.0.0.1:8000/redoc`
@@ -334,10 +337,15 @@ npm run dev
 
 ### Run Backend Automated Tests (Pytest)
 ```powershell
-.\myenv\Scripts\activate
-python -m pytest server/tests
+$testDb = Join-Path $env:TEMP ("ecopulse-tests-" + [guid]::NewGuid().ToString("N") + ".sqlite3")
+$env:ENV = "test"
+$env:DATABASE_URL = "sqlite:///$($testDb -replace '\\','/')"
+$env:WHATSAPP_TOKEN = ""
+$env:WHATSAPP_PHONE_NUMBER_ID = ""
+& ".\server\myenv\Scripts\python.exe" -m pytest -q
 ```
-*(Runs 21 automated test cases against live endpoints with 100% pass rate).*
+This uses a fresh temporary SQLite database; Meta requests are mocked by the test
+suite. Do not run tests with a shared or production `DATABASE_URL`.
 
 ### Build & Lint Frontend
 ```bash
@@ -421,12 +429,38 @@ To connect the platform to Meta's live **WhatsApp Cloud API**:
 
 1. Log into the [Meta for Developers Portal](https://developers.facebook.com/).
 2. Create an App of type **Business** and add the **WhatsApp** product.
-3. Configure the Webhook under **WhatsApp ➔ Configuration**:
-   - **Callback URL**: `https://<your-deployed-domain>/api/whatsapp/webhook`
-   - **Verify Token**: `ecopulse_whatsapp_token_2026` *(or your custom token in `.env`)*
-4. Under **Webhook Fields**, subscribe to `messages`.
-5. Add your **System User Access Token** and **Phone Number ID** to `server/.env`.
-6. For detailed troubleshooting, refer to [`WHATSAPP_SETUP_GUIDE.txt`](file:///c:/Users/Hi/Desktop/CITY_SWAP/WHATSAPP_SETUP_GUIDE.txt).
+3. Configure these variable **names** in the backend environment; keep all values private:
+   `WHATSAPP_PROVIDER`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
+   `WHATSAPP_VERIFY_TOKEN`, `META_APP_SECRET`, `WHATSAPP_GRAPH_API_VERSION`,
+   `WHATSAPP_BUSINESS_PHONE`, `DATABASE_URL`, `SECRET_KEY`, `ENV`, and
+   `CORS_ORIGINS`. Use a strong, unique verify token; there is no production default.
+4. Configure the Webhook under **WhatsApp ➔ Configuration**:
+   - **Callback URL**: `https://<your-public-https-host>/api/whatsapp/webhook`
+   - **Verify Token**: the private `WHATSAPP_VERIFY_TOKEN` configured for this backend.
+5. Under Webhook Fields, subscribe to `messages`; ensure the app is authorized for
+   WhatsApp message webhooks and the phone number is connected to the app.
+6. Set the Meta App Secret, a WhatsApp Cloud API access token, and the exact
+   Phone Number ID in the backend environment. Do not put secrets in source control.
+7. Existing databases need the following reviewed, additive migration before WhatsApp
+   complaint writes can include the sender reference. Apply it during a maintenance
+   window after a backup; do not rely on application startup to mutate schema:
+
+   ```sql
+   ALTER TABLE complaints
+   ADD COLUMN whatsapp_citizen_id INTEGER NULL
+   REFERENCES whatsapp_citizens(id);
+   CREATE INDEX ix_complaints_whatsapp_citizen_id
+   ON complaints (whatsapp_citizen_id);
+   ```
+
+   New local databases receive the column from the SQLAlchemy model.
+8. During household onboarding, residents must send the household QR payload
+   (`JOIN SHP-W<ward>-H<household>`) once. This preserves the current authorization
+   rule; do not disable the gatekeeper to test the complaint flow.
+9. For a local backend, use a temporary public HTTPS tunnel only for a controlled
+   test account and point Meta at the tunnel URL above. The webhook is not reachable
+   from Meta at `localhost`.
+10. For detailed troubleshooting, see [`WHATSAPP_SETUP_GUIDE.txt`](./WHATSAPP_SETUP_GUIDE.txt).
 
 For the optional Twilio provider, set `WHATSAPP_PROVIDER=twilio`, configure
 `TWILIO_AUTH_TOKEN`, and set `TWILIO_WEBHOOK_URL` to the exact public HTTPS
@@ -442,40 +476,20 @@ that it exactly matches the callback URL configured in Twilio. The repository's
 
 ## 🧪 Testing & Quality Verification
 
-This codebase includes full test coverage for core business logic, authentication flows, and API contracts.
+The test suite covers core business logic, authentication flows, API contracts, and WhatsApp webhook behavior.
 
 ### Running Pytest
 ```powershell
-.\myenv\Scripts\activate
-python -m pytest server/tests -v
+$testDb = Join-Path $env:TEMP ("ecopulse-tests-" + [guid]::NewGuid().ToString("N") + ".sqlite3")
+$env:ENV = "test"
+$env:DATABASE_URL = "sqlite:///$($testDb -replace '\\','/')"
+$env:WHATSAPP_TOKEN = ""
+$env:WHATSAPP_PHONE_NUMBER_ID = ""
+& ".\server\myenv\Scripts\python.exe" -m pytest -q
 ```
 
-### Verified Test Results:
-```text
-server/tests/test_admin_api.py::test_admin_metrics PASSED
-server/tests/test_admin_api.py::test_admin_drivers_list PASSED
-server/tests/test_admin_api.py::test_admin_bins_list PASSED
-server/tests/test_admin_api.py::test_admin_broadcast_notification PASSED
-server/tests/test_admin_api.py::test_admin_analytics_summary PASSED
-server/tests/test_api.py::test_health_check PASSED
-server/tests/test_api.py::test_get_items_empty_or_seeded PASSED
-server/tests/test_api.py::test_create_and_fetch_item PASSED
-server/tests/test_api.py::test_auth_flow PASSED
-server/tests/test_api.py::test_create_complaint PASSED
-server/tests/test_api.py::test_track_complaint PASSED
-server/tests/test_api.py::test_forgot_password PASSED
-server/tests/test_api.py::test_otp_flow PASSED
-server/tests/test_api.py::test_public_notifications PASSED
-server/tests/test_whatsapp_api.py::test_webhook_verification PASSED
-server/tests/test_whatsapp_api.py::test_webhook_unauthorized PASSED
-server/tests/test_whatsapp_api.py::test_incoming_text_message PASSED
-server/tests/test_whatsapp_api.py::test_menu_command PASSED
-server/tests/test_whatsapp_api.py::test_location_handling PASSED
-server/tests/test_whatsapp_api.py::test_photo_handling PASSED
-server/tests/test_whatsapp_api.py::test_language_switch PASSED
-
-================== 21 passed, 1 warning in 121.09s ==================
-```
+Most recently verified locally: **159 passed, 7 warnings** on a fresh temporary
+SQLite database. This is not evidence of live Meta or production integration.
 
 ---
 
