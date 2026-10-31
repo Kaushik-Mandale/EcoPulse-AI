@@ -1,0 +1,15 @@
+fastapi==0.142.2
+uvicorn[standard]
+pydantic
+python-dotenv
+sqlalchemy
+psycopg2-binary
+bcrypt
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+httpx
+pytest
+boto3
+supabase
+

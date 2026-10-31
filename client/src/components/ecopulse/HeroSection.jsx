@@ -38,7 +38,7 @@ const HeroSection = () => {
 
           {/* Subtitle */}
           <p className="text-gray-700 text-sm md:text-[15px] leading-relaxed max-w-lg font-semibold">
-            EcoPulse AI connects Citizens, Drivers, Collectors and Municipalities on one intelligent platform to make waste management efficient, transparent and sustainable. Piloting for 27 wards of Shirpur Municipal Council.
+            EcoPulse AI connects Citizens, Drivers, Collectors and Municipalities on one intelligent platform to make waste management efficient, transparent and sustainable. Piloting for 27 wards of Cities Municipal Corp.
           </p>
 
           {/* Action CTAs */}
@@ -120,7 +120,7 @@ const HeroSection = () => {
           <div className="absolute -top-3 right-0 z-30 bg-white/95 backdrop-blur-xs border border-gray-200 shadow-md rounded-full w-32 h-32 p-3 flex flex-col items-center justify-center text-center">
             <span className="text-[10px] text-gray-500 font-medium">Piloting for</span>
             <span className="text-[12px] font-extrabold text-primary leading-tight">
-              Shirpur Municipal <br /> Council
+              Cities Municipal <br /> Corp.
             </span>
           </div>
 

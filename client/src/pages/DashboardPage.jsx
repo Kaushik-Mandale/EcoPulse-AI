@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchMyComplaints } from '../services/complaintService';
+import { BACKEND_BASE_URL } from '../services/api';
 import { getCurrentUser, logoutUser, updateUserProfile } from '../services/authService';
 import ProfileModal from '../components/ProfileModal';
 import ReportWasteModal from '../components/ReportWasteModal';
@@ -1025,7 +1026,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                     <img 
                       alt="Evidence" 
                       className="w-24 h-24 object-cover rounded-xl border border-slate-200" 
-                      src={selectedComplaint.image_url.startsWith('http') ? selectedComplaint.image_url : `http://localhost:8000${selectedComplaint.image_url}`} 
+                      src={selectedComplaint.image_url.startsWith('http') ? selectedComplaint.image_url : `${BACKEND_BASE_URL}${selectedComplaint.image_url}`} 
                     />
                   </div>
                 )}
