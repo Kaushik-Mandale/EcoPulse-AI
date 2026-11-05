@@ -92,6 +92,12 @@ class Config:
         self.TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
         self.TWILIO_WEBHOOK_URL: str = (os.getenv("TWILIO_WEBHOOK_URL", "") or "").strip()
 
+        # Municipality branding & configuration
+        self.MUNICIPALITY_NAME: str = os.getenv("MUNICIPALITY_NAME", "Dhule Municipal Waste Management")
+        self.MUNICIPALITY_NAME_MR: str = os.getenv("MUNICIPALITY_NAME_MR", "धुळे महानगरपालिका स्वच्छता व्यवस्थापन")
+        self.FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://ecopulse-ai-frontend.onrender.com/").rstrip("/") + "/"
+        self.TRACKING_PREFIX: str = os.getenv("TRACKING_PREFIX", "DHL-")
+
     @property
     def CORS_ORIGINS(self) -> list[str]:
         raw = os.getenv("CORS_ORIGINS", os.getenv("BACKEND_CORS_ORIGINS", "")).strip()

@@ -30,8 +30,9 @@ config.validate_production_settings()
 Base.metadata.create_all(bind=engine)
 
 # Apply idempotent startup migrations for tables added after initial schema creation
-from server.models.whatsapp_session import ensure_whatsapp_processed_messages_schema
+from server.models.whatsapp_session import ensure_whatsapp_processed_messages_schema, ensure_whatsapp_citizens_schema
 ensure_whatsapp_processed_messages_schema(engine)
+ensure_whatsapp_citizens_schema(engine)
 ensure_complaints_schema(engine)
 
 @asynccontextmanager

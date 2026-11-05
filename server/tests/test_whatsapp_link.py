@@ -329,3 +329,272 @@ class TestComplaintAssociationWithLinkedUser:
             assert "Dhule" in complaint.location_address
         finally:
             db.close()
+
+import hmac
+import json
+import random
+import uuid
+import hashlib
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from server.utils.config import config
+from server.services.whatsapp_service import WhatsAppService, _build_texts
+from server.services.whatsapp_link_service import WhatsAppLinkService
+from server.models.whatsapp_link_token import WhatsAppLinkToken
+from server.models.complaint import Complaint
+
+
+def _calc_sig(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+class TestWhatsAppWebhookRegression:
+    """Regression tests for incoming webhook messages, Dhule branding, and linking."""
+
+    def test_unlinked_sender_sends_hey(self):
+        wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "hey", "type": "text"}
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "not_linked"
+        assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
+        assert "https://ecopulse-ai-frontend.onrender.com/" in data["reply"]
+        assert "LINK <code>" in data["reply"]
+        assert "Shirpur" not in data["reply"]
+        assert "SHP" not in data["reply"]
+
+    def test_unlinked_sender_sends_arbitrary_text(self):
+        wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "When will the garbage truck arrive in my area?", "type": "text"}
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "not_linked"
+        assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
+        assert "https://ecopulse-ai-frontend.onrender.com/" in data["reply"]
+        assert "Shirpur" not in data["reply"]
+        assert "SHP" not in data["reply"]
+
+    def test_linked_citizen_sends_hey(self):
+        db = SessionLocal()
+        try:
+            user = _create_test_user(db, f"linked_hey_{uuid.uuid4().hex[:6]}@test.com", "citizen", "+919800000001")
+            code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
+            wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+            WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
+
+            res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "hey", "type": "text"}
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "menu_presented"
+            assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
+            # 9-option menu present
+            assert "1️⃣" in data["reply"]
+            assert "9️⃣" in data["reply"]
+            assert "Shirpur" not in data["reply"]
+            assert "SHP" not in data["reply"]
+        finally:
+            db.close()
+
+    def test_linked_citizen_sends_hello(self):
+        db = SessionLocal()
+        try:
+            user = _create_test_user(db, f"linked_hello_{uuid.uuid4().hex[:6]}@test.com", "citizen", "+919800000002")
+            code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
+            wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+            WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
+
+            res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "hello", "type": "text"}
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "menu_presented"
+            assert "1️⃣" in data["reply"]
+            assert "9️⃣" in data["reply"]
+            assert "Shirpur" not in data["reply"]
+            assert "SHP" not in data["reply"]
+        finally:
+            db.close()
+
+    def test_citizen_sends_link_with_valid_code(self):
+        db = SessionLocal()
+        try:
+            user = _create_test_user(db, f"valid_link_{uuid.uuid4().hex[:6]}@test.com", "citizen", "+919800000003")
+            code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
+            wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+
+            res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": f"LINK {code}", "type": "text"}
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["status"] == "linked"
+            assert "यशस्वीरित्या जोडले" in data["reply"]
+            assert "1️⃣" in data["reply"]
+            assert "9️⃣" in data["reply"]
+            assert "Shirpur" not in data["reply"]
+            assert "SHP" not in data["reply"]
+        finally:
+            db.close()
+
+    def test_citizen_sends_link_with_invalid_code(self):
+        wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "LINK invalid_token_xyz_12345678", "type": "text"}
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "link_failed"
+        assert "कालबाह्य" in res.json()["reply"] or "Invalid" in res.json()["reply"]
+        assert "https://ecopulse-ai-frontend.onrender.com/" in res.json()["reply"]
+
+    def test_citizen_sends_link_with_expired_code(self):
+        db = SessionLocal()
+        try:
+            user = _create_test_user(db, f"expired_link_{uuid.uuid4().hex[:6]}@test.com", "citizen", "+919800000004")
+            code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
+            # Force expiration
+            token_record = db.query(WhatsAppLinkToken).filter(WhatsAppLinkToken.user_id == user.id).first()
+            token_record.expires_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            db.commit()
+
+            wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+            res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": f"LINK {code}", "type": "text"}
+            )
+            assert res.status_code == 200
+            assert res.json()["status"] == "link_failed"
+        finally:
+            db.close()
+
+    def test_citizen_sends_link_with_reused_code(self):
+        db = SessionLocal()
+        try:
+            user = _create_test_user(db, f"reused_link_{uuid.uuid4().hex[:6]}@test.com", "citizen", "+919800000005")
+            code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
+            wa_phone_1 = f"91{random.randint(1000000000, 9999999999)}"
+
+            # First redemption succeeds
+            res1 = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone_1, "message": f"LINK {code}", "type": "text"}
+            )
+            assert res1.status_code == 200
+            assert res1.json()["status"] == "linked"
+
+            # Second attempt to reuse the same code fails
+            wa_phone_2 = f"91{random.randint(1000000000, 9999999999)}"
+            res2 = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone_2, "message": f"LINK {code}", "type": "text"}
+            )
+            assert res2.status_code == 200
+            assert res2.json()["status"] == "link_failed"
+        finally:
+            db.close()
+
+    def test_linked_user_sends_waste_photo_and_creates_associated_complaint(self):
+        db = SessionLocal()
+        try:
+            user = _create_test_user(db, f"photo_user_{uuid.uuid4().hex[:6]}@test.com", "citizen", "+919800000006")
+            code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
+            wa_phone = f"91{random.randint(1000000000, 9999999999)}"
+            WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
+
+            # Send photo
+            res_photo = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "", "type": "image", "media_url": "https://example.com/waste_dhule.jpg"}
+            )
+            assert res_photo.status_code == 200
+            assert res_photo.json()["status"] == "awaiting_location"
+
+            # Send GPS location
+            res_loc = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "", "type": "location", "latitude": 20.9042, "longitude": 74.7749}
+            )
+            assert res_loc.status_code == 200
+            data = res_loc.json()
+            assert data["status"] == "complaint_created"
+            assert data["ticket"].startswith("DHL-")
+
+            # Verify database record belongs to the linked website user
+            complaint = db.query(Complaint).filter(Complaint.tracking_number == data["ticket"]).first()
+            assert complaint is not None
+            assert complaint.citizen_id == user.id
+            assert "Dhule" in complaint.location_address
+            assert "Shirpur" not in complaint.location_address
+        finally:
+            db.close()
+
+    def test_duplicate_webhook_delivery(self):
+        run_id = uuid.uuid4().hex[:12]
+        msg_id = f"wamid.regr_dup_{run_id}"
+        sender = f"91{random.randint(1000000000, 9999999999)}"
+        orig_secret = config.META_APP_SECRET
+        config.META_APP_SECRET = "webhook_regression_secret"
+
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "104829104829104",
+                "changes": [{
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"display_phone_number": "15550234567", "phone_number_id": "104829104829104"},
+                        "messages": [{
+                            "from": sender,
+                            "id": msg_id,
+                            "timestamp": "1710000000",
+                            "type": "text",
+                            "text": {"body": "hey"}
+                        }]
+                    },
+                    "field": "messages"
+                }]
+            }]
+        }
+        raw_bytes = json.dumps(payload).encode("utf-8")
+        sig = _calc_sig(config.META_APP_SECRET, raw_bytes)
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+
+        try:
+            # First delivery
+            res1 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+            assert res1.status_code == 200
+            assert res1.json()["status"] == "processed"
+
+            # Duplicate delivery with identical message_id
+            res2 = client.post("/api/whatsapp/webhook", content=raw_bytes, headers=headers)
+            assert res2.status_code == 200
+            assert res2.json()["status"] == "processed"
+        finally:
+            config.META_APP_SECRET = orig_secret
+
+    def test_no_shirpur_branding_or_shp_in_active_responses(self):
+        texts = _build_texts()
+        forbidden = ["shirpur", "शिरपूर", "shp-"]
+
+        for lang in ["mr", "en"]:
+            lang_dict = texts[lang]
+            for key in ["unauthorized", "not_linked_prompt", "authorized_welcome", "menu_options", "help_text", "link_invalid"]:
+                text_val = lang_dict[key].lower()
+                for bad_word in forbidden:
+                    assert bad_word not in text_val, f"Found '{bad_word}' in texts['{lang}']['{key}']"
+            # Verify frontend URL is actual Render URL
+            assert "https://ecopulse-ai-frontend.onrender.com/" in lang_dict["not_linked_prompt"]
+            assert "ecopulse.ai" not in lang_dict["not_linked_prompt"]

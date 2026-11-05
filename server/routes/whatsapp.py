@@ -227,9 +227,12 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
 
                 except Exception as exc:
                     db.rollback()
+                    safe_db_error = getattr(exc, "orig", str(exc))
                     logger.error(
-                        "[META WHATSAPP] Message processing failed (%s).",
+                        "[META WHATSAPP] Message processing failed (%s: %s).",
                         type(exc).__name__,
+                        safe_db_error,
+                        exc_info=True,
                     )
                     if msg_id:
                         try:
@@ -473,7 +476,7 @@ def list_whatsapp_citizens(
     current_admin: User = Depends(get_current_admin_user)
 ):
     """
-    List registered WhatsApp citizen households in Shirpur.
+    List registered WhatsApp citizen households in Dhule.
     Protected: Accessible exclusively by authorized municipal administrators.
     """
     citizens = db.query(WhatsAppCitizen).order_by(WhatsAppCitizen.id.desc()).all()
@@ -503,7 +506,7 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
     Simulate a WhatsApp message without needing a live Meta account.
     Disabled in production environments.
     Example:
-    {"phone": "919876543210", "message": "JOIN SHP-W12-H1042", "type": "text"}
+    {"phone": "919876543210", "message": "hey", "type": "text"}
     """
     if normalize_environment(config.ENV) == "production":
         logger.warning("[META WHATSAPP] Blocked access to simulator endpoint in production.")

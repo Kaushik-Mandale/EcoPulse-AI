@@ -79,3 +79,28 @@ def ensure_whatsapp_processed_messages_schema(engine):
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"[SCHEMA] WhatsApp processed messages schema check warning: {e}")
+
+
+def ensure_whatsapp_citizens_schema(engine):
+    """
+    Lightweight, backward-compatible schema helper ensuring user_id column
+    exists in whatsapp_citizens on existing databases without breaking startup.
+    Safe to call multiple times (idempotent).
+    """
+    from sqlalchemy import inspect, text
+    try:
+        insp = inspect(engine)
+        if 'whatsapp_citizens' in insp.get_table_names():
+            cols = {col['name'] for col in insp.get_columns('whatsapp_citizens')}
+            if 'user_id' not in cols:
+                with engine.connect() as conn:
+                    if engine.dialect.name == "sqlite":
+                        conn.execute(text("ALTER TABLE whatsapp_citizens ADD COLUMN user_id INTEGER"))
+                    else:
+                        conn.execute(text("ALTER TABLE whatsapp_citizens ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"))
+                        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_whatsapp_citizens_user_id_notnull ON whatsapp_citizens (user_id) WHERE user_id IS NOT NULL"))
+                    conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"[SCHEMA] WhatsApp citizens schema check warning: {e}")
+
