@@ -85,8 +85,8 @@ def _is_tracking_number_collision(exc: Exception) -> bool:
     # PostgreSQL:"duplicate key value violates unique constraint
     #             \"complaints_tracking_number_key\""
     # Also check the params/statement in case orig is opaque.
-    haystack = " ".join([orig_str, params_str, statement_str])
-    return "tracking_number" in haystack
+    haystack = " ".join([orig_str, params_str])
+    return "tracking_number" in haystack and ("unique" in orig_str or "duplicate" in orig_str)
 
 
 class ComplaintService:

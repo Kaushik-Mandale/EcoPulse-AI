@@ -16,8 +16,10 @@ from urllib.parse import urlsplit
 
 from server.database.db import get_db
 from server.utils.config import config, normalize_environment
-from server.utils.security import get_current_admin_user
+from server.utils.security import get_current_admin_user, get_current_user
 from server.services.whatsapp_service import WhatsAppService
+from server.services.whatsapp_link_service import WhatsAppLinkService
+from server.schemas.whatsapp_link import GenerateLinkCodeResponse, LinkStatusResponse, UnlinkResponse
 from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
 from server.models.user import User
 
@@ -392,6 +394,45 @@ async def receive_twilio_webhook(request: Request, db: Session = Depends(get_db)
     <Message>{reply_text}</Message>
 </Response>"""
     return Response(content=xml_response, media_type="application/xml")
+
+
+# ---------------------------------------------------------
+# 4a. WhatsApp Account Linking Endpoints (Citizen Auth)
+# ---------------------------------------------------------
+@router.post("/link/generate", response_model=GenerateLinkCodeResponse)
+def generate_link_code(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Generate a secure one-time code the citizen sends via WhatsApp to link their account.
+    Protected: Accessible by authenticated citizens only.
+    """
+    return WhatsAppLinkService.generate_link_code(db, current_user)
+
+
+@router.get("/link/status", response_model=LinkStatusResponse)
+def get_link_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Return the current WhatsApp link status for the authenticated citizen.
+    Protected: Accessible by authenticated citizens only.
+    """
+    return WhatsAppLinkService.get_link_status(db, current_user)
+
+
+@router.delete("/link/unlink", response_model=UnlinkResponse)
+def unlink_whatsapp(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Remove the WhatsApp link from the authenticated citizen's account.
+    Protected: Accessible by authenticated citizens only.
+    """
+    return WhatsAppLinkService.unlink(db, current_user)
 
 
 # ---------------------------------------------------------

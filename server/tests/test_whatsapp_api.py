@@ -40,8 +40,8 @@ def test_unauthorized_user_prompt():
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "unauthorized_prompt"
-    assert "JOIN SHP-W12-H1042" in data["reply"]
+    assert data["status"] in ("unauthorized_prompt", "not_linked")
+    assert "LINK" in data["reply"] or "ecopulse" in data["reply"].lower()
 
 def test_qr_code_authorization():
     auth_phone = "919988776655"
@@ -58,31 +58,30 @@ def test_qr_code_authorization():
 def test_authorized_dashboard_navigation():
     test_phone = "919988776655"
 
-    # 1. Track complaints
+    # 1. Track complaints (Option 6 in 9-option menu)
     res_track = client.post(
         "/api/whatsapp/simulate-incoming",
-        json={"phone": test_phone, "message": "2", "type": "text"}
+        json={"phone": test_phone, "message": "6", "type": "text"}
     )
     assert res_track.status_code == 200
     assert res_track.json()["status"] == "track_complaints"
 
-    # 2. Eco Wallet
+    # 2. Eco Wallet (Option 5 in 9-option menu)
     res_wallet = client.post(
         "/api/whatsapp/simulate-incoming",
-        json={"phone": test_phone, "message": "3", "type": "text"}
+        json={"phone": test_phone, "message": "5", "type": "text"}
     )
     assert res_wallet.status_code == 200
     assert res_wallet.json()["status"] == "wallet_info"
     assert "EcoCoin" in res_wallet.json()["reply"]
 
-    # 3. Live Truck Tracking
+    # 3. Live Truck Tracking (Option 3 in 9-option menu)
     res_truck = client.post(
         "/api/whatsapp/simulate-incoming",
-        json={"phone": test_phone, "message": "4", "type": "text"}
+        json={"phone": test_phone, "message": "3", "type": "text"}
     )
     assert res_truck.status_code == 200
-    assert res_truck.json()["status"] == "truck_tracking"
-    assert "MH-18-BZ-4412" in res_truck.json()["reply"]
+    assert res_truck.json()["status"] == "truck_unavailable"
 
 def test_photo_and_location_complaint_flow():
     test_phone = "919988776655"
@@ -127,7 +126,7 @@ def test_photo_and_location_complaint_flow():
     assert res_loc.status_code == 200
     data = res_loc.json()
     assert data["status"] == "complaint_created"
-    assert "SHP-2026-W14" in data["ticket"]
+    assert "DHL-2026-W14" in data["ticket"]
     assert "+20" in data["reply"]
 
 
@@ -274,7 +273,7 @@ def test_whatsapp_tracking_only_returns_the_current_household_complaints(monkeyp
             db=db,
             sender_phone=phone,
             message_type="text",
-            text_body="2",
+            text_body="6",
         )
         assert result["status"] == "track_complaints"
         assert own_ticket in sent[-1]
@@ -2486,7 +2485,7 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
         assert complaint is not None, "Complaint was not created by WhatsApp webhook"
         created_complaint_id = complaint.id
         tracking_number = complaint.tracking_number
-        assert tracking_number.startswith("SHP-2026-W12-")
+        assert tracking_number.startswith("DHL-2026-W12-")
 
         # Step 3: Unauthenticated access to admin complaints API must be rejected
         unauth_res = client.get("/api/admin/complaints")

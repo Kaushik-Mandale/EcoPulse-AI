@@ -6,6 +6,7 @@ import { getCurrentUser, logoutUser, updateUserProfile } from '../services/authS
 import ProfileModal from '../components/ProfileModal';
 import ReportWasteModal from '../components/ReportWasteModal';
 import InteractiveMap from '../components/InteractiveMap';
+import WhatsAppLinkCard from '../components/WhatsAppLinkCard';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard,
@@ -941,6 +942,11 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
 
               </div>
 
+              {/* WhatsApp Connection Card */}
+              <div className="my-6">
+                <WhatsAppLinkCard user={user} />
+              </div>
+
               {/* ----------------------------------------------------------- */}
               {/* ROW 2: HOW IT WORKS (4 STEP CARDS MATCHING CITIZEN.PNG)     */}
               {/* ----------------------------------------------------------- */}
@@ -974,6 +980,24 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
 
         </main>
       </div>
+
+      {/* WhatsApp Modal */}
+      {showWhatsAppModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-xs transition-opacity" onClick={() => setShowWhatsAppModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg z-10 overflow-hidden">
+            <div className="flex justify-between items-center p-4 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900">Connect WhatsApp Account</h3>
+              <button onClick={() => setShowWhatsAppModal(false)} className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4">
+              <WhatsAppLinkCard user={user} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Profile Settings Modal */}
       <ProfileModal

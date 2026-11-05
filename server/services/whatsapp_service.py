@@ -32,13 +32,13 @@ _WA_MAX_RETRIES = 5
 def _generate_whatsapp_tracking_id(ward: str) -> str:
     """Generate a collision-resistant WhatsApp complaint tracking number.
 
-    Format: SHP-2026-W<ward_number>-<9 uppercase alphanumeric chars>
-    Example: SHP-2026-W12-A7BZ3XKQR
+    Format: DHL-2026-W<ward_number>-<9 uppercase alphanumeric chars>
+    Example: DHL-2026-W12-A7BZ3XKQR
     Total length: ≤ 28 chars — fits String(30).
     """
-    ward_num = ward.replace("Ward ", "").strip()
+    ward_num = ward.replace("Ward ", "").strip() if ward else "0"
     suffix = "".join(secrets.choice(_ID_ALPHABET) for _ in range(_ID_SUFFIX_LEN))
-    return f"SHP-2026-W{ward_num}-{suffix}"
+    return f"DHL-2026-W{ward_num}-{suffix}"
 
 
 class MediaValidationError(Exception):
@@ -125,33 +125,51 @@ def validate_image_content(
     return detected_mime, ext
 
 
-# Bilingual UI Strings for Shirpur Municipal Council
+# ---------------------------------------------------------------------------
+# Bilingual UI Strings — EcoPulse AI · Dhule Municipal Waste Management
+# ---------------------------------------------------------------------------
 TEXTS = {
     "mr": {
+        # Sent when sender is not linked (no user_id on WhatsAppCitizen)
         "unauthorized": (
-            "🏛️ *शिरपूर नगरपरिषद ईको-पल्स (EcoPulse AI)*\n\n"
-            "नमस्कार! हे डिजिटल स्वच्छता पोर्टल फक्त शिरपूर नगरपरिषदेच्या अधिकृत रहिवाशांसाठी आहे.\n\n"
-            "🔐 *प्रवेश कसा मिळवाल?*\n"
-            "आपल्या घरावर किंवा कचऱ्याच्या डब्यावरील QR कोड स्कॅन करा किंवा खालीलप्रमाणे मेसेज पाठवा:\n"
-            "उदा: *JOIN SHP-W12-H1042*\n"
-            "(प्रभाग क्रमांक व घर क्रमांक)"
+            "🏛️ *EcoPulse AI — धुळे महानगरपालिका*\n\n"
+            "नमस्कार! हे डिजिटल स्वच्छता पोर्टल *धुळे महानगरपालिकेच्या* नागरिकांसाठी आहे.\n\n"
+            "🔐 *WhatsApp खाते कसे जोडावे?*\n"
+            "1️⃣ EcoPulse वेबसाइटवर नोंदणी करा: *ecopulse.ai*\n"
+            "2️⃣ लॉगिन केल्यानंतर 'Connect WhatsApp' वर क्लिक करा.\n"
+            "3️⃣ एकवेळी कोड मिळवा आणि खालीलप्रमाणे पाठवा:\n"
+            "   *LINK <your-code>*\n\n"
+            "💡 *कोड उदा:* LINK abc123XYZ_example\n"
+            "⏰ कोड फक्त १० मिनिटे वैध असतो."
         ),
+        # Sent after successful LINK command
+        "linked_welcome": (
+            "✅ *धुळे EcoPulse AI — खाते यशस्वीरित्या जोडले!*\n\n"
+            "नमस्कार {name}! 🎉\n"
+            "आपला WhatsApp नंबर आपल्या EcoPulse खात्याशी जोडला गेला आहे.\n\n"
+            "🪙 *ईको-कॉइन्स शिल्लक: {coins} गुण*\n\n"
+            "कृपया खालीलपैकी पर्याय निवडा:"
+        ),
+        # Sent after LINK/auth gatekeeper passes (returning linked user)
         "authorized_welcome": (
-            "🏛️ *शिरपूर नगरपरिषद - ईको-पल्स नागरिक कक्ष*\n\n"
+            "🏛️ *EcoPulse AI — धुळे नागरिक कक्ष*\n\n"
             "नमस्कार {name}!\n"
             "📍 प्रभाग: *{ward}* | घर क्र.: *{house}*\n"
-            "✅ आपले घर प्रमाणित करण्यात आले आहे.\n\n"
-            "🪙 *ईको-कॉइन्स बॅलन्स: {coins} गुण (₹{rupees} कर सवलत)*\n\n"
+            "✅ आपले खाते सक्रिय आहे.\n\n"
+            "🪙 *ईको-कॉइन्स शिल्लक: {coins} गुण (₹{rupees} कर सवलत)*\n\n"
             "कृपया खालीलपैकी पर्याय निवडा:"
         ),
         "menu_options": (
-            "1️⃣ *कचरा तक्रार नोंदवा* (फोटो व लोकेशन पाठवा)\n"
-            "2️⃣ *माझ्या तक्रारी तपासा* (स्थिती व ड्रायव्हर)\n"
-            "3️⃣ *ईको-वॉलेट आणि रिवॉर्ड्स* (कर सवलत / फायदे)\n"
-            "4️⃣ *घंटागाडी लाईव्ह ट्रॅकिंग* (गाडी कुठे आहे?)\n"
-            "5️⃣ *महानगरपालिका सूचना*\n"
-            "6️⃣ *भाषा बदला (Switch to English)*\n\n"
-            "👉 *पर्याय क्रमांक (1-6) पाठवा किंवा थेट फोटो पाठवा.*"
+            "1️⃣ *कचरा तक्रार नोंदवा* (फोटो व लोकेशन)\n"
+            "2️⃣ *सामान्य तक्रार* (रस्ता, पाणी, दिवे इ.)\n"
+            "3️⃣ *घंटागाडी ट्रॅकिंग* (गाडी कुठे आहे?)\n"
+            "4️⃣ *संकलन वेळापत्रक* (माझ्या भागाचे)\n"
+            "5️⃣ *ईको-वॉलेट आणि रिवॉर्ड्स* (कर सवलत)\n"
+            "6️⃣ *माझ्या तक्रारी* (स्थिती व ड्रायव्हर)\n"
+            "7️⃣ *लीडरबोर्ड* (शीर्ष ईको नागरिक)\n"
+            "8️⃣ *महानगरपालिका सूचना*\n"
+            "9️⃣ *मदत / भाषा बदला*\n\n"
+            "👉 *पर्याय क्रमांक (1-9) पाठवा किंवा थेट फोटो पाठवा.*"
         ),
         "ask_photo": (
             "📸 *कचरा तक्रार नोंदणी*\n\n"
@@ -167,71 +185,134 @@ TEXTS = {
         "report_success": (
             "✅ *तक्रार यशस्वीरित्या नोंदवली गेली!*\n\n"
             "🎫 *तक्रार क्र.:* #{ticket}\n"
-            "📍 *प्रभाग:* {ward}\n"
+            "📍 *स्थान:* {location}\n"
             "🚛 *नियुक्त गाडी:* {driver}\n"
             "⏱️ *निराकरण कालावधी:* ४ तासांच्या आत\n\n"
             "🎉 *अभिनंदन!* शहर स्वच्छ ठेवण्यासाठी आपल्याला *+20 ईको-कॉइन्स* मिळाले आहेत!\n"
             "एकूण शिल्लक: *{coins} गुण*."
         ),
+        "general_complaint_prompt": (
+            "📝 *सामान्य तक्रार*\n\n"
+            "कृपया आपली तक्रार थोडक्यात लिहा (रस्ता, पाणी, दिवे, अतिक्रमण इ.).\n"
+            "उदा: *मेन रोडवर मोठा खड्डा आहे, दुरुस्ती आवश्यक आहे.*"
+        ),
         "no_complaints": (
-            "🔍 आपल्या प्रभागात सध्या कोणतीही प्रलंबित तक्रार नाही. परिसर स्वच्छ आहे! 🌟"
+            "🔍 आपल्या खात्याशी सध्या कोणतीही प्रलंबित तक्रार नाही. परिसर स्वच्छ आहे! 🌟"
         ),
         "complaints_header": "🔍 *आपल्या तक्रारींची सद्यस्थिती:*\n\n",
         "wallet_info": (
-            "🪙 *शिरपूर ईको-वॉलेट (EcoCoin Wallet)*\n\n"
+            "🪙 *धुळे ईको-वॉलेट (EcoCoin Wallet)*\n\n"
             "शिल्लक गुण: *{coins} EcoCoins*\n"
             "अंदाजे मूल्य: *₹{rupees}*\n\n"
             "🎁 *सवलत पर्याय:*\n"
             "• ५० कॉइन्स = ₹२५ घरपट्टी (Property Tax) सवलत\n"
-            "• १०० कॉइन्स = १ महिना शिरपूर मोफत वाचनालय पास\n"
-            "• २०० कॉइन्स = २ मोफत फळझाडे रोपे (नगरपरिषद नर्सरी)\n\n"
-            "अधिक माहितीसाठी नगरपरिषद कर कक्षाशी संपर्क साधा."
+            "• १०० कॉइन्स = १ महिना धुळे मोफत वाचनालय पास\n"
+            "• २०० कॉइन्स = २ मोफत फळझाडे रोपे (महानगरपालिका नर्सरी)\n\n"
+            "अधिक माहितीसाठी धुळे महानगरपालिका कर कक्षाशी संपर्क साधा."
         ),
-        "truck_tracking": (
-            "🚛 *घंटागाडी थेट ट्रॅकिंग - {ward}*\n\n"
-            "चालक: *सुनील पाटील* (मो. ९८२३० ९९१२४)\n"
-            "वाहन क्रमांक: *MH-18-BZ-4412*\n"
-            "सध्याचे स्थान: *महावीर चौक, मेन रोड* (सुमारे ४०० मीटर)\n"
-            "आपल्या भागात पोहोचण्याची वेळ: *सुमारे १० ते १५ मिनिटे*\n\n"
-            "🔔 कृपया ओला व सुका कचरा वेगळा ठेवा."
+        "truck_unavailable": (
+            "🚛 *घंटागाडी थेट ट्रॅकिंग*\n\n"
+            "⚠️ सध्या थेट GPS ट्रॅकिंग उपलब्ध नाही.\n"
+            "कृपया आपल्या प्रभाग कार्यालयाशी संपर्क साधा किंवा नंतर पुन्हा प्रयत्न करा.\n\n"
+            "📞 धुळे महानगरपालिका हेल्पलाइन: 0562-XXXXXX"
         ),
-        "notices": (
-            "📢 *शिरपूर नगरपरिषद अधिकृत सूचना*\n\n"
-            "१. प्रत्येक मंगळवारी व शुक्रवारी फक्त ई-कचरा व सुका कचरा संकलन.\n"
-            "२. प्लास्टिक बंदी नियमांचे काटेकोर पालन करा.\n"
-            "३. पाणी पुरवठा वेळ: सकाळी ६:३० ते ८:००."
+        "schedule_unavailable": (
+            "🗓️ *कचरा संकलन वेळापत्रक*\n\n"
+            "⚠️ आपल्या भागाचे डिजिटल वेळापत्रक अद्याप उपलब्ध नाही.\n"
+            "कृपया आपल्या प्रभाग कार्यालयाशी संपर्क साधा.\n\n"
+            "📞 धुळे महानगरपालिका: 0562-XXXXXX"
         ),
-        "lang_switched": "✅ भाषा बदलून मराठी करण्यात आली आहे.",
+        "leaderboard_unavailable": (
+            "🏆 *ईको लीडरबोर्ड*\n\n"
+            "⚠️ लीडरबोर्ड लवकरच उपलब्ध होणार आहे.\n"
+            "सध्या आपले ईको-कॉइन्स: *{coins} गुण*\n\n"
+            "अधिक तक्रारी नोंदवा आणि शहर स्वच्छ ठेवण्यात सहभागी व्हा! 🌱"
+        ),
+        "notices_unavailable": (
+            "📢 *धुळे महानगरपालिका सूचना*\n\n"
+            "⚠️ सध्या कोणतीही नवीन अधिकृत सूचना नाही.\n"
+            "अद्ययावत माहितीसाठी: https://dmc.gov.in\n\n"
+            "📞 धुळे महानगरपालिका: 0562-XXXXXX"
+        ),
+        "help_text": (
+            "ℹ️ *EcoPulse AI — मदत*\n\n"
+            "📌 *उपलब्ध आदेश:*\n"
+            "• *LINK <code>* — वेबसाइट खाते जोडा\n"
+            "• *1 ते 9* — मेनू पर्याय निवडा\n"
+            "• फोटो पाठवा — थेट कचरा तक्रार\n\n"
+            "🌐 *वेबसाइट:* https://ecopulse.ai\n"
+            "📞 *हेल्पलाइन:* 0562-XXXXXX\n\n"
+            "भाषा बदलण्यासाठी: *9* पाठवा आणि 'English' लिहा."
+        ),
         "image_error": (
             "⚠️ *फोटो स्वीकारला नाही.*\n\n"
             "कृपया स्पष्ट JPEG, PNG किंवा WebP स्वरूपातील फोटो पाठवा (कमाल १० MB)."
-        )
+        ),
+        "link_success": (
+            "✅ *WhatsApp खाते यशस्वीरित्या जोडले!*\n\n"
+            "आपण आता EcoPulse AI सेवा वापरू शकता."
+        ),
+        "link_invalid": (
+            "❌ *कोड अवैध किंवा कालबाह्य झाला.*\n\n"
+            "कृपया EcoPulse वेबसाइटवर पुन्हा लॉगिन करा आणि नवीन कोड मिळवा.\n"
+            "🌐 https://ecopulse.ai"
+        ),
+        "not_linked_prompt": (
+            "🔒 *खाते जोडलेले नाही*\n\n"
+            "ही सेवा वापरण्यासाठी प्रथम आपले EcoPulse खाते या WhatsApp क्रमांकाशी जोडा.\n\n"
+            "1️⃣ https://ecopulse.ai वर जा → लॉगिन करा\n"
+            "2️⃣ 'Connect WhatsApp' वर क्लिक करा\n"
+            "3️⃣ कोड मिळवा आणि येथे *LINK <code>* पाठवा."
+        ),
+        "lang_switched": "✅ भाषा बदलून मराठी करण्यात आली आहे.",
+        "general_complaint_received": (
+            "✅ *सामान्य तक्रार प्राप्त झाली!*\n\n"
+            "🎫 *तक्रार क्र.:* #{ticket}\n"
+            "📋 *तक्रार:* {description}\n"
+            "🚛 *नियुक्त:* {driver}\n\n"
+            "आमची टीम लवकरच संपर्क करेल."
+        ),
     },
     "en": {
+        # Sent when sender is not linked (no user_id on WhatsAppCitizen)
         "unauthorized": (
-            "🏛️ *Shirpur Municipal Council EcoPulse AI*\n\n"
-            "Welcome! This civic sanitation portal is exclusively for authorized residents of Shirpur.\n\n"
-            "🔐 *How to Get Access?*\n"
-            "Scan the EcoPulse QR code on your gate/bin or send:\n"
-            "*JOIN SHP-W12-H1042*\n"
-            "(Ward Number & Household ID)"
+            "🏛️ *EcoPulse AI — Dhule Municipal Corporation*\n\n"
+            "Welcome! This civic sanitation portal is for registered citizens of *Dhule*.\n\n"
+            "🔐 *How to link your WhatsApp account?*\n"
+            "1️⃣ Register on EcoPulse website: *ecopulse.ai*\n"
+            "2️⃣ After login, click 'Connect WhatsApp' on your dashboard.\n"
+            "3️⃣ Get a one-time code and send it here as:\n"
+            "   *LINK <your-code>*\n\n"
+            "💡 *Example:* LINK abc123XYZ_example\n"
+            "⏰ Code is valid for 10 minutes only."
         ),
+        # Sent after successful LINK command
+        "linked_welcome": (
+            "✅ *Dhule EcoPulse AI — Account Linked Successfully!*\n\n"
+            "Welcome {name}! 🎉\n"
+            "Your WhatsApp number has been linked to your EcoPulse account.\n\n"
+            "🪙 *EcoCoin Balance: {coins} pts*\n\n"
+            "Please choose an option below:"
+        ),
+        # Sent after LINK/auth gatekeeper passes (returning linked user)
         "authorized_welcome": (
-            "🏛️ *Shirpur Municipal Council - Citizen Desk*\n\n"
-            "Welcome {name}!\n"
-            "📍 Ward: *{ward}* | Household: *{house}*\n"
-            "✅ Your household is authorized.\n\n"
+            "🏛️ *EcoPulse AI — Dhule Citizen Desk*\n\n"
+            "Welcome back {name}!\n"
+            "✅ Your account is active.\n\n"
             "🪙 *EcoCoin Balance: {coins} pts (₹{rupees} rebate)*\n\n"
             "Please choose an option below:"
         ),
         "menu_options": (
             "1️⃣ *Report Waste* (Send Photo & Location)\n"
-            "2️⃣ *Track Complaints* (Live status & Driver)\n"
-            "3️⃣ *Eco-Wallet & Rewards* (Tax Rebates)\n"
-            "4️⃣ *Live Garbage Truck* (Where is my truck?)\n"
-            "5️⃣ *Municipal Notices*\n"
-            "6️⃣ *भाषा बदला (Switch to Marathi)*\n\n"
-            "👉 *Reply with number (1-6) or send a photo directly.*"
+            "2️⃣ *General Complaint* (Road, Water, Lights etc.)\n"
+            "3️⃣ *Live Garbage Truck* (Where is my truck?)\n"
+            "4️⃣ *Collection Schedule* (My area)\n"
+            "5️⃣ *Eco-Wallet & Rewards* (Tax Rebates)\n"
+            "6️⃣ *My Complaints* (Live status & Driver)\n"
+            "7️⃣ *Leaderboard* (Top Eco Citizens)\n"
+            "8️⃣ *Municipal Notices*\n"
+            "9️⃣ *Help / Switch Language*\n\n"
+            "👉 *Reply with number (1-9) or send a photo directly.*"
         ),
         "ask_photo": (
             "📸 *Report Waste Incident*\n\n"
@@ -248,47 +329,96 @@ TEXTS = {
         "report_success": (
             "✅ *Complaint Logged Successfully!*\n\n"
             "🎫 *Ticket ID:* #{ticket}\n"
-            "📍 *Ward:* {ward}\n"
+            "📍 *Location:* {location}\n"
             "🚛 *Assigned Vehicle:* {driver}\n"
             "⏱️ *Resolution SLA:* Under 4 hours\n\n"
-            "🎉 *Reward:* You earned *+20 EcoCoins* for keeping Shirpur clean!\n"
+            "🎉 *Reward:* You earned *+20 EcoCoins* for keeping Dhule clean!\n"
             "Current Balance: *{coins} pts*."
         ),
+        "general_complaint_prompt": (
+            "📝 *General Complaint*\n\n"
+            "Please briefly describe your complaint (road, water, lights, encroachment etc.).\n"
+            "Example: *Large pothole on Main Road needs urgent repair.*"
+        ),
         "no_complaints": (
-            "🔍 No active complaints found for your household. Your area is clean! 🌟"
+            "🔍 No active complaints linked to your account. Your area is clean! 🌟"
         ),
         "complaints_header": "🔍 *Your Active Complaints:*\n\n",
         "wallet_info": (
-            "🪙 *Shirpur Municipal Eco-Wallet*\n\n"
+            "🪙 *Dhule Municipal Eco-Wallet*\n\n"
             "Balance: *{coins} EcoCoins*\n"
             "Estimated Value: *₹{rupees}*\n\n"
             "🎁 *Redemption Catalog:*\n"
             "• 50 Coins = ₹25 Property Tax Rebate\n"
             "• 100 Coins = 1-Month Library Reading Pass\n"
             "• 200 Coins = 2 Free Fruit Plant Saplings\n\n"
-            "Contact Shirpur Municipal Tax Department to claim."
+            "Contact Dhule Municipal Tax Department to claim."
         ),
-        "truck_tracking": (
-            "🚛 *Garbage Collection Truck - {ward}*\n\n"
-            "Driver: *Sunil Patil* (Ph: +91 98230 99124)\n"
-            "Vehicle: *MH-18-BZ-4412*\n"
-            "Current Location: *Mahavir Chowk, Main Road* (~400m away)\n"
-            "Estimated Arrival: *10 to 15 minutes*\n\n"
-            "🔔 Please segregate wet and dry waste."
+        "truck_unavailable": (
+            "🚛 *Live Garbage Truck Tracking*\n\n"
+            "⚠️ Live GPS tracking is not available at this time.\n"
+            "Please contact your ward office or try again later.\n\n"
+            "📞 Dhule Municipal Helpline: 0562-XXXXXX"
         ),
-        "notices": (
-            "📢 *Official Shirpur Municipal Announcements*\n\n"
-            "1. Dry & E-waste special pickup every Tuesday & Friday.\n"
-            "2. Strict single-use plastic ban in effect across all 27 wards.\n"
-            "3. Morning water supply schedule: 6:30 AM - 8:00 AM."
+        "schedule_unavailable": (
+            "🗓️ *Waste Collection Schedule*\n\n"
+            "⚠️ Digital schedule for your area is not yet available.\n"
+            "Please contact your local ward office.\n\n"
+            "📞 Dhule Municipal: 0562-XXXXXX"
         ),
-        "lang_switched": "✅ Language switched to English.",
+        "leaderboard_unavailable": (
+            "🏆 *Eco Leaderboard*\n\n"
+            "⚠️ Leaderboard is coming soon!\n"
+            "Your current EcoCoins: *{coins} pts*\n\n"
+            "Report more complaints and help keep Dhule clean! 🌱"
+        ),
+        "notices_unavailable": (
+            "📢 *Dhule Municipal Corporation Notices*\n\n"
+            "⚠️ No new official notices at this time.\n"
+            "For updates visit: https://dmc.gov.in\n\n"
+            "📞 Dhule Municipal: 0562-XXXXXX"
+        ),
+        "help_text": (
+            "ℹ️ *EcoPulse AI — Help*\n\n"
+            "📌 *Available commands:*\n"
+            "• *LINK <code>* — Link your website account\n"
+            "• *1 to 9* — Select menu option\n"
+            "• Send a photo — Report waste directly\n\n"
+            "🌐 *Website:* https://ecopulse.ai\n"
+            "📞 *Helpline:* 0562-XXXXXX\n\n"
+            "To switch language: send *9* then type 'Marathi'."
+        ),
         "image_error": (
             "⚠️ *Could not process photo.*\n\n"
             "Please send a clear photo in JPEG, PNG, or WebP format (max 10 MB)."
-        )
+        ),
+        "link_success": (
+            "✅ *WhatsApp account linked successfully!*\n\n"
+            "You can now use all EcoPulse AI services."
+        ),
+        "link_invalid": (
+            "❌ *Invalid or expired code.*\n\n"
+            "Please log in to EcoPulse website and generate a new code.\n"
+            "🌐 https://ecopulse.ai"
+        ),
+        "not_linked_prompt": (
+            "🔒 *Account not linked*\n\n"
+            "To use this service, first link your EcoPulse account to this WhatsApp number.\n\n"
+            "1️⃣ Visit https://ecopulse.ai → Log in\n"
+            "2️⃣ Click 'Connect WhatsApp' on your dashboard\n"
+            "3️⃣ Get a code and send *LINK <code>* here."
+        ),
+        "lang_switched": "✅ Language switched to English.",
+        "general_complaint_received": (
+            "✅ *General Complaint Received!*\n\n"
+            "🎫 *Ticket ID:* #{ticket}\n"
+            "📋 *Complaint:* {description}\n"
+            "🚛 *Assigned:* {driver}\n\n"
+            "Our team will follow up shortly."
+        ),
     }
 }
+
 
 class WhatsAppService:
 
@@ -310,8 +440,8 @@ class WhatsAppService:
         if not citizen:
             citizen = WhatsAppCitizen(
                 phone_number=normalized,
-                full_name="Shirpur Resident",
-                ward="Ward 12",
+                full_name="Dhule Citizen",
+                ward=None,
                 household_id=None,
                 is_authorized=False,
                 preferred_language="mr",
@@ -325,11 +455,6 @@ class WhatsAppService:
 
     @staticmethod
     def find_matching_citizen_user(db: Session, sender_phone: str) -> Optional[User]:
-        """
-        Finds a registered Citizen User with a normalized phone number match.
-        Returns the User if exactly ONE unambiguous match is found.
-        Returns None if 0 matches (guest-citizen flow) or if multiple matches exist (ambiguity safety).
-        """
         if not sender_phone:
             return None
         norm = WhatsAppService.normalize_phone(sender_phone)
@@ -348,7 +473,6 @@ class WhatsAppService:
             User.is_active == True
         ).all()
 
-        # Reject any matched record whose phone is empty, whitespace, or not in candidate_phones
         valid_matches = [
             u for u in matches
             if u.phone and u.phone.strip() and u.phone in candidate_phones
@@ -357,10 +481,7 @@ class WhatsAppService:
         if len(valid_matches) == 1:
             return valid_matches[0]
         elif len(valid_matches) > 1:
-            logger.warning(
-                "[WHATSAPP IDENTITY] Ambiguous citizen phone match (%d accounts).",
-                len(valid_matches),
-            )
+            logger.warning("[WHATSAPP IDENTITY] Ambiguous citizen phone match (%d accounts).", len(valid_matches))
             return None
         return None
 
@@ -574,51 +695,76 @@ class WhatsAppService:
     ) -> dict:
         """Central message handling engine for WhatsApp."""
         citizen = WhatsAppService.get_or_create_citizen(db, sender_phone)
+        normalized_phone = WhatsAppService.normalize_phone(sender_phone)
         lang = citizen.preferred_language or "mr"
         strings = TEXTS.get(lang, TEXTS["mr"])
         clean_text = (text_body or "").strip()
         media_url = (media_url or "").strip()
 
-        # ----------------------------------------------------
-        # 1. Household QR Code Registration (e.g. JOIN SHP-W12-H1042)
-        # ----------------------------------------------------
+        # ----------------------------------------------------------------
+        # STEP 0: Detect LINK <code> command — processed BEFORE auth gatekeeper.
+        # This allows unlinked senders to link their account.
+        # ----------------------------------------------------------------
+        link_match = re.match(r'^LINK\s+([A-Za-z0-9_\-]{20,30})$', clean_text, re.IGNORECASE)
+        if link_match:
+            code = link_match.group(1)
+            # Import here to avoid circular dependency
+            from server.services.whatsapp_link_service import WhatsAppLinkService
+            linked_user = WhatsAppLinkService.redeem_link_code(db, code, normalized_phone)
+            if linked_user:
+                # Refresh citizen from DB (user_id FK is now populated)
+                db.refresh(citizen)
+                reply = strings["linked_welcome"].format(
+                    name=linked_user.full_name or linked_user.email,
+                    coins=citizen.eco_coins
+                ) + "\n\n" + strings["menu_options"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "linked", "citizen": citizen.phone_number, "reply": reply}
+            else:
+                reply = strings["link_invalid"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "link_failed", "reply": reply}
+
+        # ----------------------------------------------------------------
+        # ----------------------------------------------------------------
+        # STEP 0b: Legacy QR code authorization support (JOIN SHP-W12-H1042)
+        # ----------------------------------------------------------------
         qr_match = re.search(r'(?:JOIN\s+)?(SHP[-_]W(\d+)[-_]H([A-Za-z0-9]+))', clean_text, re.IGNORECASE)
         if qr_match:
             full_code = qr_match.group(1).upper()
             ward_num = qr_match.group(2)
             citizen.household_id = full_code
-            citizen.ward = f"Ward {ward_num}"
+            citizen.ward = f'Ward {ward_num}'
             citizen.is_authorized = True
-            citizen.conversation_state = "IDLE"
+            citizen.conversation_state = 'IDLE'
             db.commit()
 
-            reply = strings["authorized_welcome"].format(
-                name=citizen.full_name,
-                ward=citizen.ward,
-                house=citizen.household_id,
+            reply = strings['authorized_welcome'].format(
+                name=citizen.full_name or 'Citizen',
+                ward=citizen.ward or "Dhule Ward 1",
+                house=citizen.household_id or "DHL",
                 coins=citizen.eco_coins,
                 rupees=citizen.eco_coins // 2
             ) + "\n\n" + strings["menu_options"]
 
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "authorized", "citizen": citizen.phone_number, "reply": reply}
+            return {'status': 'authorized', 'citizen': citizen.phone_number, 'reply': reply}
 
-        # ----------------------------------------------------
-        # 2. Gatekeeper: Unauthorized Users Must Provide QR Code
-        # ----------------------------------------------------
-        if not citizen.is_authorized:
-            reply = strings["unauthorized"]
+                # STEP 1: Auth gatekeeper — citizen must have user_id (linked account)
+        # ----------------------------------------------------------------
+        if not citizen.user_id and not citizen.is_authorized:
+            reply = strings["not_linked_prompt"]
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "unauthorized_prompt", "reply": reply}
+            return {"status": "not_linked", "reply": reply}
 
         if citizen.conversation_state == "AWAITING_LOCATION" and message_type == "text":
             reply = strings["ask_location"]
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
             return {"status": "awaiting_location", "reply": reply}
 
-        # ----------------------------------------------------
-        # 3. Multi-Step Reporting State Machine: Photo Ingestion
-        # ----------------------------------------------------
+        # ----------------------------------------------------------------
+        # STEP 2: Multi-Step Reporting State Machine: Photo Ingestion
+        # ----------------------------------------------------------------
         if message_type == "image" or "http" in media_url or media_id:
             if media_id:
                 pending = json.loads(citizen.pending_complaint_data or "{}")
@@ -671,9 +817,9 @@ class WhatsAppService:
                 WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
                 return {"status": "media_error", "reply": reply, "error": "No media identifier provided"}
 
-        # ----------------------------------------------------
-        # 4. Multi-Step Reporting State Machine: Location Pin Ingestion
-        # ----------------------------------------------------
+        # ----------------------------------------------------------------
+        # STEP 3: Multi-Step Reporting State Machine: Location Pin Ingestion
+        # ----------------------------------------------------------------
         if message_type == "location" or (latitude is not None and longitude is not None):
             try:
                 lat_val = float(latitude)
@@ -710,7 +856,7 @@ class WhatsAppService:
                         )
                         reply = strings["report_success"].format(
                             ticket=existing_complaint.tracking_number,
-                            ward=existing_complaint.ward,
+                            location=existing_complaint.location_address or "Dhule",
                             driver=existing_complaint.assigned_driver_name or (
                                 "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
                             ),
@@ -737,8 +883,11 @@ class WhatsAppService:
 
             waste_type = pending.get("waste_type", "Garbage Overflow")
 
-            # Resolve matching registered citizen User (if unambiguous phone match exists)
-            citizen_user = WhatsAppService.find_matching_citizen_user(db, citizen.phone_number)
+            citizen_user = None
+            if citizen.user_id:
+                citizen_user = db.query(User).filter(User.id == citizen.user_id).first()
+            if not citizen_user:
+                citizen_user = WhatsAppService.find_matching_citizen_user(db, citizen.phone_number)
             citizen_user_id = citizen_user.id if citizen_user else None
 
             # Dynamically select an eligible registered driver by least active workload
@@ -756,6 +905,11 @@ class WhatsAppService:
                 assigned_driver_name = None
                 driver_display = "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
 
+            # Build a clean location address from geotagged coordinates
+            location_address = f"Geotagged via WhatsApp ({lat_val:.4f}, {lng_val:.4f}), Dhule"
+            if citizen.ward:
+                location_address = f"{citizen.ward}, {location_address}"
+
             # Persist complaint atomically: complaint + driver task + EcoCoin award +
             # processed-message correlation.  A bounded retry loop retries only when
             # the database raises a duplicate-key error specifically for tracking_number;
@@ -767,18 +921,20 @@ class WhatsAppService:
             _state_before = citizen.conversation_state
             _pending_before = citizen.pending_complaint_data
             for _attempt in range(_WA_MAX_RETRIES):
-                ticket_num = _generate_whatsapp_tracking_id(citizen.ward)
+                ticket_num = _generate_whatsapp_tracking_id(citizen.ward or "0")
                 try:
+                    household_tag = f" {citizen.household_id}" if citizen.household_id else ""
+                    description = f"Reported via WhatsApp by linked citizen{household_tag} (EcoPulse AI — Dhule)."
                     new_complaint = Complaint(
                         tracking_number=ticket_num,
                         citizen_id=citizen_user_id,
                         whatsapp_citizen_id=citizen.id,
-                        ward=citizen.ward,
-                        location_address=f"{citizen.ward}, Shirpur (Geotagged via WhatsApp)",
+                        ward=citizen.ward or "Dhule Ward 1",
+                        location_address=location_address,
                         latitude=lat_val,
                         longitude=lng_val,
                         waste_type=waste_type,
-                        description=f"Reported by authorized household {citizen.household_id} via WhatsApp.",
+                        description=description,
                         image_url=image_url,
                         ai_status="Verified",
                         ai_confidence=0.96,
@@ -845,48 +1001,118 @@ class WhatsAppService:
 
             reply = strings["report_success"].format(
                 ticket=ticket_num,
-                ward=citizen.ward,
+                location=location_address,
                 driver=driver_display,
                 coins=citizen.eco_coins
             )
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
             return {"status": "complaint_created", "ticket": ticket_num, "reply": reply}
 
-        # ----------------------------------------------------
-        # 5. Dashboard Menu Selection Routing
-        # ----------------------------------------------------
+        # ----------------------------------------------------------------
+        # STEP 4: Dashboard Menu Selection Routing (9 options)
+        # ----------------------------------------------------------------
         lowered = clean_text.lower()
 
         # Option 1: Report Waste
-        if clean_text == "1" or "report" in lowered or "तक्रार" in lowered:
+        if clean_text == "1" or "report" in lowered or "तक्रार नोंद" in lowered:
             citizen.conversation_state = "AWAITING_PHOTO"
             db.commit()
             reply = strings["ask_photo"]
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
             return {"status": "awaiting_photo", "reply": reply}
 
-        # Option 2: Track Complaints
-        if clean_text == "2" or "track" in lowered or "स्थिती" in lowered:
-            identity_filters = [Complaint.whatsapp_citizen_id == citizen.id]
-            citizen_user = WhatsAppService.find_matching_citizen_user(db, citizen.phone_number)
-            if citizen_user:
-                identity_filters.append(Complaint.citizen_id == citizen_user.id)
-            complaints = db.query(Complaint).filter(
-                or_(*identity_filters)
-            ).order_by(Complaint.id.desc()).limit(3).all()
-            if not complaints:
-                reply = strings["no_complaints"]
-            else:
-                lines = [strings["complaints_header"]]
-                for c in complaints:
-                    status_icon = "⏳" if c.status == "Pending" else ("🚚" if c.status == "In Progress" else "✅")
-                    lines.append(f"{status_icon} *#{c.tracking_number}*\nप्रकार: {c.waste_type}\nस्थिती: *{c.status}*\nचालक: {c.assigned_driver_name or 'नियुक्त केला जात आहे'}\n")
-                reply = "\n".join(lines)
+        # Option 2: General Complaint
+        if clean_text == "2" or "general" in lowered or "सामान्य" in lowered:
+            citizen.conversation_state = "AWAITING_GENERAL_COMPLAINT"
+            db.commit()
+            reply = strings["general_complaint_prompt"]
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "track_complaints", "reply": reply}
+            return {"status": "awaiting_general_complaint", "reply": reply}
 
-        # Option 3: Eco Wallet
-        if clean_text == "3" or "wallet" in lowered or "coin" in lowered or "वॉलेट" in lowered:
+        # Handle AWAITING_GENERAL_COMPLAINT state — create a general complaint from free text
+        if citizen.conversation_state == "AWAITING_GENERAL_COMPLAINT" and clean_text:
+            citizen_user_id = citizen.user_id
+            assigned_driver = WhatsAppService.select_eligible_driver(db)
+            if assigned_driver:
+                assigned_driver_id = assigned_driver.id
+                assigned_driver_name = (
+                    f"{assigned_driver.full_name} ({assigned_driver.employee_id})"
+                    if assigned_driver.employee_id
+                    else assigned_driver.full_name
+                )
+                driver_display = assigned_driver_name
+            else:
+                assigned_driver_id = None
+                assigned_driver_name = None
+                driver_display = "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
+
+            _coins_before = citizen.eco_coins
+            _state_before = citizen.conversation_state
+            for _attempt in range(_WA_MAX_RETRIES):
+                ticket_num = _generate_whatsapp_tracking_id(citizen.ward or "0")
+                try:
+                    new_complaint = Complaint(
+                        tracking_number=ticket_num,
+                        citizen_id=citizen_user_id,
+                        whatsapp_citizen_id=citizen.id,
+                        ward=citizen.ward or "Dhule Ward 1",
+                        location_address=f"Dhule (reported via WhatsApp text)",
+                        waste_type="General Complaint",
+                        description=clean_text[:500],
+                        ai_status="Pending Review",
+                        ai_confidence=0.0,
+                        status="Pending",
+                        assigned_driver_id=assigned_driver_id,
+                        assigned_driver_name=assigned_driver_name
+                    )
+                    db.add(new_complaint)
+                    db.flush()
+
+                    new_task = DriverTask(
+                        driver_id=assigned_driver_id,
+                        complaint_id=new_complaint.id,
+                        location_name=new_complaint.location_address,
+                        status="Pending",
+                        route_order=1
+                    )
+                    db.add(new_task)
+
+                    citizen.eco_coins = _coins_before + 10
+                    citizen.conversation_state = "IDLE"
+                    db.commit()
+                    break
+                except Exception as exc:
+                    db.rollback()
+                    citizen.eco_coins = _coins_before
+                    citizen.conversation_state = _state_before
+                    if _is_tracking_number_collision(exc):
+                        if _attempt < _WA_MAX_RETRIES - 1:
+                            continue
+                        raise RuntimeError("Could not generate unique tracking number.") from exc
+                    raise
+
+            reply = strings["general_complaint_received"].format(
+                ticket=ticket_num,
+                description=clean_text[:100] + ("..." if len(clean_text) > 100 else ""),
+                driver=driver_display
+            )
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {"status": "general_complaint_created", "ticket": ticket_num, "reply": reply}
+
+        # Option 3: Garbage Truck Tracking (stub — no live GPS available)
+        if clean_text == "3" or "truck" in lowered or "घंटागाडी" in lowered or "गाडी" in lowered:
+            reply = strings["truck_unavailable"]
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {"status": "truck_unavailable", "reply": reply}
+
+        # Option 4: Collection Schedule (stub — not yet available)
+        if clean_text == "4" or "schedule" in lowered or "वेळापत्रक" in lowered:
+            reply = strings["schedule_unavailable"]
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {"status": "schedule_unavailable", "reply": reply}
+
+        # Option 5: Eco Wallet
+        if clean_text == "5" or "wallet" in lowered or "coin" in lowered or "वॉलेट" in lowered:
             reply = strings["wallet_info"].format(
                 coins=citizen.eco_coins,
                 rupees=citizen.eco_coins // 2
@@ -894,33 +1120,68 @@ class WhatsAppService:
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
             return {"status": "wallet_info", "reply": reply}
 
-        # Option 4: Live Garbage Truck Tracking
-        if clean_text == "4" or "truck" in lowered or "गाडी" in lowered:
-            reply = strings["truck_tracking"].format(ward=citizen.ward)
+        # Option 6: My Complaints
+        if clean_text == "6" or "track" in lowered or "स्थिती" in lowered or "my complaint" in lowered:
+            # Query by whatsapp_citizen_id OR citizen_id (user_id from link)
+            identity_filters = [Complaint.whatsapp_citizen_id == citizen.id]
+            if citizen.user_id:
+                identity_filters.append(Complaint.citizen_id == citizen.user_id)
+            complaints = db.query(Complaint).filter(
+                or_(*identity_filters)
+            ).order_by(Complaint.id.desc()).limit(5).all()
+            if not complaints:
+                reply = strings["no_complaints"]
+            else:
+                lines = [strings["complaints_header"]]
+                for c in complaints:
+                    status_icon = "⏳" if c.status == "Pending" else ("🚚" if c.status == "In Progress" else "✅")
+                    lines.append(
+                        f"{status_icon} *#{c.tracking_number}*\n"
+                        f"प्रकार: {c.waste_type}\nस्थिती: *{c.status}*\n"
+                        f"चालक: {c.assigned_driver_name or ('नियुक्त केला जात आहे' if lang == 'mr' else 'Pending')}\n"
+                    )
+                reply = "\n".join(lines)
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "truck_tracking", "reply": reply}
+            return {"status": "track_complaints", "reply": reply}
 
-        # Option 5: Municipal Notices
-        if clean_text == "5" or "notice" in lowered or "सूचना" in lowered:
-            reply = strings["notices"]
+        # Option 7: Leaderboard (stub)
+        if clean_text == "7" or "leaderboard" in lowered or "लीडर" in lowered:
+            reply = strings["leaderboard_unavailable"].format(coins=citizen.eco_coins)
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "notices", "reply": reply}
+            return {"status": "leaderboard_unavailable", "reply": reply}
 
-        # Option 6: Change Language
-        if clean_text == "6" or "lang" in lowered or "भाषा" in lowered or "english" in lowered:
-            new_lang = "en" if citizen.preferred_language == "mr" else "mr"
-            citizen.preferred_language = new_lang
-            db.commit()
-            new_strings = TEXTS[new_lang]
-            reply = new_strings["lang_switched"] + "\n\n" + new_strings["menu_options"]
+        # Option 8: Municipal Notices (stub)
+        if clean_text == "8" or "notice" in lowered or "सूचना" in lowered:
+            reply = strings["notices_unavailable"]
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "lang_switched", "language": new_lang, "reply": reply}
+            return {"status": "notices_unavailable", "reply": reply}
+
+        # Option 9: Help / Switch Language
+        if (clean_text == "9" or "help" in lowered or "भाषा" in lowered
+                or "english" in lowered or "marathi" in lowered or "मराठी" in lowered):
+            # Switch language if requested
+            if "english" in lowered:
+                new_lang = "en"
+                citizen.preferred_language = new_lang
+                db.commit()
+                new_strings = TEXTS[new_lang]
+                reply = new_strings["lang_switched"] + "\n\n" + new_strings["menu_options"]
+            elif "marathi" in lowered or "मराठी" in lowered:
+                new_lang = "mr"
+                citizen.preferred_language = new_lang
+                db.commit()
+                new_strings = TEXTS[new_lang]
+                reply = new_strings["lang_switched"] + "\n\n" + new_strings["menu_options"]
+            else:
+                reply = strings["help_text"]
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {"status": "help", "reply": reply}
 
         # Default Fallback: Present Dashboard Menu
         reply = strings["authorized_welcome"].format(
-            name=citizen.full_name,
-            ward=citizen.ward,
-            house=citizen.household_id or 'SHP-W12',
+            name=citizen.full_name or "Citizen",
+            ward=citizen.ward or "Dhule Ward 1",
+            house=citizen.household_id or "DHL",
             coins=citizen.eco_coins,
             rupees=citizen.eco_coins // 2
         ) + "\n\n" + strings["menu_options"]

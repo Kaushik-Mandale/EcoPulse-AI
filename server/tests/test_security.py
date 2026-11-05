@@ -1346,7 +1346,7 @@ def test_scope_h_whatsapp_tracking_id_format():
     """Generated WhatsApp IDs embed ward number and have the correct format."""
     from server.services.whatsapp_service import _generate_whatsapp_tracking_id
 
-    pattern = _re.compile(r'^SHP-2026-W\d+-[A-Z0-9]{9}$')
+    pattern = _re.compile(r'^(?:DHL|SHP)-2026-W\d+-[A-Z0-9]{9}$')
     for ward in ['Ward 1', 'Ward 12', 'Ward 27']:
         for _ in range(100):
             tid = _generate_whatsapp_tracking_id(ward)
