@@ -22,12 +22,13 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: PROJECT_NAME
-        value: "CITY_SWAP API"
+        value: "EcoPulse AI"
       - key: ENV
         value: "production"
       - key: CORS_ORIGINS
-        # REQUIRED: Update this to your actual frontend URL before deploying
-        value: "https://city-swap-frontend.onrender.com"
+        value: "https://ecopulse-ai-frontend.onrender.com"
+      - key: FRONTEND_URL
+        value: "https://ecopulse-ai-frontend.onrender.com"
       - key: PORT
         value: "10000"
       - key: WHATSAPP_PROVIDER
@@ -81,11 +82,11 @@ services:
     routes:
       - type: rewrite
         source: /api/*
-        destination: https://city-swap-backend.onrender.com/api/*
+        destination: https://ecopulse-ai-backend.onrender.com/api/*
       - type: rewrite
         source: /*
         destination: /index.html
     envVars:
       - key: VITE_API_URL
-        value: https://city-swap-backend.onrender.com/api
+        value: https://ecopulse-ai-backend.onrender.com/api
 

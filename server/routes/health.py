@@ -23,7 +23,7 @@ def health_check(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
         return {
             "status": "healthy",
-            "service": "CITY_SWAP Backend",
+            "service": "EcoPulse AI Backend",
             "db": "ok",
             "timestamp": ts,
         }
@@ -33,7 +33,7 @@ def health_check(db: Session = Depends(get_db)):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "status": "degraded",
-                "service": "CITY_SWAP Backend",
+                "service": "EcoPulse AI Backend",
                 "db": "error",
                 "detail": "Database connection failed",
                 "timestamp": ts,

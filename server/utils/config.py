@@ -57,7 +57,7 @@ class Config:
         self.reload()
 
     def reload(self):
-        self.PROJECT_NAME: str = os.getenv("PROJECT_NAME", "CITY_SWAP API")
+        self.PROJECT_NAME: str = os.getenv("PROJECT_NAME", "EcoPulse AI")
         self.VERSION: str = os.getenv("VERSION", os.getenv("PROJECT_VERSION", "1.0.0"))
         self.ENV: str = normalize_environment(
             os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
