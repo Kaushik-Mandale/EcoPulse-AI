@@ -22,13 +22,26 @@ const WhatsAppLinkCard = ({ user }) => {
   const [copied, setCopied] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const timerRef = useRef(null);
   const pollRef = useRef(null);
+  const mountedRef = useRef(true);
 
-  // Load initial status
+  // Track mounted state to prevent setState after unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  // Load initial WhatsApp link status from backend
   const checkStatus = async () => {
     try {
       const data = await getLinkStatus();
+      if (!mountedRef.current) return;
       setLinkStatus(data);
       if (data.is_linked) {
         setStatus('LINKED');
@@ -38,65 +51,85 @@ const WhatsAppLinkCard = ({ user }) => {
         setStatus('NOT_LINKED');
       }
     } catch (err) {
-      console.error('Failed to fetch WhatsApp link status:', err);
+      if (!mountedRef.current) return;
+      // 401 is handled globally by api.js interceptor; show error for other failures
+      if (err?.response?.status !== 401) {
+        console.error('Failed to fetch WhatsApp link status:', err);
+        setErrorMsg('Could not load link status. Please refresh the page.');
+        setStatus('ERROR');
+      }
     }
   };
 
   useEffect(() => {
     checkStatus();
+  }, []);
+
+  // Timer countdown + background polling — started once when CODE_GENERATED
+  // Depends only on [status] to avoid restarting on every timeLeft tick
+  useEffect(() => {
+    if (status !== 'CODE_GENERATED') return;
+
+    // Clear any previous intervals before starting new ones
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (pollRef.current) clearInterval(pollRef.current);
+
+    // Countdown timer
+    timerRef.current = setInterval(() => {
+      if (!mountedRef.current) return;
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          if (mountedRef.current) setStatus('CODE_EXPIRED');
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Background poll every 5 s to detect successful linking
+    pollRef.current = setInterval(async () => {
+      if (!mountedRef.current) return;
+      try {
+        const res = await getLinkStatus();
+        if (!mountedRef.current) return;
+        if (res.is_linked) {
+          setLinkStatus(res);
+          setStatus('LINKED');
+          clearInterval(pollRef.current);
+          clearInterval(timerRef.current);
+        }
+      } catch (_) {
+        // ignore transient poll errors
+      }
+    }, 5000);
+
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, []);
-
-  // Timer countdown handling
-  useEffect(() => {
-    if (status === 'CODE_GENERATED' && timeLeft > 0) {
-      timerRef.current = setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current);
-            setStatus('CODE_EXPIRED');
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-
-      // Auto-poll status every 5 seconds to detect link completion in background
-      pollRef.current = setInterval(async () => {
-        try {
-          const res = await getLinkStatus();
-          if (res.is_linked) {
-            setLinkStatus(res);
-            setStatus('LINKED');
-            clearInterval(pollRef.current);
-            clearInterval(timerRef.current);
-          }
-        } catch (e) {
-          // ignore transient poll error
-        }
-      }, 5000);
-
-      return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-        if (pollRef.current) clearInterval(pollRef.current);
-      };
-    }
-  }, [status, timeLeft]);
+  }, [status]);
 
   const handleGenerate = async () => {
+    if (generating) return; // prevent duplicate requests
+    setGenerating(true);
     setStatus('GENERATING_CODE');
     setErrorMsg('');
     try {
       const res = await generateLinkCode();
-      setLinkData(res);
+      if (!mountedRef.current) return;
+      // Backend returns both `link_code` and `code` for compatibility — prefer `code`
+      const displayCode = res.code || res.link_code;
+      setLinkData({ ...res, code: displayCode });
       setTimeLeft(res.expires_in || 600);
       setStatus('CODE_GENERATED');
     } catch (err) {
-      setErrorMsg(err.response?.data?.detail || err.message || 'Failed to generate link code');
+      if (!mountedRef.current) return;
+      const detail = err.response?.data?.detail || err.message || 'Failed to generate link code';
+      setErrorMsg(detail);
       setStatus('ERROR');
+    } finally {
+      if (mountedRef.current) setGenerating(false);
     }
   };
 

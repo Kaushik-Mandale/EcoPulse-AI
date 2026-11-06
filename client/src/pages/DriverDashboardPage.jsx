@@ -77,16 +77,13 @@ const DriverDashboardPage = () => {
   };
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('ecopulse_user');
-    if (savedUser) {
-      try {
-        setDriver(JSON.parse(savedUser));
-      } catch (e) {
-        setDriver({ name: 'Ramesh Yadav', role: 'driver', ward: 'Ward 12' });
+    getCurrentUser().then((userData) => {
+      if (userData) {
+        setDriver(userData);
+      } else {
+        navigate('/login', { replace: true });
       }
-    } else {
-      setDriver({ name: 'Ramesh Yadav', role: 'driver', ward: 'Ward 12' });
-    }
+    });
 
     loadDriverData();
   }, []);
@@ -374,7 +371,7 @@ const DriverDashboardPage = () => {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-xs font-bold text-white truncate">
-                {driver?.name || driver?.full_name || 'Ramesh Yadav'}
+                {driver?.name || driver?.full_name || 'Driver'}
               </p>
               <p className="text-[10px] font-semibold text-emerald-300 flex items-center gap-1">
                 <span>EcoCoins: {driver?.eco_coins || 100}</span>
@@ -443,7 +440,7 @@ const DriverDashboardPage = () => {
               </div>
               <div>
                 <div className="text-xs font-extrabold text-slate-900">
-                  {driver?.name || driver?.full_name || 'Ramesh Yadav'}
+                  {driver?.name || driver?.full_name || 'Driver'}
                 </div>
                 <div className="text-[10px] font-bold text-emerald-700">
                   ⚡ EcoCoins: {driver?.eco_coins || 100}
@@ -748,7 +745,7 @@ const DriverDashboardPage = () => {
                     <div className="space-y-3">
                       {(performance?.leaderboard || [
                         { rank: 1, initials: 'AS', name: 'Anita Sharma', points: 2100, is_you: false },
-                        { rank: 2, initials: 'BB', name: driver?.full_name || driver?.name || 'Bhavesh Burad', points: driver?.eco_coins || 1450, is_you: true },
+                        { rank: 2, initials: 'BB', name: driver?.full_name || driver?.name || 'Driver', points: driver?.eco_coins || 1450, is_you: true },
                         { rank: 3, initials: 'SJ', name: 'Suresh Joshi', points: 1220, is_you: false }
                       ]).map((entry, idx) => (
                         <div key={idx} className={`flex items-center gap-3 p-2 rounded-lg ${

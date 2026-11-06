@@ -36,6 +36,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         )
 
 @router.get("/me", response_model=UserResponse)
+@router.get("/my", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     return UserResponse(
         id=current_user.id,

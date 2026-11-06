@@ -143,16 +143,13 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
   };
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('ecopulse_user');
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch (e) {
-        setUser({ name: 'Bhavesh Burad', role: 'admin', ward: 'Municipal HQ' });
+    getCurrentUser().then((userData) => {
+      if (userData) {
+        setUser(userData);
+      } else {
+        navigate('/login', { replace: true });
       }
-    } else {
-      setUser({ name: 'Bhavesh Burad', role: 'admin', ward: 'Municipal HQ' });
-    }
+    });
     // Load all dashboard data in parallel
     loadData();
     loadDrivers();
@@ -429,7 +426,7 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
                   className="w-full flex items-center gap-3 p-2.5 rounded-lg bg-white/5 text-xs font-bold text-white hover:bg-white/10"
                 >
                   <User className="w-4 h-4 text-[#b8f0be]" />
-                  <span>{user?.name || user?.full_name || 'Bhavesh Burad'}</span>
+                  <span>{user?.name || user?.full_name || 'Municipal Admin'}</span>
                 </button>
                 <button
                   onClick={handleLogout}
@@ -510,7 +507,7 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[11px] font-bold text-white truncate group-hover:text-[#b8f0be] transition-colors">
-                {user?.name || user?.full_name || 'Bhavesh Burad'}
+                {user?.name || user?.full_name || 'Municipal Admin'}
               </div>
               <div className="text-[9px] font-medium text-white/60 truncate">
                 {user?.ward || 'Municipal HQ'} • Admin
@@ -590,7 +587,7 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
             <div className="relative cursor-pointer shrink-0" onClick={() => setShowProfileModal(true)}>
               <div className="w-8 h-8 rounded-full border border-border-subtle overflow-hidden bg-slate-100 flex items-center justify-center">
                 <img
-                  alt="Bhavesh Burad"
+                  alt="Admin"
                   className="w-full h-full object-cover"
                   src="https://lh3.googleusercontent.com/aida-public/AB6AXuCO7E5B130ZuL2MpgYcSu5PD3bNFj_5JCTuTyoveJDJ_SJvF_MhRL2QG4pZmdFcqRWSsgLmiSVNwykEIof30YzfVA3axYAe_Cpd_LqkDnBc1NkBYiKVc4fLyj9_eWB4dsWHoz977isZxXFWDYlMhZKSI70udQjtelgpAVWC7AdOf7GEBaMS0lEIGFwpB5557zwkGiCCJM6UQGqrlwWlQyEjDPmKmkILQr8txzxkLb2a2NglwmaBap6w"
                 />

@@ -12,7 +12,7 @@ const api = axios.create({
   },
 });
 
-// Automatically inject JWT token into request headers if available
+// ── Request interceptor: inject JWT from localStorage ───────────────────────
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('ecopulse_token');
@@ -24,13 +24,37 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+// ── Response interceptor: handle 401 globally ───────────────────────────────
+// When the backend returns 401 (token expired / invalid), clear session state
+// and redirect to login. This prevents stale tokens from silently accumulating.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Clear all authentication artifacts
+      localStorage.removeItem('ecopulse_token');
+      localStorage.removeItem('ecopulse_user');
+
+      // Avoid redirect loops: only navigate away from protected pages
+      const currentPath = window.location.pathname;
+      const publicPaths = ['/login', '/signup', '/forgot-password', '/otp', '/', '/demo', '/help', '/faq', '/contact', '/privacy', '/terms'];
+      const isPublic = publicPaths.some((p) => currentPath === p || currentPath.startsWith('/track'));
+      if (!isPublic) {
+        // Use replace to prevent Back from returning to the authenticated page
+        window.location.replace('/login');
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const getHealthStatus = async () => {
   try {
     const response = await api.get('/health');
     return response.data;
   } catch (error) {
     console.error('Error fetching health status:', error);
-    return { status: 'healthy' };
+    return { status: 'unknown' };
   }
 };
 

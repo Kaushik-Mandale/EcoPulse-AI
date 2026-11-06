@@ -38,28 +38,42 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
   const [showReportModal, setShowReportModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [recentComplaints, setRecentComplaints] = useState([]);
+  const [complaintsError, setComplaintsError] = useState(null);
+  const [complaintsLoading, setComplaintsLoading] = useState(true);
   const [selectedComplaint, setSelectedComplaint] = useState(null);
   const [complaintFilter, setComplaintFilter] = useState('All');
 
   useEffect(() => {
-    // Synchronize current user session with backend PostgreSQL database
+    // Validate session with backend and load real user profile.
+    // ProtectedRoute already verified the token; this refreshes the data.
     getCurrentUser().then((userData) => {
       if (userData) {
         setUser(userData);
       } else {
-        const savedUser = localStorage.getItem('ecopulse_user');
-        if (savedUser) {
-          try {
-            setUser(JSON.parse(savedUser));
-          } catch (e) {
-            setUser({ name: 'Priya Patil', email: 'priya@cityswap.io', role: 'citizen', ward: 'Ward 12', eco_coins: 150 });
-          }
-        }
+        // Token invalidated between ProtectedRoute and render.
+        // The 401 interceptor in api.js redirects to /login automatically.
+        navigate('/login', { replace: true });
       }
     });
 
-    // Load complaints from backend API for logged-in user session
-    fetchMyComplaints().then((data) => setRecentComplaints(data));
+    // Load real complaints — no fabricated fallback data
+    setComplaintsLoading(true);
+    fetchMyComplaints()
+      .then((data) => {
+        setRecentComplaints(data);
+        setComplaintsError(null);
+      })
+      .catch((err) => {
+        setRecentComplaints([]);
+        const httpStatus = err?.response?.status;
+        if (httpStatus === 401 || httpStatus === 403) {
+          // Handled by global interceptor — suppress redundant error message
+          setComplaintsError(null);
+        } else {
+          setComplaintsError('Unable to load complaints. Please try again.');
+        }
+      })
+      .finally(() => setComplaintsLoading(false));
   }, []);
 
   const handleLogout = () => {
@@ -240,7 +254,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
             {user?.name ? user.name.charAt(0).toUpperCase() : 'P'}
           </div>
           <div className="flex flex-col">
-            <span className="text-white text-xs font-bold">{user?.name || user?.full_name || 'Priya Patil'}</span>
+            <span className="text-white text-xs font-bold">{user?.name || user?.full_name || 'Citizen'}</span>
             <span className="text-emerald-300 text-[10px] font-semibold">{user?.ward || 'Ward 12'} • Active Citizen</span>
           </div>
         </div>
@@ -386,7 +400,31 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
               </div>
 
               {/* Complaints Grid */}
-              {recentComplaints.filter(c => complaintFilter === 'All' || c.status === complaintFilter).length === 0 ? (
+              {complaintsLoading ? (
+                <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center max-w-lg mx-auto">
+                  <div className="w-8 h-8 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                  <p className="text-sm text-slate-500">Loading your complaints…</p>
+                </div>
+              ) : complaintsError ? (
+                <div className="bg-white border border-rose-200 rounded-3xl p-12 text-center max-w-lg mx-auto">
+                  <div className="w-12 h-12 bg-rose-50 text-rose-400 rounded-2xl flex items-center justify-center mx-auto mb-4 text-xl">⚠️</div>
+                  <h3 className="text-base font-bold text-slate-900">Could Not Load Complaints</h3>
+                  <p className="text-xs text-slate-500 mt-1">{complaintsError}</p>
+                  <button
+                    onClick={() => {
+                      setComplaintsLoading(true);
+                      setComplaintsError(null);
+                      fetchMyComplaints()
+                        .then((data) => { setRecentComplaints(data); setComplaintsError(null); })
+                        .catch(() => setComplaintsError('Unable to load complaints. Please try again.'))
+                        .finally(() => setComplaintsLoading(false));
+                    }}
+                    className="mt-4 px-4 py-2 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : recentComplaints.filter(c => complaintFilter === 'All' || c.status === complaintFilter).length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center max-w-lg mx-auto">
                   <div className="w-12 h-12 bg-slate-50 text-slate-400 rounded-2xl flex items-center justify-center mx-auto mb-4 text-xl">
                     📁
@@ -775,7 +813,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                     <input 
                       type="text" 
                       name="name"
-                      defaultValue={user?.name || user?.full_name || 'Priya Patil'}
+                      defaultValue={user?.name || user?.full_name || 'Citizen'}
                       required
                       className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-primary"
                     />
@@ -785,7 +823,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                     <input 
                       type="email" 
                       name="email"
-                      defaultValue={user?.email || 'priya@cityswap.io'}
+                      defaultValue={user?.email || ''}
                       required
                       className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-primary"
                     />

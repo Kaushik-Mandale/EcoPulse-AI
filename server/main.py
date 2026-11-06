@@ -6,7 +6,7 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from server.database.db import engine, Base, SessionLocal, ensure_complaints_schema
@@ -97,6 +97,24 @@ app.include_router(admin.router)
 app.include_router(item.router)
 app.include_router(uploads.router)
 app.include_router(whatsapp.router, prefix="/api/whatsapp", tags=["WhatsApp"])
+
+from server.schemas.auth import UserResponse
+from server.utils.security import get_current_user
+from server.models.user import User
+
+@app.get("/api/my", response_model=UserResponse, tags=["Authentication"])
+def get_my_current_user(current_user: User = Depends(get_current_user)):
+    """Alias for /api/auth/me returning the authenticated user profile."""
+    return UserResponse(
+        id=current_user.id,
+        name=current_user.full_name,
+        email=current_user.email,
+        role=current_user.role,
+        ward=current_user.ward,
+        phone=current_user.phone,
+        employee_id=current_user.employee_id,
+        eco_coins=current_user.eco_coins or 100
+    )
 
 @app.get("/")
 def root():
