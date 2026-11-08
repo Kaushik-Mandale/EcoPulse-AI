@@ -40,8 +40,8 @@ const ImpactSection = () => {
       color: 'text-purple-600',
       gradient: 'from-purple-500/15 to-violet-500/25 border-purple-300/50',
       stat: '27 Wards',
-      label: 'Shirpur Pilot Scope',
-      subtext: 'Full municipal zone coverage (~90k pop)',
+      label: 'Demonstration Scope',
+      subtext: 'Demonstration ward coverage for civic evaluation',
     },
     {
       icon: ShieldCheck,
@@ -67,13 +67,13 @@ const ImpactSection = () => {
         {/* Title */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100/90 text-emerald-800 text-xs font-bold mb-3 border border-emerald-200">
-            <span>Shirpur Municipal Council Pilot Benchmarks</span>
+            <span>Simulated Civic Benchmark Architecture</span>
           </div>
           <h2 className="text-2xl md:text-3xl lg:text-4xl font-extrabold text-[#101828] tracking-tight">
             Measurable Civic & Environmental Impact
           </h2>
           <p className="text-slate-600 text-sm font-semibold max-w-xl mx-auto mt-2">
-            Target SLA benchmarks engineered for Tier-2/Tier-3 Indian municipalities, validated for Shirpur's 27 wards.
+            Target SLA benchmarks modeled for Tier-2/Tier-3 Indian municipal scenarios, evaluated against Dhule pilot models.
           </p>
         </div>
 

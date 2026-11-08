@@ -14,7 +14,7 @@ export default function InteractiveMapPage() {
             </Link>
             <div>
               <h1 className="text-lg font-black text-slate-900 tracking-tight leading-none">City GIS & Live Fleet Tracking</h1>
-              <p className="text-xs text-emerald-700 font-bold mt-0.5">Shirpur Municipal Council • 27 Wards Telemetry</p>
+              <p className="text-xs text-emerald-700 font-bold mt-0.5">Dhule Pilot Region • 27 Wards Simulated Telemetry</p>
             </div>
           </div>
           <div className="flex items-center gap-3">

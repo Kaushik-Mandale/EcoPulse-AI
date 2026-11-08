@@ -8,9 +8,9 @@ import {
 import { getCurrentUser, updateUserProfile } from '../services/authService';
 
 const REWARD_ITEMS = [
-  { id: 1, title: '10% Municipal Property Tax Rebate', cost: 500, category: 'Civic Rebate', partner: 'Shirpur Municipal Council' },
-  { id: 2, title: '1 Month Free City Bus Transit Pass', cost: 300, category: 'Public Transit', partner: 'MSRTC / Shirpur Transit' },
-  { id: 3, title: '5kg Certified Organic Compost Kit', cost: 150, category: 'Sustainability', partner: 'Shirpur Agro Mission' },
+  { id: 1, title: '10% Municipal Property Tax Rebate', cost: 500, category: 'Civic Rebate', partner: 'Civic Rewards Demo Partner' },
+  { id: 2, title: '1 Month Free City Bus Transit Pass', cost: 300, category: 'Public Transit', partner: 'Public Transit Demo Partner' },
+  { id: 3, title: '5kg Certified Organic Compost Kit', cost: 150, category: 'Sustainability', partner: 'Community Compost Demo Partner' },
   { id: 4, title: '₹100 Solar Utility Energy Voucher', cost: 250, category: 'Clean Energy', partner: 'MSEDCL Clean Energy' },
 ];
 
@@ -48,7 +48,7 @@ export default function EcoWalletPage() {
     const newBal = balance - item.cost;
     setBalance(newBal);
     setRedeemed(prev => [...prev, item.id]);
-    setMessage(`Successfully redeemed voucher for "${item.title}"! Voucher code: SHIRPUR-${Math.floor(Math.random() * 89999 + 10000)}`);
+    setMessage(`Successfully redeemed voucher for "${item.title}"! Voucher code: DHULE-${Math.floor(Math.random() * 89999 + 10000)}`);
     setTimeout(() => setMessage(''), 5000);
     updateUserProfile({ eco_coins: newBal });
   };
@@ -63,7 +63,7 @@ export default function EcoWalletPage() {
             </Link>
             <div>
               <h1 className="text-lg font-black text-slate-900 tracking-tight leading-none">EcoCoin Rewards & Wallet</h1>
-              <p className="text-xs text-emerald-700 font-bold mt-0.5">Citizen Cleanliness Gamification • Shirpur</p>
+              <p className="text-xs text-emerald-700 font-bold mt-0.5">Citizen Cleanliness Gamification • Dhule Pilot</p>
             </div>
           </div>
           <Link to="/report" className="text-xs font-bold bg-[#005C2B] text-white px-3.5 py-2 rounded-xl hover:bg-[#004a22] transition-colors">

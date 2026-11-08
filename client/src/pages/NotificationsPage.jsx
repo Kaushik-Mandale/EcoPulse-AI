@@ -6,7 +6,7 @@ import api from '../services/api';
 const BROADCASTS = [
   { id: 1, type: 'urgent', title: 'Ward 12 Intensive Cleanliness Drive Active', desc: '4 additional compactors deployed near Green Park and Nimzari Naka.', date: 'Today, 07:00 AM' },
   { id: 2, type: 'info', title: 'Monsoon Waste Segregation Advisory', desc: 'Please ensure separate wet waste containers to prevent drain clogs during rainfall.', date: 'Yesterday' },
-  { id: 3, type: 'success', title: 'Shirpur Municipal Council Hits 92% Clearance Rate', desc: 'Over 42 tonnes of segregated solid waste collected and recycled on schedule.', date: '08 Sep 2026' },
+  { id: 3, type: 'success', title: 'Simulated Ward Clearance Demonstration Hits 92% SLA', desc: 'Pilot scenario: 42 tonnes of simulated segregated solid waste logged on schedule.', date: '08 Sep 2026' },
 ];
 
 export default function NotificationsPage() {

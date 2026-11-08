@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Sparkles, Shield, Zap, Leaf, Recycle, Building2, Users, Star } from 'lucide-react';
 import LoginForm from './LoginForm';
@@ -58,7 +59,7 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
         
         {/* Top Header Logo & Navigation */}
         <div className="flex items-center justify-between shrink-0">
-          <a href="/" className="flex items-center gap-2.5 group">
+          <Link to="/" className="flex items-center gap-2.5 group">
             <div className="w-[38px] h-[38px] bg-[#005C2B] rounded-xl flex items-center justify-center text-white shadow-xs group-hover:scale-105 transition-transform">
               <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
                 <path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
@@ -72,15 +73,15 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
                 Smart Civic & Sustainability Ecosystem
               </div>
             </div>
-          </a>
+          </Link>
 
-          <a
-            href="/"
+          <Link
+            to="/"
             className="inline-flex items-center gap-1.5 bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-xl text-xs font-bold text-gray-700 border border-gray-200/80 shadow-2xs hover:bg-white hover:text-[#005C2B] transition-all cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Back to Home</span>
-          </a>
+          </Link>
         </div>
 
         {/* Center Storytelling Hero */}
@@ -231,21 +232,21 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
         
         {/* Mobile Top Header */}
         <div className="flex lg:hidden items-center justify-between mb-3 shrink-0">
-          <a href="/" className="flex items-center gap-2">
+          <Link to="/" className="flex items-center gap-2">
             <div className="w-8 h-8 bg-[#005C2B] rounded-xl flex items-center justify-center text-white shadow-xs">
               <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
                 <path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
               </svg>
             </div>
             <span className="text-base font-black text-gray-900">City Swap</span>
-          </a>
+          </Link>
 
-          <a
-            href="/"
+          <Link
+            to="/"
             className="inline-flex items-center gap-1 text-xs font-bold text-gray-700 bg-white/90 px-2.5 py-1 rounded-lg border border-gray-200"
           >
             <ArrowLeft className="w-3 h-3" /> Home
-          </a>
+          </Link>
         </div>
 
         {/* Centered Floating Glassmorphism Form Card */}

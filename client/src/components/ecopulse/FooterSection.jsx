@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Mail, Phone, MapPin, Recycle } from 'lucide-react';
+import { Mail, MapPin, Recycle } from 'lucide-react';
 
 const FooterSection = () => {
   return (
@@ -90,15 +90,11 @@ const FooterSection = () => {
             <ul className="space-y-2.5 text-xs font-semibold text-emerald-100/80">
               <li className="flex items-center gap-2">
                 <Mail className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <a href="mailto:shirpur.sanitation@ecopulse.ai" className="hover:underline truncate">shirpur.sanitation@ecopulse.ai</a>
-              </li>
-              <li className="flex items-center gap-2">
-                <Phone className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <a href="tel:+912563255100" className="hover:underline">+91 (02563) 255100</a>
+                <a href="mailto:support@ecopulse.ai" className="hover:underline truncate">support@ecopulse.ai</a>
               </li>
               <li className="flex items-start gap-2">
                 <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                <span>Shirpur Municipal Council, Dhule, Maharashtra</span>
+                <span>Dhule Urban Region, Maharashtra, India</span>
               </li>
             </ul>
           </div>
@@ -148,7 +144,7 @@ const FooterSection = () => {
 
         {/* Bottom Copyright Bar */}
         <div className="pt-6 text-center text-xs font-semibold text-emerald-200/70">
-          © 2026 EcoPulse AI • Shirpur Municipal Council Smart Sanitation Pilot. All rights reserved.
+          © 2026 EcoPulse AI • Smart Sanitation & Civic Intelligence Pilot (Dhule). All rights reserved.
         </div>
       </div>
 

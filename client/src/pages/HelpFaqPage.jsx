@@ -4,7 +4,7 @@ import { ArrowLeft, Search, HelpCircle, ChevronDown, ChevronUp, MessageSquare, P
 
 const FAQS = [
   {
-    q: 'What is EcoPulse AI and how does it work in Shirpur?',
+    q: 'What is EcoPulse AI and how does it work in Dhule?',
     a: 'EcoPulse AI is a smart waste management platform connecting citizens, sanitation drivers, and municipal officers. Citizens report waste via WhatsApp or Web, AI automatically validates the photo and location, and dispatches the nearest ghantagadi driver for resolution.'
   },
   {
@@ -21,7 +21,7 @@ const FAQS = [
   },
   {
     q: 'What should I do for emergency hazardous or dead animal waste?',
-    a: 'For urgent hazardous waste, select "Hazardous / Medical Waste" in the report form or call the Shirpur Municipal Sanitation Helpline at 1800-233-0123 for immediate priority dispatch.'
+    a: 'For urgent hazardous waste, select "Hazardous / Medical Waste" in the report form or call the municipal emergency helpline or contact support@ecopulse.ai for platform assistance.'
   }
 ];
 
@@ -90,7 +90,7 @@ export default function HelpFaqPage() {
         <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
           <div>
             <h4 className="text-sm font-black text-slate-900">Still have questions?</h4>
-            <p className="text-xs text-slate-500 font-semibold mt-0.5">Reach Shirpur Municipal Council sanitation helpdesk</p>
+            <p className="text-xs text-slate-500 font-semibold mt-0.5">Contact the EcoPulse AI pilot support team</p>
           </div>
           <div className="flex items-center gap-3 text-xs font-bold">
             <a href="tel:18002330123" className="flex items-center gap-1.5 text-[#005C2B] bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-200 hover:bg-emerald-100">

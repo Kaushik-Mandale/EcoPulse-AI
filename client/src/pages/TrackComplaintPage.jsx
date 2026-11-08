@@ -10,7 +10,7 @@ import api from '../services/api';
 const SAMPLE_COMPLAINTS = {
   'EP-2026-00123': {
     tracking_number: 'EP-2026-00123',
-    location: 'Green Park, Plot 45, Ward 12, Shirpur',
+    location: 'Green Park, Plot 45, Ward 12, Dhule',
     ward: 'Ward 12',
     type: 'Mixed Waste',
     status: 'In Progress',
@@ -30,7 +30,7 @@ const SAMPLE_COMPLAINTS = {
   },
   'EP-2026-00122': {
     tracking_number: 'EP-2026-00122',
-    location: 'Sai Nagar, Market Road, Ward 8, Shirpur',
+    location: 'Sai Nagar, Market Road, Ward 8, Dhule',
     ward: 'Ward 8',
     type: 'Garbage Overflow',
     status: 'Resolved',
@@ -91,7 +91,7 @@ export default function TrackComplaintPage() {
       // Generate simulated real-time response for any valid format
       setComplaint({
         tracking_number: query.toUpperCase(),
-        location: 'Shirpur Municipal Ward Sector',
+        location: 'Dhule Municipal Ward Sector',
         ward: 'Ward 12',
         type: 'Mixed Waste',
         status: 'In Progress',
@@ -130,7 +130,7 @@ export default function TrackComplaintPage() {
             </Link>
             <div>
               <h1 className="text-lg font-black text-slate-900 tracking-tight leading-none">Track Complaint Status</h1>
-              <p className="text-xs text-emerald-700 font-bold mt-0.5">Real-time Public Civic Tracker • Shirpur</p>
+              <p className="text-xs text-emerald-700 font-bold mt-0.5">Real-time Civic Tracker • Dhule Pilot</p>
             </div>
           </div>
           <Link to="/report" className="text-xs font-bold bg-[#005C2B] text-white px-3.5 py-2 rounded-xl hover:bg-[#004a22] transition-colors">

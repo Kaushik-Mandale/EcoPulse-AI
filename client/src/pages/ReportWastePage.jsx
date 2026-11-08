@@ -8,11 +8,11 @@ import {
 import { createComplaint } from '../services/complaintService';
 
 const PRESET_LOCATIONS = [
-  { name: 'Green Park, Plot 45, Ward 12, Shirpur', ward: 'Ward 12', lat: 21.352, lng: 74.881 },
-  { name: 'Sai Nagar, Market Road, Ward 12, Shirpur', ward: 'Ward 12', lat: 21.355, lng: 74.884 },
-  { name: 'Nimzari Naka, Ward 8, Shirpur', ward: 'Ward 8', lat: 21.349, lng: 74.876 },
-  { name: 'Subhash Chowk, Main Bazaar, Ward 4, Shirpur', ward: 'Ward 4', lat: 21.357, lng: 74.887 },
-  { name: 'Karwand Naka, Ward 10, Shirpur', ward: 'Ward 10', lat: 21.361, lng: 74.891 }
+  { name: 'Green Park, Plot 45, Ward 12, Dhule', ward: 'Ward 12', lat: 21.352, lng: 74.881 },
+  { name: 'Sai Nagar, Market Road, Ward 12, Dhule', ward: 'Ward 12', lat: 21.355, lng: 74.884 },
+  { name: 'Nimzari Naka, Ward 8, Dhule', ward: 'Ward 8', lat: 21.349, lng: 74.876 },
+  { name: 'Subhash Chowk, Main Bazaar, Ward 4, Dhule', ward: 'Ward 4', lat: 21.357, lng: 74.887 },
+  { name: 'Karwand Naka, Ward 10, Dhule', ward: 'Ward 10', lat: 21.361, lng: 74.891 }
 ];
 
 export default function ReportWastePage() {
@@ -40,7 +40,7 @@ export default function ReportWastePage() {
             ...prev,
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
-            location: `GPS: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)} (Ward 12, Shirpur)`
+            location: `GPS: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)} (Ward 12, Dhule)`
           }));
           setLocating(false);
         },
@@ -49,7 +49,7 @@ export default function ReportWastePage() {
             ...prev,
             lat: 21.352,
             lng: 74.881,
-            location: 'Main Road, Ward 12, Shirpur'
+            location: 'Main Road, Ward 12, Dhule'
           }));
           setLocating(false);
         },
@@ -77,7 +77,7 @@ export default function ReportWastePage() {
     setIsSubmitting(true);
     try {
       const payload = {
-        location: formData.location || 'Green Park, Ward 12, Shirpur',
+        location: formData.location || 'Green Park, Ward 12, Dhule',
         type: formData.type,
         ward: formData.ward || 'Ward 12',
         description: formData.description || 'Reported via EcoPulse AI Web Portal',
@@ -91,7 +91,7 @@ export default function ReportWastePage() {
       setCreatedComplaint({
         id: Math.floor(Math.random() * 9000) + 1000,
         tracking_number: `EP-2026-${Math.floor(Math.random() * 89999) + 10000}`,
-        location: formData.location || 'Ward 12, Shirpur',
+        location: formData.location || 'Ward 12, Dhule',
         type: formData.type,
         status: 'In Progress',
         assigned_driver_name: 'Ramesh Y. (Vehicle MH-18-BQ-4512)'
@@ -111,7 +111,7 @@ export default function ReportWastePage() {
             </Link>
             <div>
               <h1 className="text-lg font-black text-slate-900 tracking-tight leading-none">Report Waste Incident</h1>
-              <p className="text-xs text-emerald-700 font-bold mt-0.5">Shirpur Municipal Council • Clean City Initiative</p>
+              <p className="text-xs text-emerald-700 font-bold mt-0.5">Smart Sanitation Platform • Dhule Civic Pilot</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -248,7 +248,7 @@ export default function ReportWastePage() {
                   onChange={(e) => setFormData(prev => ({ ...prev, ward: e.target.value }))}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold focus:outline-none focus:border-[#005C2B] focus:bg-white"
                 >
-                  <option value="Ward 12">Ward 12 (Shirpur Central)</option>
+                  <option value="Ward 12">Ward 12 (Dhule Central)</option>
                   <option value="Ward 8">Ward 8 (Nimzari / Market)</option>
                   <option value="Ward 4">Ward 4 (Subhash Chowk)</option>
                   <option value="Ward 10">Ward 10 (Karwand Naka)</option>

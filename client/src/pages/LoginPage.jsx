@@ -82,7 +82,7 @@ const LoginPage = () => {
           </span>
           <span>•</span>
           <span className="inline-flex items-center gap-1 text-[#d9531e]">
-            <ShieldCheck className="w-3.5 h-3.5" /> Official Municipality Portal
+            <ShieldCheck className="w-3.5 h-3.5" /> Municipal Sanitation Prototype
           </span>
         </div>
         <p className="text-[11px] text-slate-400 font-semibold">

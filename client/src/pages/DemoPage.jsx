@@ -48,7 +48,7 @@ export default function DemoPage() {
             </Link>
             <div>
               <h1 className="text-lg font-black text-slate-900 tracking-tight leading-none">Interactive Municipal Sandbox</h1>
-              <p className="text-xs text-emerald-700 font-bold mt-0.5">Shirpur Municipal Council • 1-Click Role Switcher</p>
+              <p className="text-xs text-emerald-700 font-bold mt-0.5">Dhule Pilot Sandbox • 1-Click Role Switcher</p>
             </div>
           </div>
           <Link to="/" className="text-xs font-bold text-slate-600 hover:text-[#005C2B]">
@@ -69,7 +69,7 @@ export default function DemoPage() {
           </p>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-4 border-t border-slate-100 text-xs font-semibold text-slate-600">
-            <div><span className="text-slate-400 block text-[10px] uppercase">Pilot Municipality</span> Shirpur Council</div>
+            <div><span className="text-slate-400 block text-[10px] uppercase">Pilot Scenario</span> Dhule Urban Sandbox</div>
             <div><span className="text-slate-400 block text-[10px] uppercase">Population</span> ~90,000 citizens</div>
             <div><span className="text-slate-400 block text-[10px] uppercase">Wards</span> 27 Municipal Wards</div>
             <div><span className="text-slate-400 block text-[10px] uppercase">Daily Waste</span> ~45 tonnes</div>

@@ -187,7 +187,7 @@ const WhatsAppLinkCard = ({ user }) => {
               )}
             </h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              EcoPulse AI · Dhule Municipal Waste Management
+              EcoPulse AI · Dhule Civic Waste Management
             </p>
           </div>
         </div>

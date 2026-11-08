@@ -45,7 +45,7 @@ export default function ContactPage() {
               <div className="space-y-3 pt-4 border-t border-slate-100 text-xs font-semibold text-slate-700">
                 <div className="flex items-center gap-3">
                   <MapPin className="w-4 h-4 text-[#005C2B] shrink-0" />
-                  <span>Shirpur-Warwade Municipal Council, Dhule, MH 425405</span>
+                  <span>Dhule Urban Region Pilot, Maharashtra, India</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <Phone className="w-4 h-4 text-[#005C2B] shrink-0" />

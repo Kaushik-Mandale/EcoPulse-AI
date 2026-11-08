@@ -21,7 +21,7 @@ const Navbar = ({ onOpenLogin, onOpenSignup }) => {
               EcoPulse AI
             </div>
             <div className="text-[10px] font-bold text-emerald-700 tracking-wide mt-1">
-              Shirpur Municipal Council • Clean City
+              Smart Civic Waste Platform • Dhule Pilot
             </div>
           </div>
         </Link>
