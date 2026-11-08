@@ -1,6 +1,14 @@
 import axios from 'axios';
 
-export const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+export const resolveApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  if (typeof window !== 'undefined' && window.location.hostname.includes('onrender.com')) {
+    return 'https://ecopulse-ai-backend.onrender.com/api';
+  }
+  return '/api';
+};
+
+export const API_BASE_URL = resolveApiBaseUrl();
 export const BACKEND_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, '');
 export const DOCS_URL = `${BACKEND_BASE_URL}/docs`;
 export const HEALTH_URL = `${API_BASE_URL}/health`;

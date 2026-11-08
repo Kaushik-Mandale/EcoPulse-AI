@@ -70,6 +70,7 @@ class RegisterRequest(BaseModel):
     full_name: str
     phone: str
     otp: str
+    challenge_id: Optional[str] = None
     email: Optional[str] = None
     role: Optional[str] = "citizen"
     ward: Optional[str] = "Ward 12"
@@ -108,6 +109,7 @@ class RegisterRequest(BaseModel):
 class OtpLoginRequest(BaseModel):
     phone: str
     otp: str
+    challenge_id: Optional[str] = None
     role: Optional[str] = "citizen"
 
     @field_validator("phone")
@@ -142,13 +144,34 @@ class SendOtpResponse(BaseModel):
     success: bool
     message: str
     phone: str
+    challenge_id: str
+    delivery_status: str = "ACCEPTED"
     cooldown_seconds: int = 60
     expires_in: int = 300
     account_exists: Optional[bool] = None
 
+class OtpChallengeStatusRequest(BaseModel):
+    challenge_id: str
+    phone: Optional[str] = None
+
+class OtpChallengeStatusResponse(BaseModel):
+    valid: bool
+    challenge_id: str
+    phone: str
+    raw_phone: str
+    purpose: str
+    seconds_remaining: int
+    cooldown_remaining: int
+    consumed: bool
+    expired: bool
+    locked: bool
+    max_attempts: int
+    attempts_remaining: int
+
 class VerifyOtpRequest(BaseModel):
     phone: str
     otp: str
+    challenge_id: Optional[str] = None
     purpose: Optional[str] = "login"
     role: Optional[str] = "citizen"
 

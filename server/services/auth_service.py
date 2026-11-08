@@ -250,23 +250,119 @@ class AuthService:
         db.add(new_token)
         db.commit()
 
-        # 6. Dispatch via SMS provider
+        # 6. Dispatch via configured SMS provider
         sms_provider = get_sms_provider()
         delivered = sms_provider.send_otp(clean_phone, otp_plaintext)
         if not delivered:
+            # Clean up un-dispatched token so citizen is not unfairly penalized with cooldown
+            db.delete(new_token)
+            db.commit()
+
+            err_status = getattr(delivered, "status", "FAILED")
+            err_msg = getattr(delivered, "message", "SMS gateway is unable to dispatch verification code.")
+            if err_status == "NOT_CONFIGURED":
+                detail = "SMS gateway service is not configured for production. Please configure an approved SMS provider."
+            elif err_status == "REJECTED":
+                detail = f"SMS delivery rejected by gateway: {err_msg}"
+            else:
+                detail = f"SMS delivery failed ({err_msg}). Please try again later."
+
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="SMS gateway service is currently unable to dispatch verification code. Please try again later."
+                detail=detail
             )
 
+        challenge_id = AuthService.create_challenge_id(new_token.id, clean_phone, expires_at)
         masked_phone = f"+91 ******{clean_phone[-4:]}"
         return {
             "success": True,
             "message": f"Verification code sent to {masked_phone}.",
             "phone": clean_phone,
+            "challenge_id": challenge_id,
+            "delivery_status": "ACCEPTED",
             "cooldown_seconds": config.SMS_RESEND_COOLDOWN_SECONDS,
             "expires_in": config.SMS_OTP_EXPIRY_SECONDS,
             "account_exists": existing_user is not None
+        }
+
+    @staticmethod
+    def create_challenge_id(token_id: int, phone: str, expires_at: datetime) -> str:
+        """Generates an HMAC-SHA256 signed, tamper-proof challenge identifier."""
+        import base64
+        exp_ts = int(expires_at.timestamp())
+        payload = f"{token_id}:{phone}:{exp_ts}"
+        secret = config.SECRET_KEY or "ecopulse-default-secret-key-change-in-prod"
+        sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+        raw = f"{payload}:{sig}"
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8")
+
+    @staticmethod
+    def verify_and_get_challenge_token(db: Session, challenge_id: str) -> Optional[MobileOtpToken]:
+        """Validates the challenge HMAC signature and retrieves the corresponding database token."""
+        import base64
+        try:
+            raw = base64.urlsafe_b64decode(challenge_id.encode("utf-8")).decode("utf-8")
+            parts = raw.split(":")
+            if len(parts) != 4:
+                return None
+            token_id_str, phone, exp_ts_str, sig = parts
+            token_id = int(token_id_str)
+            payload = f"{token_id}:{phone}:{exp_ts_str}"
+            secret = config.SECRET_KEY or "ecopulse-default-secret-key-change-in-prod"
+            expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+            if not hmac.compare_digest(sig, expected_sig):
+                return None
+            token = db.query(MobileOtpToken).filter(MobileOtpToken.id == token_id).first()
+            if not token or token.phone != phone:
+                return None
+            return token
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_challenge_status(db: Session, challenge_id: str) -> dict:
+        """
+        Retrieves authoritative challenge status for browser session restoration.
+        Never returns OTP secrets or unverified tokens.
+        """
+        token = AuthService.verify_and_get_challenge_token(db, challenge_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Verification session not found or invalid."
+            )
+
+        now = datetime.now(timezone.utc)
+        token_expires = token.expires_at
+        if token_expires.tzinfo is None:
+            token_expires = token_expires.replace(tzinfo=timezone.utc)
+
+        expired = token_expires < now
+        consumed = token.consumed_at is not None
+        locked = token.attempts >= token.max_attempts
+
+        time_remaining = max(0, int((token_expires - now).total_seconds())) if not expired and not consumed else 0
+
+        created_at = token.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        elapsed = (now - created_at).total_seconds()
+        cooldown_remaining = max(0, int(config.SMS_RESEND_COOLDOWN_SECONDS - elapsed))
+
+        masked_phone = f"+91 ******{token.phone[-4:]}"
+        return {
+            "valid": bool(not expired and not consumed and not locked),
+            "challenge_id": challenge_id,
+            "phone": masked_phone,
+            "raw_phone": token.phone,
+            "purpose": token.purpose,
+            "seconds_remaining": time_remaining,
+            "cooldown_remaining": cooldown_remaining,
+            "consumed": consumed,
+            "expired": expired,
+            "locked": locked,
+            "max_attempts": token.max_attempts,
+            "attempts_remaining": max(0, token.max_attempts - token.attempts)
         }
 
     @staticmethod
@@ -275,7 +371,8 @@ class AuthService:
         phone: str,
         otp: str,
         purpose: str = "login",
-        role: Optional[str] = "citizen"
+        role: Optional[str] = "citizen",
+        challenge_id: Optional[str] = None
     ) -> AuthResponse:
         """
         Verifies 6-digit OTP against stored SHA-256 hash.
@@ -292,11 +389,16 @@ class AuthService:
 
         now = datetime.now(timezone.utc)
 
-        # Find latest unconsumed OTP token for this phone
-        token = db.query(MobileOtpToken).filter(
-            MobileOtpToken.phone == clean_phone,
-            MobileOtpToken.consumed_at.is_(None)
-        ).order_by(MobileOtpToken.id.desc()).first()
+        # Find unconsumed OTP token using verified challenge_id or fallback to phone
+        if challenge_id:
+            token = AuthService.verify_and_get_challenge_token(db, challenge_id)
+            if not token or token.phone != clean_phone or token.consumed_at is not None:
+                token = None
+        else:
+            token = db.query(MobileOtpToken).filter(
+                MobileOtpToken.phone == clean_phone,
+                MobileOtpToken.consumed_at.is_(None)
+            ).order_by(MobileOtpToken.id.desc()).first()
 
         if not token:
             raise HTTPException(
@@ -463,11 +565,17 @@ class AuthService:
         otp = getattr(payload, "otp", None)
         if otp and otp.strip():
             otp_val = otp.strip()
-            # Find matching active token
-            token = db.query(MobileOtpToken).filter(
-                MobileOtpToken.phone == clean_phone,
-                MobileOtpToken.consumed_at.is_(None)
-            ).order_by(MobileOtpToken.id.desc()).first()
+            # Find matching active token via challenge_id or fallback to phone
+            challenge_id = getattr(payload, "challenge_id", None)
+            if challenge_id:
+                token = AuthService.verify_and_get_challenge_token(db, challenge_id)
+                if not token or token.phone != clean_phone or token.consumed_at is not None:
+                    token = None
+            else:
+                token = db.query(MobileOtpToken).filter(
+                    MobileOtpToken.phone == clean_phone,
+                    MobileOtpToken.consumed_at.is_(None)
+                ).order_by(MobileOtpToken.id.desc()).first()
 
             if not token:
                 raise HTTPException(
@@ -568,10 +676,11 @@ class AuthService:
         db: Session,
         phone: str,
         otp: str,
-        role: Optional[str] = "citizen"
+        role: Optional[str] = "citizen",
+        challenge_id: Optional[str] = None
     ) -> AuthResponse:
         """Authenticates an existing user via mobile number and verified OTP."""
-        return AuthService.verify_otp(db, phone=phone, otp=otp, purpose="login", role=role)
+        return AuthService.verify_otp(db, phone=phone, otp=otp, purpose="login", role=role, challenge_id=challenge_id)
 
     @staticmethod
     def login_user(db: Session, payload: LoginRequest) -> AuthResponse:

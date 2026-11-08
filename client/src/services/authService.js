@@ -1,8 +1,60 @@
 import api from './api';
 
+// ── Session Storage Helpers for Refresh-Safe OTP ────────────────────────────
+export const saveOtpSession = (purpose, data) => {
+  try {
+    sessionStorage.setItem(`ecopulse_otp_${purpose}`, JSON.stringify({
+      challenge_id: data.challenge_id,
+      phone: data.phone,
+      draft: data.draft || {},
+      timestamp: Date.now()
+    }));
+  } catch (e) {
+    console.warn('Unable to persist OTP session to sessionStorage:', e);
+  }
+};
+
+export const getStoredOtpSession = (purpose) => {
+  try {
+    const raw = sessionStorage.getItem(`ecopulse_otp_${purpose}`);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Unable to retrieve OTP session from sessionStorage:', e);
+    return null;
+  }
+};
+
+export const clearOtpSession = (purpose) => {
+  try {
+    sessionStorage.removeItem(`ecopulse_otp_${purpose}`);
+  } catch (e) {
+    console.warn('Unable to clear OTP session from sessionStorage:', e);
+  }
+};
+
+// ── Authentication API Calls ────────────────────────────────────────────────
 export const sendOtp = async ({ phone, purpose = 'login' }) => {
   try {
     const response = await api.post('/auth/otp/send', { phone, purpose });
+    const data = response.data;
+    if (!data || typeof data !== 'object' || !data.success || !data.challenge_id) {
+      throw new Error(
+        data?.message || 'Unable to establish secure OTP verification challenge. Please try again.'
+      );
+    }
+    return data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const getOtpChallengeStatus = async (challengeId) => {
+  try {
+    const response = await api.get(`/auth/otp/challenge/${encodeURIComponent(challengeId)}`);
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {
@@ -12,9 +64,13 @@ export const sendOtp = async ({ phone, purpose = 'login' }) => {
   }
 };
 
-export const verifyOtp = async ({ phone, otp, purpose = 'login', role = 'citizen' }) => {
+export const verifyOtp = async ({ phone, otp, purpose = 'login', role = 'citizen', challengeId = null }) => {
   try {
-    const response = await api.post('/auth/otp/verify', { phone, otp, purpose, role });
+    const payload = { phone, otp, purpose, role };
+    if (challengeId) {
+      payload.challenge_id = challengeId;
+    }
+    const response = await api.post('/auth/otp/verify', payload);
     if (response.data?.access_token) {
       localStorage.setItem('ecopulse_token', response.data.access_token);
       localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
@@ -28,9 +84,13 @@ export const verifyOtp = async ({ phone, otp, purpose = 'login', role = 'citizen
   }
 };
 
-export const loginWithOtp = async ({ phone, otp, role = 'citizen' }) => {
+export const loginWithOtp = async ({ phone, otp, role = 'citizen', challengeId = null }) => {
   try {
-    const response = await api.post('/auth/login/otp', { phone, otp, role });
+    const payload = { phone, otp, role };
+    if (challengeId) {
+      payload.challenge_id = challengeId;
+    }
+    const response = await api.post('/auth/login/otp', payload);
     if (response.data?.access_token) {
       localStorage.setItem('ecopulse_token', response.data.access_token);
       localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
@@ -44,7 +104,7 @@ export const loginWithOtp = async ({ phone, otp, role = 'citizen' }) => {
   }
 };
 
-export const registerWithOtp = async ({ fullName, phone, email, otp }) => {
+export const registerWithOtp = async ({ fullName, phone, email, otp, challengeId = null }) => {
   try {
     const payload = {
       full_name: fullName,
@@ -52,6 +112,9 @@ export const registerWithOtp = async ({ fullName, phone, email, otp }) => {
       otp,
       role: 'citizen'
     };
+    if (challengeId) {
+      payload.challenge_id = challengeId;
+    }
     if (email && email.trim()) {
       payload.email = email.trim();
     }

@@ -12,6 +12,23 @@ from server.utils.config import config, normalize_environment
 logger = logging.getLogger(__name__)
 
 
+class SMSDeliveryResult:
+    """
+    Rich result returned by SMS delivery providers.
+    Supports boolean coercion (bool(result) == result.success) for backward compatibility.
+    """
+    def __init__(self, success: bool, status: str, message: str):
+        self.success = bool(success)
+        self.status = status  # 'ACCEPTED' | 'REJECTED' | 'NOT_CONFIGURED' | 'FAILED'
+        self.message = message
+
+    def __bool__(self):
+        return self.success
+
+    def __repr__(self):
+        return f"<SMSDeliveryResult success={self.success} status={self.status} message='{self.message}'>"
+
+
 class SMSProvider(abc.ABC):
     """Abstract Base Class for SMS delivery providers."""
 
@@ -22,10 +39,10 @@ class SMSProvider(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def send_otp(self, phone: str, otp: str) -> bool:
+    def send_otp(self, phone: str, otp: str):
         """
         Deliver a 6-digit OTP to the specified 10-digit Indian phone number.
-        Returns True if delivery succeeded, False if failed.
+        Returns SMSDeliveryResult (evaluates as boolean for success).
         """
         pass
 
@@ -62,7 +79,7 @@ class DevelopmentSMSProvider(SMSProvider):
         else:
             logger.info("[SMS-DEV] OTP dispatched to %s (length=%d)", masked_phone, len(otp))
 
-        return True
+        return SMSDeliveryResult(True, "ACCEPTED", f"OTP accepted by development provider for {masked_phone}.")
 
 
 # Backward-compatible alias for existing tests
@@ -83,10 +100,10 @@ class MSG91SMSProvider(SMSProvider):
     def provider_name(self) -> str:
         return "msg91"
 
-    def send_otp(self, phone: str, otp: str) -> bool:
+    def send_otp(self, phone: str, otp: str):
         if not self.auth_key or not self.template_id:
             logger.error("[SMS-MSG91] Missing MSG91 credentials: SMS_API_KEY and SMS_TEMPLATE_ID are required.")
-            return False
+            return SMSDeliveryResult(False, "NOT_CONFIGURED", "Missing MSG91 credentials: SMS_API_KEY and SMS_TEMPLATE_ID are required.")
 
         clean_phone = phone.strip()
         formatted_mobile = f"91{clean_phone}" if len(clean_phone) == 10 else clean_phone
@@ -112,14 +129,15 @@ class MSG91SMSProvider(SMSProvider):
                     data = res.json()
                     if data.get("type") == "success":
                         logger.info("[SMS-MSG91] OTP dispatched successfully to %s", masked_mobile)
-                        return True
-                    logger.warning("[SMS-MSG91] Gateway returned error: %s", data.get("message"))
-                    return False
+                        return SMSDeliveryResult(True, "ACCEPTED", f"MSG91 accepted message for {masked_mobile}.")
+                    msg = data.get("message") or "Gateway rejected the message."
+                    logger.warning("[SMS-MSG91] Gateway returned error: %s", msg)
+                    return SMSDeliveryResult(False, "REJECTED", f"MSG91 rejected message: {msg}")
                 logger.error("[SMS-MSG91] Gateway returned HTTP %d: %s", res.status_code, res.text[:200])
-                return False
+                return SMSDeliveryResult(False, "FAILED", f"MSG91 returned HTTP {res.status_code}.")
         except Exception as exc:
             logger.error("[SMS-MSG91] Exception dispatching OTP to %s: %s", masked_mobile, type(exc).__name__)
-            return False
+            return SMSDeliveryResult(False, "FAILED", f"MSG91 connection error: {type(exc).__name__}.")
 
 
 class TwoFactorSMSProvider(SMSProvider):
@@ -135,10 +153,10 @@ class TwoFactorSMSProvider(SMSProvider):
     def provider_name(self) -> str:
         return "2factor"
 
-    def send_otp(self, phone: str, otp: str) -> bool:
+    def send_otp(self, phone: str, otp: str):
         if not self.api_key:
             logger.error("[SMS-2FACTOR] Missing 2Factor API Key: SMS_API_KEY is required.")
-            return False
+            return SMSDeliveryResult(False, "NOT_CONFIGURED", "Missing 2Factor API Key: SMS_API_KEY is required.")
 
         clean_phone = phone.strip()
         formatted_mobile = f"91{clean_phone}" if len(clean_phone) == 10 else clean_phone
@@ -156,14 +174,15 @@ class TwoFactorSMSProvider(SMSProvider):
                     data = res.json()
                     if data.get("Status") == "Success":
                         logger.info("[SMS-2FACTOR] OTP dispatched successfully to %s", masked_mobile)
-                        return True
-                    logger.warning("[SMS-2FACTOR] Gateway returned error: %s", data.get("Details"))
-                    return False
+                        return SMSDeliveryResult(True, "ACCEPTED", f"2Factor accepted message for {masked_mobile}.")
+                    details = data.get("Details") or "Gateway rejected the message."
+                    logger.warning("[SMS-2FACTOR] Gateway returned error: %s", details)
+                    return SMSDeliveryResult(False, "REJECTED", f"2Factor rejected message: {details}")
                 logger.error("[SMS-2FACTOR] Gateway returned HTTP %d: %s", res.status_code, res.text[:200])
-                return False
+                return SMSDeliveryResult(False, "FAILED", f"2Factor returned HTTP {res.status_code}.")
         except Exception as exc:
             logger.error("[SMS-2FACTOR] Exception dispatching OTP to %s: %s", masked_mobile, type(exc).__name__)
-            return False
+            return SMSDeliveryResult(False, "FAILED", f"2Factor connection error: {type(exc).__name__}.")
 
 
 _active_provider: Optional[SMSProvider] = None

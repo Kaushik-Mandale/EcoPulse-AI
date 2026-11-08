@@ -6,7 +6,8 @@ from server.schemas.auth import (
     LoginRequest, SignupRequest, RegisterRequest, OtpLoginRequest,
     AuthResponse, UserResponse, UserProfileUpdate,
     ForgotPasswordRequest, ForgotPasswordResponse,
-    SendOtpRequest, SendOtpResponse, VerifyOtpRequest
+    SendOtpRequest, SendOtpResponse, VerifyOtpRequest,
+    OtpChallengeStatusRequest, OtpChallengeStatusResponse
 )
 from server.services.auth_service import AuthService
 from server.utils.security import get_current_user
@@ -43,8 +44,26 @@ def verify_otp(payload: VerifyOtpRequest, db: Session = Depends(get_db)):
         phone=payload.phone,
         otp=payload.otp,
         purpose=payload.purpose or "login",
-        role=payload.role or "citizen"
+        role=payload.role or "citizen",
+        challenge_id=payload.challenge_id
     )
+
+
+@router.get("/otp/challenge/{challenge_id}", response_model=OtpChallengeStatusResponse)
+def get_challenge_status(challenge_id: str, db: Session = Depends(get_db)):
+    """
+    Authoritative challenge status retrieval for refresh-safe session restoration.
+    Returns remaining TTL, resend cooldown, and validity without exposing OTP values.
+    """
+    return AuthService.get_challenge_status(db, challenge_id)
+
+
+@router.post("/otp/status", response_model=OtpChallengeStatusResponse)
+def post_challenge_status(payload: OtpChallengeStatusRequest, db: Session = Depends(get_db)):
+    """
+    POST variant for challenge status retrieval.
+    """
+    return AuthService.get_challenge_status(db, payload.challenge_id)
 
 
 @router.post("/login/otp", response_model=AuthResponse)
@@ -53,7 +72,13 @@ def login_with_otp(payload: OtpLoginRequest, db: Session = Depends(get_db)):
     Mobile-first login endpoint: Authenticates existing user via mobile number + OTP.
     Redirects to the user's role-specific dashboard.
     """
-    return AuthService.login_with_otp(db, phone=payload.phone, otp=payload.otp, role=payload.role or "citizen")
+    return AuthService.login_with_otp(
+        db,
+        phone=payload.phone,
+        otp=payload.otp,
+        role=payload.role or "citizen",
+        challenge_id=payload.challenge_id
+    )
 
 
 @router.post("/register", response_model=AuthResponse)

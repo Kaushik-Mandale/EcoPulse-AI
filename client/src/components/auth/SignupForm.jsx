@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { User, Mail, Phone, ShieldCheck, CheckCircle2, ShieldAlert, ArrowRight, Sparkles, UserCheck, ArrowLeft, RefreshCw, Info } from 'lucide-react';
-import { sendOtp, registerWithOtp } from '../../services/authService';
+import {
+  sendOtp,
+  registerWithOtp,
+  getOtpChallengeStatus,
+  saveOtpSession,
+  getStoredOtpSession,
+  clearOtpSession
+} from '../../services/authService';
 import OtpInput from './OtpInput';
 
 const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
@@ -11,6 +18,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
   const [email, setEmail] = useState('');
   const [acceptTerms, setAcceptTerms] = useState(false);
   const [otp, setOtp] = useState('');
+  const [challengeId, setChallengeId] = useState(null);
   const [cooldown, setCooldown] = useState(0);
   const [timer, setTimer] = useState(300);
 
@@ -19,6 +27,42 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
   const [serverError, setServerError] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
   const [accountExists, setAccountExists] = useState(false);
+
+  // Restore active verification session on page load / refresh
+  useEffect(() => {
+    const restoreSession = async () => {
+      const session = getStoredOtpSession('register');
+      if (!session || !session.challenge_id) return;
+
+      // Immediately restore draft inputs so citizen never loses what was typed
+      if (session.draft?.fullName) setFullName(session.draft.fullName);
+      if (session.draft?.email) setEmail(session.draft.email);
+      if (session.phone) setPhone(session.phone);
+      setAcceptTerms(true);
+
+      try {
+        const status = await getOtpChallengeStatus(session.challenge_id);
+        if (status.valid && status.seconds_remaining > 0) {
+          setChallengeId(session.challenge_id);
+          setStep('OTP');
+          setTimer(status.seconds_remaining);
+          setCooldown(status.cooldown_remaining);
+          setInfoMsg(`Verification session restored for +91 ******${(session.phone || '').slice(-4)}`);
+        } else {
+          clearOtpSession('register');
+          if (status.expired) {
+            setServerError('Your previous verification code has expired. Please request a new code.');
+          } else if (status.consumed) {
+            setServerError('Your previous verification session was already completed.');
+          }
+        }
+      } catch (err) {
+        clearOtpSession('register');
+      }
+    };
+
+    restoreSession();
+  }, []);
 
   // Cooldown timer
   useEffect(() => {
@@ -46,6 +90,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
 
   const handleRequestOtp = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setServerError('');
     setInfoMsg('');
     setAccountExists(false);
@@ -78,6 +123,12 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
     setIsSubmitting(true);
     try {
       const res = await sendOtp({ phone: cleaned, purpose: 'register' });
+      setChallengeId(res.challenge_id);
+      saveOtpSession('register', {
+        challenge_id: res.challenge_id,
+        phone: cleaned,
+        draft: { fullName: fullName.trim(), email: email.trim() }
+      });
       setStep('OTP');
       setOtp('');
       setCooldown(res.cooldown_seconds || 60);
@@ -96,6 +147,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
 
   const handleVerifyAndRegister = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
     if (!otp || otp.length !== 6) {
       setServerError('Please enter the complete 6-digit verification code');
       return;
@@ -110,9 +162,11 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
         fullName: fullName.trim(),
         phone: cleaned,
         email: email.trim() || null,
-        otp
+        otp,
+        challengeId
       });
 
+      clearOtpSession('register');
       setAuthSuccess(true);
       setTimeout(() => {
         if (onSuccess) {
@@ -133,6 +187,12 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
     try {
       const cleaned = cleanPhone(phone);
       const res = await sendOtp({ phone: cleaned, purpose: 'register' });
+      setChallengeId(res.challenge_id);
+      saveOtpSession('register', {
+        challenge_id: res.challenge_id,
+        phone: cleaned,
+        draft: { fullName: fullName.trim(), email: email.trim() }
+      });
       setCooldown(res.cooldown_seconds || 60);
       setTimer(res.expires_in || 300);
       setInfoMsg(`New code sent to +91 ******${cleaned.slice(-4)}`);
@@ -141,6 +201,19 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleEditDetails = () => {
+    clearOtpSession('register');
+    setStep('DETAILS');
+    setOtp('');
+    setServerError('');
+    setChallengeId(null);
+  };
+
+  const handleSwitchToLoginSafe = () => {
+    clearOtpSession('register');
+    if (onSwitchToLogin) onSwitchToLogin();
   };
 
   const formatTimer = (seconds) => {
@@ -329,11 +402,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
             </div>
             <button
               type="button"
-              onClick={() => {
-                setStep('DETAILS');
-                setOtp('');
-                setServerError('');
-              }}
+              onClick={handleEditDetails}
               className="text-[#005C2B] font-extrabold text-xs hover:underline flex items-center gap-1 cursor-pointer"
             >
               <ArrowLeft className="w-3 h-3" />
@@ -411,7 +480,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
           Already have an account?{' '}
           <button
             type="button"
-            onClick={onSwitchToLogin}
+            onClick={handleSwitchToLoginSafe}
             className="font-extrabold text-[#005C2B] hover:underline cursor-pointer ml-0.5"
           >
             Sign In Instead →

@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Phone, ShieldCheck, ChevronRight, CheckCircle2, ShieldAlert, Lock, Eye, EyeOff, Mail, Key, ArrowLeft, RefreshCw } from 'lucide-react';
-import { loginUser, sendOtp, loginWithOtp } from '../../services/authService';
+import {
+  loginUser,
+  sendOtp,
+  loginWithOtp,
+  getOtpChallengeStatus,
+  saveOtpSession,
+  getStoredOtpSession,
+  clearOtpSession
+} from '../../services/authService';
 import OtpInput from './OtpInput';
 
 const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup }) => {
@@ -9,6 +17,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
   const [mobileNumber, setMobileNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [challengeId, setChallengeId] = useState(null);
   const [cooldown, setCooldown] = useState(0);
   const [timer, setTimer] = useState(300);
 
@@ -23,6 +32,39 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
   const [authSuccess, setAuthSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
+
+  // Restore active verification session on page load / refresh
+  useEffect(() => {
+    const restoreSession = async () => {
+      const session = getStoredOtpSession('login');
+      if (!session || !session.challenge_id) return;
+
+      if (session.phone) setMobileNumber(session.phone);
+
+      try {
+        const status = await getOtpChallengeStatus(session.challenge_id);
+        if (status.valid && status.seconds_remaining > 0) {
+          setChallengeId(session.challenge_id);
+          setOtpSent(true);
+          setLoginMode('otp');
+          setTimer(status.seconds_remaining);
+          setCooldown(status.cooldown_remaining);
+          setInfoMsg(`Verification session restored for +91 ******${(session.phone || '').slice(-4)}`);
+        } else {
+          clearOtpSession('login');
+          if (status.expired) {
+            setErrorMsg('Your previous verification code has expired. Please request a new code.');
+          } else if (status.consumed) {
+            setErrorMsg('Your previous verification session was already completed.');
+          }
+        }
+      } catch (err) {
+        clearOtpSession('login');
+      }
+    };
+
+    restoreSession();
+  }, []);
 
   // Cooldown countdown timer
   useEffect(() => {
@@ -49,6 +91,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
   const cleanPhone = (val) => val.replace(/\D/g, '').slice(0, 10);
 
   const handleSendOtp = async () => {
+    if (isSubmitting) return;
     const cleaned = cleanPhone(mobileNumber);
     if (!cleaned || cleaned.length !== 10) {
       setErrorMsg('Please enter a valid 10-digit Indian mobile number');
@@ -65,6 +108,11 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
 
     try {
       const res = await sendOtp({ phone: cleaned, purpose: 'login' });
+      setChallengeId(res.challenge_id);
+      saveOtpSession('login', {
+        challenge_id: res.challenge_id,
+        phone: cleaned
+      });
       setOtpSent(true);
       setOtp('');
       setCooldown(res.cooldown_seconds || 60);
@@ -78,6 +126,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
   };
 
   const handleVerifyOtp = async (e) => {
+    if (isSubmitting) return;
     if (e) e.preventDefault();
     if (!otp || otp.length !== 6) {
       setErrorMsg('Please enter the complete 6-digit verification code');
@@ -89,7 +138,8 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
 
     try {
       const cleaned = cleanPhone(mobileNumber);
-      const res = await loginWithOtp({ phone: cleaned, otp, role: 'citizen' });
+      const res = await loginWithOtp({ phone: cleaned, otp, role: 'citizen', challengeId });
+      clearOtpSession('login');
       setAuthSuccess(true);
       setTimeout(() => {
         if (onSuccess) {
@@ -101,6 +151,32 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleChangeMobile = () => {
+    clearOtpSession('login');
+    setOtpSent(false);
+    setOtp('');
+    setChallengeId(null);
+    setErrorMsg('');
+    setInfoMsg('');
+  };
+
+  const handleSwitchMode = (mode) => {
+    if (mode !== 'otp') {
+      clearOtpSession('login');
+      setOtpSent(false);
+      setOtp('');
+      setChallengeId(null);
+    }
+    setLoginMode(mode);
+    setErrorMsg('');
+    setInfoMsg('');
+  };
+
+  const handleSwitchToSignupSafe = () => {
+    clearOtpSession('login');
+    if (onSwitchToSignup) onSwitchToSignup();
   };
 
   const handlePasswordSubmit = async (e) => {
@@ -190,11 +266,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
         <div className="flex rounded-xl bg-slate-100 p-1 mb-3 border border-slate-200">
           <button
             type="button"
-            onClick={() => {
-              setLoginMode('otp');
-              setErrorMsg('');
-              setInfoMsg('');
-            }}
+            onClick={() => handleSwitchMode('otp')}
             className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               loginMode === 'otp'
                 ? 'bg-white text-[#16a34a] shadow-xs'
@@ -207,11 +279,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
 
           <button
             type="button"
-            onClick={() => {
-              setLoginMode('password');
-              setErrorMsg('');
-              setInfoMsg('');
-            }}
+            onClick={() => handleSwitchMode('password')}
             className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               loginMode === 'password'
                 ? 'bg-white text-[#16a34a] shadow-xs'
@@ -238,7 +306,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
                 {errorMsg.toLowerCase().includes('sign up') && onSwitchToSignup && (
                   <button
                     type="button"
-                    onClick={onSwitchToSignup}
+                    onClick={handleSwitchToSignupSafe}
                     className="block mt-1 font-black text-[#16a34a] underline cursor-pointer"
                   >
                     Click here to register your mobile number →
@@ -328,11 +396,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setOtpSent(false);
-                      setOtp('');
-                      setErrorMsg('');
-                    }}
+                    onClick={handleChangeMobile}
                     className="text-[#16a34a] font-extrabold hover:underline flex items-center gap-1 cursor-pointer text-[11px]"
                   >
                     <ArrowLeft className="w-3 h-3" />
