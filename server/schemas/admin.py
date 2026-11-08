@@ -59,7 +59,7 @@ class AdminDriverResponse(BaseModel):
     tasks_completed: int
     tasks_in_progress: int
     tasks_pending: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -90,7 +90,7 @@ class BinResponse(BaseModel):
     fill_level_pct: int
     is_active: bool
     last_collected_at: Optional[datetime] = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -152,7 +152,7 @@ class NotificationResponse(BaseModel):
     icon: str
     is_broadcast: bool
     is_read: bool
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -178,6 +178,6 @@ class AdminUserResponse(BaseModel):
     employee_id: Optional[str] = None
     eco_coins: int
     is_active: bool
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

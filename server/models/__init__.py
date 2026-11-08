@@ -9,3 +9,4 @@ from server.models.bin import SmartBin
 from server.models.notification import Notification
 from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
 from server.models.whatsapp_link_token import WhatsAppLinkToken
+from server.models.mobile_otp import MobileOtpToken

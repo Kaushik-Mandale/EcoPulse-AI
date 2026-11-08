@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
+from typing import Union
 from server.database.db import get_db
 from server.schemas.auth import (
-    LoginRequest, SignupRequest, AuthResponse, UserResponse, UserProfileUpdate,
-    ForgotPasswordRequest, ForgotPasswordResponse, SendOtpRequest, VerifyOtpRequest
+    LoginRequest, SignupRequest, RegisterRequest, OtpLoginRequest,
+    AuthResponse, UserResponse, UserProfileUpdate,
+    ForgotPasswordRequest, ForgotPasswordResponse,
+    SendOtpRequest, SendOtpResponse, VerifyOtpRequest
 )
 from server.services.auth_service import AuthService
 from server.utils.security import get_current_user
@@ -11,33 +14,77 @@ from server.models.user import User
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
+
+# ─────────────────────────────────────────────────────────────
+# 1. Mobile OTP Authentication Endpoints (Primary Flow)
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/otp/send", response_model=SendOtpResponse)
+@router.post("/send-otp", response_model=SendOtpResponse)
+def send_otp(request: Request, payload: SendOtpRequest, db: Session = Depends(get_db)):
+    """
+    Dispatches a 6-digit verification code to the given Indian mobile number (+91).
+    Enforces resend cooldown (60s) and rate-limiting by phone and IP.
+    Never returns the OTP in response.
+    """
+    client_ip = request.client.host if request.client else None
+    return AuthService.send_otp(db, phone=payload.phone, purpose=payload.purpose or "login", ip_address=client_ip)
+
+
+@router.post("/otp/verify", response_model=AuthResponse)
+@router.post("/verify-otp", response_model=AuthResponse)
+def verify_otp(payload: VerifyOtpRequest, db: Session = Depends(get_db)):
+    """
+    Verifies 6-digit OTP against stored SHA-256 hash.
+    On purpose='login', authenticates user and generates JWT session.
+    """
+    return AuthService.verify_otp(
+        db,
+        phone=payload.phone,
+        otp=payload.otp,
+        purpose=payload.purpose or "login",
+        role=payload.role or "citizen"
+    )
+
+
+@router.post("/login/otp", response_model=AuthResponse)
+def login_with_otp(payload: OtpLoginRequest, db: Session = Depends(get_db)):
+    """
+    Mobile-first login endpoint: Authenticates existing user via mobile number + OTP.
+    Redirects to the user's role-specific dashboard.
+    """
+    return AuthService.login_with_otp(db, phone=payload.phone, otp=payload.otp, role=payload.role or "citizen")
+
+
+@router.post("/register", response_model=AuthResponse)
+@router.post("/signup", response_model=AuthResponse)
+def register(request: Request, payload: Union[RegisterRequest, SignupRequest], db: Session = Depends(get_db)):
+    """
+    Mobile-first citizen registration:
+    Full name and mobile number are required. Email is optional.
+    Strictly verifies OTP before creating the user in database.
+    """
+    client_ip = request.client.host if request.client else None
+    return AuthService.register_user(db, payload, ip_address=client_ip)
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. Compatibility & Session Endpoints
+# ─────────────────────────────────────────────────────────────
+
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    try:
-        return AuthService.login_user(db, payload)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+    """
+    Password-based login for existing municipal administrative & driver accounts.
+    Accepts mobile number, email, or employee ID.
+    """
+    return AuthService.login_user(db, payload)
 
-@router.post("/signup", response_model=AuthResponse)
-def signup(payload: SignupRequest, db: Session = Depends(get_db)):
-    try:
-        return AuthService.register_user(db, payload)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
 
 @router.get("/me", response_model=UserResponse)
 @router.get("/my", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
+    """Returns the authenticated user's profile."""
     return UserResponse(
         id=current_user.id,
         name=current_user.full_name,
@@ -49,55 +96,19 @@ def get_me(current_user: User = Depends(get_current_user)):
         eco_coins=current_user.eco_coins or 100
     )
 
+
 @router.put("/profile", response_model=UserResponse)
 def update_profile(
     payload: UserProfileUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    try:
-        return AuthService.update_user_profile(db, current_user, payload)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+    """Updates profile details for the authenticated user."""
+    return AuthService.update_user_profile(db, current_user, payload)
+
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    try:
-        result = AuthService.request_password_reset(db, payload.identifier, payload.role or "citizen")
-        return ForgotPasswordResponse(**result)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-@router.post("/send-otp")
-def send_otp(payload: SendOtpRequest, db: Session = Depends(get_db)):
-    try:
-        return AuthService.send_otp(db, payload.phone)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-@router.post("/verify-otp", response_model=AuthResponse)
-def verify_otp(payload: VerifyOtpRequest, db: Session = Depends(get_db)):
-    try:
-        return AuthService.verify_otp(db, payload.phone, payload.otp, payload.role or "citizen")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+    """Dispatches password reset instructions."""
+    result = AuthService.request_password_reset(db, payload.identifier, payload.role or "citizen")
+    return ForgotPasswordResponse(**result)

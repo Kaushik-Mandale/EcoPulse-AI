@@ -15,7 +15,11 @@ from server.utils.security import hash_password, create_access_token
 client = TestClient(app)
 
 
-def _create_user(db, email: str, role: str = "citizen", phone: str = "+919876543210") -> User:
+import uuid
+
+def _create_user(db, email: str, role: str = "citizen", phone: str = None) -> User:
+    if phone is None:
+        phone = f"9{uuid.uuid4().int % 1000000000:09d}"
     user = User(
         email=email,
         hashed_password=hash_password("Password123!"),

@@ -19,7 +19,10 @@ from server.utils.security import hash_password, create_access_token
 client = TestClient(app)
 
 
-def _create_test_user(db, email, role="citizen", phone="+919876543210"):
+def _create_test_user(db, email, role="citizen", phone=None):
+    if phone is None:
+        import uuid
+        phone = f"9{uuid.uuid4().int % 1000000000:09d}"
     user = db.query(User).filter(User.email == email).first()
     if not user:
         user = User(

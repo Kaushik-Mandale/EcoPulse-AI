@@ -133,6 +133,77 @@ def ensure_complaints_schema(engine) -> None:
         )
 
 
+def ensure_users_schema(engine) -> None:
+    """
+    Idempotent startup migration: ensures the `users` table supports mobile-first OTP:
+    - `email` column is nullable
+    - `hashed_password` column is nullable
+    - unique index on `phone`
+    - `mobile_otp_tokens` table exists
+    """
+    from server.models.mobile_otp import MobileOtpToken
+    try:
+        MobileOtpToken.__table__.create(engine, checkfirst=True)
+    except Exception as exc:
+        logger.warning("[SCHEMA] MobileOtpToken table check warning: %s", type(exc).__name__)
+
+    if engine.dialect.name == "sqlite":
+        try:
+            with engine.connect() as conn:
+                table_info = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                email_col = next((c for c in table_info if c[1] == "email"), None)
+                if email_col and email_col[3] == 1:
+                    conn.execute(text("PRAGMA foreign_keys=OFF;"))
+                    conn.execute(text("""
+                        CREATE TABLE users_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            full_name VARCHAR(100) NOT NULL,
+                            email VARCHAR(100),
+                            employee_id VARCHAR(50),
+                            hashed_password VARCHAR(255),
+                            role VARCHAR(20) NOT NULL,
+                            ward VARCHAR(50),
+                            phone VARCHAR(20),
+                            eco_coins INTEGER DEFAULT 100,
+                            is_active BOOLEAN DEFAULT 1,
+                            failed_attempts INTEGER DEFAULT 0,
+                            is_locked BOOLEAN DEFAULT 0,
+                            created_at DATETIME,
+                            updated_at DATETIME
+                        );
+                    """))
+                    conn.execute(text("INSERT INTO users_new SELECT * FROM users;"))
+                    conn.execute(text("DROP TABLE users;"))
+                    conn.execute(text("ALTER TABLE users_new RENAME TO users;"))
+                    conn.execute(text("PRAGMA foreign_keys=ON;"))
+                    conn.commit()
+                    logger.info("[SCHEMA] SQLite users table migrated to nullable email/hashed_password.")
+        except Exception as exc:
+            logger.warning("[SCHEMA] SQLite users schema check warning: %s", type(exc).__name__)
+
+    elif engine.dialect.name == "postgresql":
+        try:
+            with engine.connect() as conn:
+                try:
+                    conn.execute(text("ALTER TABLE users ALTER COLUMN email DROP NOT NULL;"))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ALTER COLUMN hashed_password DROP NOT NULL;"))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_phone ON users(phone) WHERE phone IS NOT NULL AND phone != '';"))
+                    conn.commit()
+                except Exception:
+                    pass
+            logger.info("[SCHEMA] users mobile-first schema verified successfully.")
+        except Exception as exc:
+            logger.warning("[SCHEMA] users schema check warning: %s", type(exc).__name__)
+
+
 def get_db():
     """Dependency that provides a database session to FastAPI routes."""
     db = SessionLocal()

@@ -6,6 +6,7 @@ import pytest
 
 # Ensure tests run hermetically against local database without requiring external network connectivity
 os.environ.setdefault("DATABASE_URL", "sqlite:///./ecopulse.db")
+os.environ.setdefault("ENV", "test")
 os.environ["MEDIA_STORAGE_BACKEND"] = "local"
 
 

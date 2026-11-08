@@ -92,6 +92,14 @@ class Config:
         self.TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
         self.TWILIO_WEBHOOK_URL: str = (os.getenv("TWILIO_WEBHOOK_URL", "") or "").strip()
 
+        # SMS Gateway & Mobile OTP configuration (Indian DLT-compliant gateway)
+        self.SMS_PROVIDER: str = os.getenv("SMS_PROVIDER", "mock" if self.ENV != "production" else "msg91").strip().lower()
+        self.SMS_API_KEY: str = (os.getenv("SMS_API_KEY", "") or "").strip()
+        self.SMS_SENDER_ID: str = (os.getenv("SMS_SENDER_ID", "ECPULS") or "ECPULS").strip()
+        self.SMS_TEMPLATE_ID: str = (os.getenv("SMS_TEMPLATE_ID", "") or "").strip()
+        self.SMS_OTP_EXPIRY_SECONDS: int = int(os.getenv("SMS_OTP_EXPIRY_SECONDS", "300"))
+        self.SMS_RESEND_COOLDOWN_SECONDS: int = int(os.getenv("SMS_RESEND_COOLDOWN_SECONDS", "60"))
+
         # Municipality branding & configuration
         self.MUNICIPALITY_NAME: str = os.getenv("MUNICIPALITY_NAME", "Dhule Municipal Waste Management")
         self.MUNICIPALITY_NAME_MR: str = os.getenv("MUNICIPALITY_NAME_MR", "धुळे महानगरपालिका स्वच्छता व्यवस्थापन")

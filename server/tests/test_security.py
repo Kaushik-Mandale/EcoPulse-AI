@@ -363,7 +363,7 @@ def test_scope_c_cannot_manipulate_own_ecocoins_balance():
 # ============================================================================
 
 def test_scope_d_arbitrary_otp_cannot_issue_jwt():
-    """Arbitrary OTP verification requests return 503 and do not issue JWT or create accounts."""
+    """Arbitrary OTP verification requests return 400/404/422 and do not issue JWT or create accounts."""
     db = SessionLocal()
     phone_test = "9111222333"
     try:
@@ -377,8 +377,7 @@ def test_scope_d_arbitrary_otp_cannot_issue_jwt():
                 "/api/auth/verify-otp",
                 json={"phone": phone_test, "otp": otp_code, "role": "citizen"}
             )
-            assert response.status_code == 503
-            assert "unavailable" in response.json().get("detail", "").lower()
+            assert response.status_code in (400, 404, 422)
             assert "access_token" not in response.json()
 
         # Confirm no account was created

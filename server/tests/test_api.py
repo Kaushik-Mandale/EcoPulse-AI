@@ -124,18 +124,24 @@ def test_forgot_password():
     assert res.json()["success"] is True
 
 def test_otp_flow():
-    # Send OTP
+    from server.database.db import SessionLocal
+    from server.models.mobile_otp import MobileOtpToken
+    _db = SessionLocal()
+    _db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").delete()
+    _db.commit()
+    _db.close()
+
+    # Send OTP to registered user
     res_send = client.post("/api/auth/send-otp", json={"phone": "9876543210"})
     assert res_send.status_code == 200
     assert res_send.json()["success"] is True
 
-    # Verify OTP - must be disabled / return 503 and not issue access_token
+    # Verify invalid OTP - must return 400 and not issue access_token
     res_verify = client.post(
         "/api/auth/verify-otp",
-        json={"phone": "9876543210", "otp": "1234", "role": "citizen"}
+        json={"phone": "9876543210", "otp": "999999", "role": "citizen"}
     )
-    assert res_verify.status_code == 503
-    assert "unavailable" in res_verify.json().get("detail", "").lower()
+    assert res_verify.status_code in (400, 422)
     assert "access_token" not in res_verify.json()
 
 def test_public_notifications():

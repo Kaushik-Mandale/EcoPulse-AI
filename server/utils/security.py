@@ -49,12 +49,12 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme), db:
         return None
     try:
         payload = jwt.decode(token, get_jwt_secret(), algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
+        sub: str = payload.get("sub")
+        if sub is None:
             return None
     except (JWTError, RuntimeError):
         return None
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter((User.email == sub) | (User.phone == sub) | (User.phone == f"+91{sub}")).first()
     return user
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:

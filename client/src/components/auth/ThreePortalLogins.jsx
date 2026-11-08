@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import CitizenPortalLogin from './CitizenPortalLogin';
 import DriverPortalLogin from './DriverPortalLogin';
@@ -8,6 +8,7 @@ import ForgotPasswordModal from './ForgotPasswordModal';
 import { UserCheck, Truck, ShoppingBag, UserPlus } from 'lucide-react';
 
 const ThreePortalLogins = ({ onSuccess }) => {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialPortalParam = searchParams.get('portal');
   const initialPortal = ['citizen', 'driver', 'collector'].includes(initialPortalParam) 
@@ -112,6 +113,7 @@ const ThreePortalLogins = ({ onSuccess }) => {
               <CitizenPortalLogin
                 onSuccess={onSuccess}
                 onOpenForgotPassword={() => setIsForgotPasswordOpen(true)}
+                onSwitchToSignup={() => navigate('/signup')}
               />
             </div>
           )}

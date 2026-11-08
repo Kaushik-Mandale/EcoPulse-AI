@@ -1,19 +1,83 @@
 import os
-
+import re
+import time
+import hmac
+import hashlib
+import secrets
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi import HTTPException, status
-from server.models.user import User
-from server.schemas.auth import LoginRequest, SignupRequest, AuthResponse, UserResponse
-from server.utils.security import hash_password, verify_password, create_access_token
 
-DUMMY_HASH = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW" # Precomputed dummy bcrypt hash
+from server.models.user import User
+from server.models.mobile_otp import MobileOtpToken
+from server.schemas.auth import (
+    SignupRequest, RegisterRequest, LoginRequest, OtpLoginRequest,
+    AuthResponse, UserResponse, UserProfileUpdate
+)
+from server.utils.security import hash_password, verify_password, create_access_token, get_jwt_secret
+from server.utils.config import config, normalize_environment
+from server.services.sms_service import get_sms_provider
+
+logger = logging.getLogger(__name__)
+
+# Dummy hash used for constant-time comparison to prevent user enumeration attacks
+DUMMY_HASH = "$2b$12$e80yJ/6h/UoK5h45l35vpe4dM8zV9P0b2K5l0Z7o1Z4m2n7l9p2e2"
+
+
+def normalize_phone_number(phone: str) -> str:
+    """Normalizes phone input (+91, 0, spaces, dashes) to clean 10-digit format."""
+    if not phone:
+        return ""
+    clean = re.sub(r"\D", "", phone.strip())
+    if clean.startswith("91") and len(clean) == 12:
+        clean = clean[2:]
+    elif clean.startswith("0") and len(clean) == 11:
+        clean = clean[1:]
+    return clean
+
+
+def hash_otp(otp: str, secret: Optional[str] = None) -> str:
+    """Computes HMAC-SHA256 hash of a 6-digit OTP using the server-side SECRET_KEY."""
+    if not secret:
+        secret = get_jwt_secret()
+    return hmac.new(
+        secret.encode("utf-8"),
+        otp.strip().encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def validate_indian_mobile(phone: str) -> str:
+    """Validates that the input represents a valid 10-digit Indian mobile number."""
+    clean = normalize_phone_number(phone)
+    if not re.match(r"^[6-9]\d{9}$", clean):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid mobile number. Please provide a valid 10-digit Indian mobile number (starting with 6, 7, 8, or 9)."
+        )
+    return clean
+
 
 class AuthService:
     @staticmethod
+    def find_user_by_phone(db: Session, clean_phone: str) -> Optional[User]:
+        """Finds a user by clean 10-digit phone, matching with or without country code prefix."""
+        if not clean_phone:
+            return None
+        return db.query(User).filter(
+            (User.phone == clean_phone) |
+            (User.phone == f"+91{clean_phone}") |
+            (User.phone == f"0{clean_phone}")
+        ).first()
+
+    @staticmethod
     def should_seed_demo_users() -> bool:
-        env_name = (os.getenv("ENV", os.getenv("ENVIRONMENT", "development")) or "development").strip().lower()
-        return env_name not in {"production", "prod"}
+        """Only seed demo users in development/test environments."""
+        env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", config.ENV)))
+        return env in ("development", "test")
 
     @staticmethod
     def seed_demo_users(db: Session):
@@ -43,83 +107,450 @@ class AuthService:
                 "full_name": "Suresh Sanitation",
                 "email": "collector@cityswap.io",
                 "phone": "9876543212",
-                "employee_id": "EMP-COLL-01",
+                "employee_id": "EMP-ADMIN-01",
                 "password": "Password123!",
                 "role": "collector",
-                "ward": "Ward 8"
+                "ward": "HQ"
             },
             {
                 "full_name": "Admin Officer",
                 "email": "admin@cityswap.io",
                 "phone": "9876543213",
-                "employee_id": "EMP-ADMIN-01",
+                "employee_id": "EMP-SUPER-01",
                 "password": "Password123!",
                 "role": "admin",
-                "ward": "Municipal HQ"
+                "ward": "HQ"
             }
         ]
-
+        from sqlalchemy import or_
         for acc in demo_accounts:
-            existing = db.query(User).filter(User.email == acc["email"]).first()
+            conds = [User.email == acc["email"]]
+            if acc.get("phone"):
+                conds.append(User.phone == acc["phone"])
+            if acc.get("employee_id"):
+                conds.append(User.employee_id == acc["employee_id"])
+            existing = db.query(User).filter(or_(*conds)).first()
             if not existing:
-                new_u = User(
+                u = User(
                     full_name=acc["full_name"],
                     email=acc["email"],
-                    phone=acc.get("phone"),
-                    employee_id=acc["employee_id"],
+                    employee_id=acc.get("employee_id"),
                     hashed_password=hash_password(acc["password"]),
                     role=acc["role"],
-                    ward=acc["ward"]
+                    ward=acc.get("ward"),
+                    phone=acc.get("phone"),
+                    eco_coins=150,
+                    is_active=True
                 )
-                db.add(new_u)
+                db.add(u)
             else:
                 if not existing.phone and acc.get("phone"):
                     existing.phone = acc.get("phone")
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
 
     @staticmethod
-    def register_user(db: Session, payload: SignupRequest) -> AuthResponse:
-        # Check if email already exists
-        existing_user = db.query(User).filter(User.email == payload.email).first()
-        if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email address is already registered. Please login instead."
-            )
-        
-        if payload.employeeId:
-            existing_emp = db.query(User).filter(User.employee_id == payload.employeeId).first()
-            if existing_emp:
+    def send_otp(db: Session, phone: str, purpose: str = "login", ip_address: Optional[str] = None) -> dict:
+        """
+        Generates and dispatches a cryptographically secure 6-digit OTP.
+        Enforces resend cooldown, mobile rate-limits, and IP rate-limits.
+        Stores only a SHA-256 hash. Never logs or returns plaintext OTP.
+        """
+        clean_phone = validate_indian_mobile(phone)
+        purpose = (purpose or "login").strip().lower()
+        now = datetime.now(timezone.utc)
+
+        # Purpose-specific account validation
+        existing_user = AuthService.find_user_by_phone(db, clean_phone)
+
+        if purpose == "register":
+            if existing_user:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Employee ID is already registered."
+                    detail="This mobile number is already registered. Please sign in instead."
+                )
+        elif purpose == "login":
+            if not existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No account found registered with +91 {clean_phone}. Please sign up first."
+                )
+            if existing_user.is_locked or not existing_user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account is suspended or locked. Please contact municipal support."
                 )
 
-        # Create new user securely
-        hashed_pwd = hash_password(payload.password)
+        # 1. Resend cooldown check (e.g. 60 seconds)
+        cooldown_window = now - timedelta(seconds=config.SMS_RESEND_COOLDOWN_SECONDS)
+        recent_token = db.query(MobileOtpToken).filter(
+            MobileOtpToken.phone == clean_phone,
+            MobileOtpToken.consumed_at.is_(None),
+            MobileOtpToken.created_at >= cooldown_window
+        ).order_by(MobileOtpToken.id.desc()).first()
+
+        if recent_token:
+            created_at = recent_token.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            elapsed = (now - created_at).total_seconds()
+            remaining = max(1, int(config.SMS_RESEND_COOLDOWN_SECONDS - elapsed))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {remaining} seconds before requesting a new verification code."
+            )
+
+        # 2. Maximum OTP requests per mobile number in 15 minutes (max 5)
+        fifteen_min_ago = now - timedelta(minutes=15)
+        recent_count = db.query(MobileOtpToken).filter(
+            MobileOtpToken.phone == clean_phone,
+            MobileOtpToken.created_at >= fifteen_min_ago
+        ).count()
+        if recent_count >= 5:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many OTP requests for this mobile number. Please try again after 15 minutes."
+            )
+
+        # 3. IP address rate limit (max 15 requests per 15 minutes)
+        if ip_address:
+            ip_count = db.query(MobileOtpToken).filter(
+                MobileOtpToken.ip_address == ip_address,
+                MobileOtpToken.created_at >= fifteen_min_ago
+            ).count()
+            if ip_count >= 15:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many requests from this network. Please try again later."
+                )
+
+        # 4. Invalidate all previous unconsumed OTPs for this mobile number
+        db.query(MobileOtpToken).filter(
+            MobileOtpToken.phone == clean_phone,
+            MobileOtpToken.consumed_at.is_(None)
+        ).update({"consumed_at": now}, synchronize_session=False)
+
+        # 5. Generate cryptographically secure random 6-digit OTP
+        otp_plaintext = f"{secrets.randbelow(900000) + 100000}"
+        otp_hash = hash_otp(otp_plaintext)
+        expires_at = now + timedelta(seconds=config.SMS_OTP_EXPIRY_SECONDS)
+
+        new_token = MobileOtpToken(
+            phone=clean_phone,
+            otp_hash=otp_hash,
+            purpose=purpose,
+            ip_address=ip_address,
+            attempts=0,
+            max_attempts=5,
+            expires_at=expires_at,
+            consumed_at=None
+        )
+        db.add(new_token)
+        db.commit()
+
+        # 6. Dispatch via SMS provider
+        sms_provider = get_sms_provider()
+        delivered = sms_provider.send_otp(clean_phone, otp_plaintext)
+        if not delivered:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="SMS gateway service is currently unable to dispatch verification code. Please try again later."
+            )
+
+        masked_phone = f"+91 ******{clean_phone[-4:]}"
+        return {
+            "success": True,
+            "message": f"Verification code sent to {masked_phone}.",
+            "phone": clean_phone,
+            "cooldown_seconds": config.SMS_RESEND_COOLDOWN_SECONDS,
+            "expires_in": config.SMS_OTP_EXPIRY_SECONDS,
+            "account_exists": existing_user is not None
+        }
+
+    @staticmethod
+    def verify_otp(
+        db: Session,
+        phone: str,
+        otp: str,
+        purpose: str = "login",
+        role: Optional[str] = "citizen"
+    ) -> AuthResponse:
+        """
+        Verifies 6-digit OTP against stored SHA-256 hash.
+        Guarantees single-use, tracks failed attempts (max 5), enforces expiration.
+        On purpose='login', logs in and issues JWT.
+        """
+        clean_phone = validate_indian_mobile(phone)
+        otp = (otp or "").strip()
+        if not re.match(r"^\d{6}$", otp):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code must be exactly 6 digits."
+            )
+
+        now = datetime.now(timezone.utc)
+
+        # Find latest unconsumed OTP token for this phone
+        token = db.query(MobileOtpToken).filter(
+            MobileOtpToken.phone == clean_phone,
+            MobileOtpToken.consumed_at.is_(None)
+        ).order_by(MobileOtpToken.id.desc()).first()
+
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active verification code found for this mobile number. Please request a new OTP."
+            )
+
+        # Check expiration
+        token_expires = token.expires_at
+        if token_expires.tzinfo is None:
+            token_expires = token_expires.replace(tzinfo=timezone.utc)
+
+        if token_expires < now:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code has expired. Please request a new OTP."
+            )
+
+        # Check attempt ceiling
+        if token.attempts >= token.max_attempts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Maximum verification attempts exceeded. Please request a new code."
+            )
+
+        # Constant-time HMAC hash comparison (with SHA-256 fallback for migration safety)
+        submitted_hmac = hash_otp(otp)
+        submitted_sha = hashlib.sha256(otp.encode("utf-8")).hexdigest()
+        if not (hmac.compare_digest(token.otp_hash, submitted_hmac) or hmac.compare_digest(token.otp_hash, submitted_sha)):
+            token.attempts += 1
+            db.commit()
+            remaining = max(0, token.max_attempts - token.attempts)
+            if remaining == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Incorrect code. Maximum verification attempts reached. Please request a new code."
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid verification code. {remaining} attempt{'s' if remaining != 1 else ''} remaining."
+            )
+
+        # Mark token consumed (single-use) via atomic conditional update
+        updated_rows = db.query(MobileOtpToken).filter(
+            MobileOtpToken.id == token.id,
+            MobileOtpToken.consumed_at.is_(None)
+        ).update({"consumed_at": now}, synchronize_session=False)
+        db.commit()
+
+        if updated_rows == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This verification code has already been consumed. Please request a new code."
+            )
+
+        # If login flow, locate the user and issue JWT session
+        user = AuthService.find_user_by_phone(db, clean_phone)
+
+        if purpose == "login" or (purpose != "register" and user is not None):
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No account found for mobile number +91 {clean_phone}. Please sign up."
+                )
+            if user.is_locked or not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account is locked or suspended. Please contact municipal support."
+                )
+
+            # Issue JWT token using real database role
+            session_id = f"sess_{user.id}_{int(time.time())}"
+            access_token = create_access_token({
+                "sub": user.email or user.phone,
+                "role": user.role,
+                "id": user.id,
+                "sid": session_id
+            })
+            return AuthResponse(
+                access_token=access_token,
+                user=UserResponse(
+                    id=user.id,
+                    name=user.full_name,
+                    email=user.email,
+                    role=user.role,
+                    ward=user.ward,
+                    phone=user.phone,
+                    employee_id=user.employee_id,
+                    eco_coins=user.eco_coins or 100
+                )
+            )
+
+        # For registration verification step before final user creation
+        # Return a temporary confirmation structure
+        dummy_user = UserResponse(
+            id=0,
+            name="Pending Registration",
+            email=None,
+            role="citizen",
+            phone=clean_phone,
+            eco_coins=100
+        )
+        return AuthResponse(
+            access_token="verified_pre_registration",
+            token_type="bearer",
+            user=dummy_user
+        )
+
+    @staticmethod
+    def register_user(
+        db: Session,
+        payload: Union[RegisterRequest, SignupRequest],
+        ip_address: Optional[str] = None
+    ) -> AuthResponse:
+        """
+        Registers a new citizen account via mobile number and verified OTP.
+        Strictly enforces that public registration creates only 'citizen' accounts.
+        Email and password are fully optional.
+        """
+        # Role check: public registration is ONLY allowed for citizens
+        req_role = (getattr(payload, "role", "citizen") or "citizen").strip().lower()
+        if req_role != "citizen":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Public registration is only permitted for citizens. Driver and administrative accounts must be provisioned by the municipal administration."
+            )
+
+        # Extract name and phone supporting both schema shapes
+        full_name = (getattr(payload, "full_name", None) or getattr(payload, "fullName", None) or "").strip()
+        if len(full_name) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Full name is required and must be at least 2 characters long."
+            )
+
+        clean_phone = validate_indian_mobile(payload.phone)
+
+        # Check duplicate mobile number
+        existing_phone = AuthService.find_user_by_phone(db, clean_phone)
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This mobile number is already registered. Please sign in instead."
+            )
+
+        # Optional email validation and duplicate check
+        clean_email = None
+        if payload.email and payload.email.strip():
+            clean_email = payload.email.strip().lower()
+            if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", clean_email):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Please provide a valid email address."
+                )
+            existing_email = db.query(User).filter(User.email == clean_email).first()
+            if existing_email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This email address is already in use by another account."
+                )
+
+        # Verify OTP if provided in payload
+        now = datetime.now(timezone.utc)
+        otp = getattr(payload, "otp", None)
+        if otp and otp.strip():
+            otp_val = otp.strip()
+            # Find matching active token
+            token = db.query(MobileOtpToken).filter(
+                MobileOtpToken.phone == clean_phone,
+                MobileOtpToken.consumed_at.is_(None)
+            ).order_by(MobileOtpToken.id.desc()).first()
+
+            if not token:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No active OTP found for this mobile number. Please request a verification code."
+                )
+
+            token_expires = token.expires_at
+            if token_expires.tzinfo is None:
+                token_expires = token_expires.replace(tzinfo=timezone.utc)
+
+            if token_expires < now:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Verification code has expired. Please request a new OTP."
+                )
+
+            submitted_hmac = hash_otp(otp_val)
+            submitted_sha = hashlib.sha256(otp_val.encode("utf-8")).hexdigest()
+            if not (hmac.compare_digest(token.otp_hash, submitted_hmac) or hmac.compare_digest(token.otp_hash, submitted_sha)):
+                token.attempts += 1
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid verification code. Please check and try again."
+                )
+
+            # Consume token via atomic conditional update
+            updated_rows = db.query(MobileOtpToken).filter(
+                MobileOtpToken.id == token.id,
+                MobileOtpToken.consumed_at.is_(None)
+            ).update({"consumed_at": now}, synchronize_session=False)
+            db.commit()
+
+            if updated_rows == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Verification code has already been consumed. Please request a new code."
+                )
+        else:
+            # Check if a recent registration token for this phone was verified within last 10 minutes
+            ten_min_ago = now - timedelta(minutes=10)
+            verified_token = db.query(MobileOtpToken).filter(
+                MobileOtpToken.phone == clean_phone,
+                MobileOtpToken.consumed_at >= ten_min_ago
+            ).order_by(MobileOtpToken.id.desc()).first()
+
+            if not verified_token:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Mobile number has not been verified via OTP. Please request and verify your OTP first."
+                )
+
+        # Password handling (optional)
+        hashed_pwd = None
+        if payload.password and payload.password.strip():
+            hashed_pwd = hash_password(payload.password)
+
         new_user = User(
-            full_name=payload.fullName,
-            email=payload.email,
+            full_name=full_name,
+            phone=clean_phone,
+            email=clean_email,
             hashed_password=hashed_pwd,
-            role=payload.role or "citizen",
-            ward=payload.ward or "Ward 12",
-            phone=payload.phone or "",
-            employee_id=payload.employeeId
+            role="citizen",
+            ward=getattr(payload, "ward", "Ward 12") or "Ward 12",
+            employee_id=getattr(payload, "employeeId", None),
+            eco_coins=100,
+            is_active=True
         )
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
 
-        import time
         session_id = f"sess_{new_user.id}_{int(time.time())}"
-        token = create_access_token({
-            "sub": new_user.email,
+        access_token = create_access_token({
+            "sub": new_user.email or new_user.phone,
             "role": new_user.role,
             "id": new_user.id,
             "sid": session_id
         })
+
         return AuthResponse(
-            access_token=token,
+            access_token=access_token,
             user=UserResponse(
                 id=new_user.id,
                 name=new_user.full_name,
@@ -128,20 +559,32 @@ class AuthService:
                 ward=new_user.ward,
                 phone=new_user.phone,
                 employee_id=new_user.employee_id,
-                eco_coins=new_user.eco_coins
+                eco_coins=new_user.eco_coins or 100
             )
         )
 
     @staticmethod
+    def login_with_otp(
+        db: Session,
+        phone: str,
+        otp: str,
+        role: Optional[str] = "citizen"
+    ) -> AuthResponse:
+        """Authenticates an existing user via mobile number and verified OTP."""
+        return AuthService.verify_otp(db, phone=phone, otp=otp, purpose="login", role=role)
+
+    @staticmethod
     def login_user(db: Session, payload: LoginRequest) -> AuthResponse:
-        # Ensure demo accounts exist only in local/dev/test workflows.
+        """
+        Legacy/compatibility password-based authentication for existing driver & admin workflows.
+        Identifies user by email, employee_id, or mobile number.
+        """
         if AuthService.should_seed_demo_users():
             AuthService.seed_demo_users(db)
 
         clean_ident = payload.email.strip()
         clean_phone = clean_ident.replace("+91", "").replace(" ", "").replace("-", "")
 
-        # Query database for user by email, employee_id, or phone
         user = db.query(User).filter(
             (func.lower(User.email) == clean_ident.lower()) |
             (func.lower(User.employee_id) == clean_ident.lower()) |
@@ -150,69 +593,35 @@ class AuthService:
             (User.phone == clean_phone)
         ).first()
 
-        # Constant-time security check against user enumeration timing attacks
-        if not user:
+        if not user or not user.hashed_password:
             verify_password(payload.password, DUMMY_HASH)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials. Please verify your email/employee ID and password."
+                detail="Invalid credentials. Please verify your mobile/email and password."
             )
 
-        # Check account lock status
-        if user.is_locked:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is locked due to multiple failed login attempts. Please contact municipal support."
-            )
-
-        # Verify password hash
         if not verify_password(payload.password, user.hashed_password):
             user.failed_attempts = (user.failed_attempts or 0) + 1
             if user.failed_attempts >= 5:
                 user.is_locked = True
             db.commit()
-
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials. Please verify your email/employee ID and password."
+                detail="Invalid credentials. Please verify your mobile/email and password."
             )
 
-        # Successful login: reset failed attempts counter
+        if user.is_locked or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is locked or suspended. Please contact municipal support."
+            )
+
         user.failed_attempts = 0
-        
-        # Strict Role-Based Portal Access Control
-        # If user registered as citizen, they CANNOT log in via driver or admin portal.
-        # Drivers can log in to driver portal (or admin if authorized). Admins can log in to admin.
-        if payload.role:
-            target_role = payload.role.lower()
-            user_role = user.role.lower()
-            
-            # Helper for role hierarchy / permission checking
-            allowed = False
-            if target_role == user_role:
-                allowed = True
-            elif target_role in ["admin", "collector"] and user_role in ["admin", "collector"]:
-                allowed = True
-            elif target_role == "driver" and user_role == "admin":
-                allowed = True
-
-            if not allowed:
-                portal_names = {"citizen": "Citizen", "driver": "Driver", "admin": "Admin", "collector": "Admin"}
-                target_portal_name = portal_names.get(target_role, target_role.capitalize())
-                user_portal_name = portal_names.get(user_role, user_role.capitalize())
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Access Denied: This account is registered as a '{user_portal_name}'. You cannot log in via the '{target_portal_name} Portal'."
-                )
-
         db.commit()
-        db.refresh(user)
 
-        # Generate secure JWT with sub, role, user id, and session timestamp
-        import time
         session_id = f"sess_{user.id}_{int(time.time())}"
         token = create_access_token({
-            "sub": user.email,
+            "sub": user.email or user.phone,
             "role": user.role,
             "id": user.id,
             "sid": session_id
@@ -232,42 +641,48 @@ class AuthService:
         )
 
     @staticmethod
-    def update_user_profile(db: Session, user: User, payload) -> UserResponse:
-        if payload.full_name is not None:
-            user.full_name = payload.full_name
-        if payload.ward is not None:
-            user.ward = payload.ward
+    def update_user_profile(db: Session, current_user: User, payload: UserProfileUpdate) -> UserResponse:
+        if payload.full_name is not None and payload.full_name.strip():
+            current_user.full_name = payload.full_name.strip()
+        if payload.ward is not None and payload.ward.strip():
+            current_user.ward = payload.ward.strip()
         if payload.phone is not None:
-            user.phone = payload.phone
-            
+            clean_phone = validate_indian_mobile(payload.phone)
+            if normalize_phone_number(current_user.phone or "") != clean_phone:
+                dup = db.query(User).filter(
+                    (User.phone == clean_phone) |
+                    (User.phone == f"+91{clean_phone}"),
+                    User.id != current_user.id
+                ).first()
+                if dup:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="This mobile number is already in use by another account."
+                    )
+                current_user.phone = clean_phone
         db.commit()
-        db.refresh(user)
-
+        db.refresh(current_user)
         return UserResponse(
-            id=user.id,
-            name=user.full_name,
-            email=user.email,
-            role=user.role,
-            ward=user.ward,
-            phone=user.phone,
-            employee_id=user.employee_id,
-            eco_coins=user.eco_coins or 100
+            id=current_user.id,
+            name=current_user.full_name,
+            email=current_user.email,
+            role=current_user.role,
+            ward=current_user.ward,
+            phone=current_user.phone,
+            employee_id=current_user.employee_id,
+            eco_coins=current_user.eco_coins or 100
         )
 
     @staticmethod
     def request_password_reset(db: Session, identifier: str, role: str = "citizen") -> dict:
         clean_ident = identifier.strip()
         clean_phone = clean_ident.replace("+91", "").replace(" ", "").replace("-", "")
-
         user = db.query(User).filter(
             (func.lower(User.email) == clean_ident.lower()) |
-            (func.lower(User.employee_id) == clean_ident.lower()) |
-            (User.employee_id == clean_ident) |
             (User.phone == clean_ident) |
             (User.phone == clean_phone)
         ).first()
 
-        # Secure response: Always confirm instructions dispatched to prevent account harvesting
         if user:
             return {
                 "success": True,
@@ -277,25 +692,3 @@ class AuthService:
             "success": True,
             "message": f"If an account is associated with {clean_ident}, reset instructions have been dispatched."
         }
-
-    @staticmethod
-    def send_otp(db: Session, phone: str) -> dict:
-        clean_phone = phone.strip().replace("+91", "").replace(" ", "").replace("-", "")
-        if len(clean_phone) < 10:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid mobile number. Please provide a valid 10-digit phone number."
-            )
-        # Mock or dispatch SMS OTP
-        return {
-            "success": True,
-            "message": f"Verification code dispatched to +91 {clean_phone}.",
-            "phone": clean_phone
-        }
-
-    @staticmethod
-    def verify_otp(db: Session, phone: str, otp: str, role: str = "citizen") -> AuthResponse:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OTP verification is currently unavailable. Please use password-based authentication."
-        )
