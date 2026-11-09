@@ -19,7 +19,7 @@ from server.schemas.auth import (
 )
 from server.utils.security import hash_password, verify_password, create_access_token, get_jwt_secret
 from server.utils.config import config, normalize_environment
-from server.services.sms_service import get_sms_provider
+from server.services.otp_delivery import get_otp_delivery_provider
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,18 @@ def normalize_phone_number(phone: str) -> str:
     elif clean.startswith("0") and len(clean) == 11:
         clean = clean[1:]
     return clean
+
+
+def format_e164_indian_mobile(phone: str) -> str:
+    """Formats a 10-digit Indian mobile number into E.164 format (+91XXXXXXXXXX)."""
+    clean = re.sub(r"\D", "", phone.strip())
+    if clean.startswith("91") and len(clean) == 12:
+        clean = clean[2:]
+    elif clean.startswith("0") and len(clean) == 11:
+        clean = clean[1:]
+    if len(clean) != 10:
+        raise ValueError(f"Invalid phone number length: {phone}")
+    return f"+91{clean}"
 
 
 def hash_otp(otp: str, secret: Optional[str] = None) -> str:
@@ -154,9 +166,9 @@ class AuthService:
     @staticmethod
     def send_otp(db: Session, phone: str, purpose: str = "login", ip_address: Optional[str] = None) -> dict:
         """
-        Generates and dispatches a cryptographically secure 6-digit OTP.
+        Generates and dispatches a cryptographically secure 6-digit OTP via Meta WhatsApp.
         Enforces resend cooldown, mobile rate-limits, and IP rate-limits.
-        Stores only a SHA-256 hash. Never logs or returns plaintext OTP.
+        Stores only an HMAC-SHA256 hash of the OTP. Never logs or returns plaintext OTP.
         """
         clean_phone = validate_indian_mobile(phone)
         purpose = (purpose or "login").strip().lower()
@@ -183,7 +195,7 @@ class AuthService:
                     detail="Your account is suspended or locked. Please contact municipal support."
                 )
 
-        # 1. Resend cooldown check (e.g. 60 seconds)
+        # 1. Resend cooldown check (60 seconds)
         cooldown_window = now - timedelta(seconds=config.SMS_RESEND_COOLDOWN_SECONDS)
         recent_token = db.query(MobileOtpToken).filter(
             MobileOtpToken.phone == clean_phone,
@@ -232,8 +244,8 @@ class AuthService:
             MobileOtpToken.consumed_at.is_(None)
         ).update({"consumed_at": now}, synchronize_session=False)
 
-        # 5. Generate cryptographically secure random 6-digit OTP
-        otp_plaintext = f"{secrets.randbelow(900000) + 100000}"
+        # 5. Generate a cryptographically secure 6-digit OTP and hash it
+        otp_plaintext = f"{secrets.randbelow(1000000):06d}"
         otp_hash = hash_otp(otp_plaintext)
         expires_at = now + timedelta(seconds=config.SMS_OTP_EXPIRY_SECONDS)
 
@@ -250,47 +262,51 @@ class AuthService:
         db.add(new_token)
         db.commit()
 
-        # 6. Dispatch via configured SMS provider
-        sms_provider = get_sms_provider()
-        delivered = sms_provider.send_otp(clean_phone, otp_plaintext)
-        if not delivered:
+        # 6. Dispatch via Meta WhatsApp Cloud API
+        e164_phone = format_e164_indian_mobile(clean_phone)
+        delivery_provider = get_otp_delivery_provider()
+        result = delivery_provider.send_otp(e164_phone, otp_plaintext)
+
+        if not result.success:
             # Clean up un-dispatched token so citizen is not unfairly penalized with cooldown
             db.delete(new_token)
             db.commit()
 
-            err_status = getattr(delivered, "status", "FAILED")
-            err_msg = getattr(delivered, "message", "SMS gateway is unable to dispatch verification code.")
-            if err_status == "NOT_CONFIGURED":
-                detail = "SMS gateway service is not configured for production. Please configure an approved SMS provider."
-            elif err_status == "REJECTED":
-                detail = f"SMS delivery rejected by gateway: {err_msg}"
+            err_code = result.error_code or "FAILED"
+            err_msg = result.message or "WhatsApp verification service is unable to dispatch code."
+            if err_code == "NOT_CONFIGURED":
+                detail = (
+                    "WhatsApp OTP delivery is not configured. "
+                    "Please contact the system administrator."
+                )
             else:
-                detail = f"SMS delivery failed ({err_msg}). Please try again later."
+                detail = f"WhatsApp OTP dispatch failed: {err_msg}. Please try again later."
 
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=detail
             )
 
-        challenge_id = AuthService.create_challenge_id(new_token.id, clean_phone, expires_at)
+        challenge_id = AuthService.create_challenge_id(new_token.id, clean_phone, expires_at, purpose=purpose)
         masked_phone = f"+91 ******{clean_phone[-4:]}"
         return {
             "success": True,
-            "message": f"Verification code sent to {masked_phone}.",
+            "message": f"Verification code sent via WhatsApp to {masked_phone}.",
             "phone": clean_phone,
             "challenge_id": challenge_id,
             "delivery_status": "ACCEPTED",
+            "channel": "whatsapp",
             "cooldown_seconds": config.SMS_RESEND_COOLDOWN_SECONDS,
             "expires_in": config.SMS_OTP_EXPIRY_SECONDS,
             "account_exists": existing_user is not None
         }
 
     @staticmethod
-    def create_challenge_id(token_id: int, phone: str, expires_at: datetime) -> str:
-        """Generates an HMAC-SHA256 signed, tamper-proof challenge identifier."""
+    def create_challenge_id(token_id: int, phone: str, expires_at: datetime, purpose: str = "login") -> str:
+        """Generates an HMAC-SHA256 signed, tamper-proof challenge identifier binding token, phone, purpose, and expiry."""
         import base64
         exp_ts = int(expires_at.timestamp())
-        payload = f"{token_id}:{phone}:{exp_ts}"
+        payload = f"{token_id}:{phone}:{purpose}:{exp_ts}"
         secret = config.SECRET_KEY or "ecopulse-default-secret-key-change-in-prod"
         sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
         raw = f"{payload}:{sig}"
@@ -303,11 +319,15 @@ class AuthService:
         try:
             raw = base64.urlsafe_b64decode(challenge_id.encode("utf-8")).decode("utf-8")
             parts = raw.split(":")
-            if len(parts) != 4:
+            if len(parts) == 5:
+                token_id_str, phone, purpose, exp_ts_str, sig = parts
+                payload = f"{token_id_str}:{phone}:{purpose}:{exp_ts_str}"
+            elif len(parts) == 4:
+                token_id_str, phone, exp_ts_str, sig = parts
+                payload = f"{token_id_str}:{phone}:{exp_ts_str}"
+            else:
                 return None
-            token_id_str, phone, exp_ts_str, sig = parts
             token_id = int(token_id_str)
-            payload = f"{token_id}:{phone}:{exp_ts_str}"
             secret = config.SECRET_KEY or "ecopulse-default-secret-key-change-in-prod"
             expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
             if not hmac.compare_digest(sig, expected_sig):
@@ -366,6 +386,12 @@ class AuthService:
         }
 
     @staticmethod
+    def _verify_otp_hash(submitted_otp: str, stored_hash: str) -> bool:
+        """Constant-time HMAC comparison to prevent timing attacks."""
+        expected_hash = hash_otp(submitted_otp)
+        return hmac.compare_digest(expected_hash, stored_hash)
+
+    @staticmethod
     def verify_otp(
         db: Session,
         phone: str,
@@ -375,7 +401,7 @@ class AuthService:
         challenge_id: Optional[str] = None
     ) -> AuthResponse:
         """
-        Verifies 6-digit OTP against stored SHA-256 hash.
+        Verifies 6-digit OTP against stored HMAC-SHA256 hash.
         Guarantees single-use, tracks failed attempts (max 5), enforces expiration.
         On purpose='login', logs in and issues JWT.
         """
@@ -424,10 +450,15 @@ class AuthService:
                 detail="Maximum verification attempts exceeded. Please request a new code."
             )
 
-        # Constant-time HMAC hash comparison (with SHA-256 fallback for migration safety)
-        submitted_hmac = hash_otp(otp)
-        submitted_sha = hashlib.sha256(otp.encode("utf-8")).hexdigest()
-        if not (hmac.compare_digest(token.otp_hash, submitted_hmac) or hmac.compare_digest(token.otp_hash, submitted_sha)):
+        # Purpose binding check
+        if token.purpose != purpose:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Challenge purpose mismatch. This verification challenge was created for {token.purpose}."
+            )
+
+        # Verify OTP using constant-time HMAC comparison
+        if not AuthService._verify_otp_hash(otp, token.otp_hash):
             token.attempts += 1
             db.commit()
             remaining = max(0, token.max_attempts - token.attempts)
@@ -454,7 +485,7 @@ class AuthService:
                 detail="This verification code has already been consumed. Please request a new code."
             )
 
-        # If login flow, locate the user and issue JWT session
+        # If login flow, locate the user and issue EcoPulse JWT
         user = AuthService.find_user_by_phone(db, clean_phone)
 
         if purpose == "login" or (purpose != "register" and user is not None):
@@ -469,7 +500,6 @@ class AuthService:
                     detail="Your account is locked or suspended. Please contact municipal support."
                 )
 
-            # Issue JWT token using real database role
             session_id = f"sess_{user.id}_{int(time.time())}"
             access_token = create_access_token({
                 "sub": user.email or user.phone,
@@ -492,7 +522,6 @@ class AuthService:
             )
 
         # For registration verification step before final user creation
-        # Return a temporary confirmation structure
         dummy_user = UserResponse(
             id=0,
             name="Pending Registration",
@@ -518,7 +547,6 @@ class AuthService:
         Strictly enforces that public registration creates only 'citizen' accounts.
         Email and password are fully optional.
         """
-        # Role check: public registration is ONLY allowed for citizens
         req_role = (getattr(payload, "role", "citizen") or "citizen").strip().lower()
         if req_role != "citizen":
             raise HTTPException(
@@ -526,7 +554,6 @@ class AuthService:
                 detail="Public registration is only permitted for citizens. Driver and administrative accounts must be provisioned by the municipal administration."
             )
 
-        # Extract name and phone supporting both schema shapes
         full_name = (getattr(payload, "full_name", None) or getattr(payload, "fullName", None) or "").strip()
         if len(full_name) < 2:
             raise HTTPException(
@@ -536,7 +563,6 @@ class AuthService:
 
         clean_phone = validate_indian_mobile(payload.phone)
 
-        # Check duplicate mobile number
         existing_phone = AuthService.find_user_by_phone(db, clean_phone)
         if existing_phone:
             raise HTTPException(
@@ -544,7 +570,6 @@ class AuthService:
                 detail="This mobile number is already registered. Please sign in instead."
             )
 
-        # Optional email validation and duplicate check
         clean_email = None
         if payload.email and payload.email.strip():
             clean_email = payload.email.strip().lower()
@@ -560,12 +585,10 @@ class AuthService:
                     detail="This email address is already in use by another account."
                 )
 
-        # Verify OTP if provided in payload
         now = datetime.now(timezone.utc)
         otp = getattr(payload, "otp", None)
         if otp and otp.strip():
             otp_val = otp.strip()
-            # Find matching active token via challenge_id or fallback to phone
             challenge_id = getattr(payload, "challenge_id", None)
             if challenge_id:
                 token = AuthService.verify_and_get_challenge_token(db, challenge_id)
@@ -593,14 +616,24 @@ class AuthService:
                     detail="Verification code has expired. Please request a new OTP."
                 )
 
-            submitted_hmac = hash_otp(otp_val)
-            submitted_sha = hashlib.sha256(otp_val.encode("utf-8")).hexdigest()
-            if not (hmac.compare_digest(token.otp_hash, submitted_hmac) or hmac.compare_digest(token.otp_hash, submitted_sha)):
-                token.attempts += 1
-                db.commit()
+            if token.purpose != "register":
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid verification code. Please check and try again."
+                    detail="Challenge purpose mismatch. This verification challenge was not created for registration."
+                )
+
+            if not AuthService._verify_otp_hash(otp_val, token.otp_hash):
+                token.attempts += 1
+                db.commit()
+                remaining = max(0, token.max_attempts - token.attempts)
+                if remaining == 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Incorrect code. Maximum verification attempts reached. Please request a new code."
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid verification code. {remaining} attempt{'s' if remaining != 1 else ''} remaining."
                 )
 
             # Consume token via atomic conditional update
@@ -629,7 +662,6 @@ class AuthService:
                     detail="Mobile number has not been verified via OTP. Please request and verify your OTP first."
                 )
 
-        # Password handling (optional)
         hashed_pwd = None
         if payload.password and payload.password.strip():
             hashed_pwd = hash_password(payload.password)

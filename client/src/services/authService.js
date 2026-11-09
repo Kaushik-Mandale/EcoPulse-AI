@@ -1,5 +1,13 @@
 import api from './api';
 
+// ── Helper to handle successful authentication ──────────────────────────────
+const handleAuthSuccess = (data) => {
+  if (data?.access_token) {
+    localStorage.setItem('ecopulse_token', data.access_token);
+    localStorage.setItem('ecopulse_user', JSON.stringify(data.user));
+  }
+};
+
 // ── Session Storage Helpers for Refresh-Safe OTP ────────────────────────────
 export const saveOtpSession = (purpose, data) => {
   try {
@@ -71,10 +79,7 @@ export const verifyOtp = async ({ phone, otp, purpose = 'login', role = 'citizen
       payload.challenge_id = challengeId;
     }
     const response = await api.post('/auth/otp/verify', payload);
-    if (response.data?.access_token) {
-      localStorage.setItem('ecopulse_token', response.data.access_token);
-      localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
-    }
+    handleAuthSuccess(response.data);
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {
@@ -91,10 +96,7 @@ export const loginWithOtp = async ({ phone, otp, role = 'citizen', challengeId =
       payload.challenge_id = challengeId;
     }
     const response = await api.post('/auth/login/otp', payload);
-    if (response.data?.access_token) {
-      localStorage.setItem('ecopulse_token', response.data.access_token);
-      localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
-    }
+    handleAuthSuccess(response.data);
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {
@@ -119,10 +121,7 @@ export const registerWithOtp = async ({ fullName, phone, email, otp, challengeId
       payload.email = email.trim();
     }
     const response = await api.post('/auth/register', payload);
-    if (response.data?.access_token) {
-      localStorage.setItem('ecopulse_token', response.data.access_token);
-      localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
-    }
+    handleAuthSuccess(response.data);
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {
@@ -135,10 +134,7 @@ export const registerWithOtp = async ({ fullName, phone, email, otp, challengeId
 export const loginUser = async (credentials) => {
   try {
     const response = await api.post('/auth/login', credentials);
-    if (response.data?.access_token) {
-      localStorage.setItem('ecopulse_token', response.data.access_token);
-      localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
-    }
+    handleAuthSuccess(response.data);
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {
@@ -151,10 +147,7 @@ export const loginUser = async (credentials) => {
 export const signupUser = async (userData) => {
   try {
     const response = await api.post('/auth/signup', userData);
-    if (response.data?.access_token) {
-      localStorage.setItem('ecopulse_token', response.data.access_token);
-      localStorage.setItem('ecopulse_user', JSON.stringify(response.data.user));
-    }
+    handleAuthSuccess(response.data);
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {

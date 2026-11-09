@@ -87,10 +87,41 @@ class Config:
         self.SUPABASE_SERVICE_ROLE_KEY: str = (os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
         self.SUPABASE_STORAGE_BUCKET: str = (os.getenv("SUPABASE_STORAGE_BUCKET", "complaint-images") or "").strip()
         self.SUPABASE_SIGNED_URL_TTL_SECONDS: int = int(os.getenv("SUPABASE_SIGNED_URL_TTL_SECONDS", "900"))
+        # Twilio credentials kept for existing WhatsApp bot (whatsapp_service.py)
         self.TWILIO_ACCOUNT_SID: str = (os.getenv("TWILIO_ACCOUNT_SID", "") or "").strip()
         self.TWILIO_AUTH_TOKEN: str = (os.getenv("TWILIO_AUTH_TOKEN", "") or "").strip()
         self.TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
         self.TWILIO_WEBHOOK_URL: str = (os.getenv("TWILIO_WEBHOOK_URL", "") or "").strip()
+
+        # Meta WhatsApp Cloud API OTP delivery configuration
+        # META_WHATSAPP_ACCESS_TOKEN and META_WHATSAPP_PHONE_NUMBER_ID alias the existing
+        # WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID bot credentials if not separately set.
+        self.META_WHATSAPP_ACCESS_TOKEN: str = (
+            os.getenv("META_WHATSAPP_ACCESS_TOKEN", "") or
+            os.getenv("WHATSAPP_TOKEN", "") or ""
+        ).strip()
+        self.META_WHATSAPP_PHONE_NUMBER_ID: str = (
+            os.getenv("META_WHATSAPP_PHONE_NUMBER_ID", "") or
+            os.getenv("WHATSAPP_PHONE_NUMBER_ID", "") or ""
+        ).strip()
+        self.META_OTP_TEMPLATE_NAME: str = os.getenv("META_OTP_TEMPLATE_NAME", "ecopulse_otp").strip()
+        self.META_OTP_TEMPLATE_LANGUAGE: str = os.getenv("META_OTP_TEMPLATE_LANGUAGE", "en").strip()
+        self.META_GRAPH_API_VERSION: str = (
+            os.getenv("META_GRAPH_API_VERSION", "") or
+            os.getenv("WHATSAPP_GRAPH_API_VERSION", "v22.0") or "v22.0"
+        ).strip()
+        self.META_OTP_TEMPLATE_CATEGORY: str = os.getenv("META_OTP_TEMPLATE_CATEGORY", "AUTHENTICATION").strip().upper()
+        self.META_OTP_TEMPLATE_HAS_BUTTON: bool = (
+            os.getenv("META_OTP_TEMPLATE_HAS_BUTTON", "true").strip().lower() == "true"
+        )
+        self.META_OTP_TEMPLATE_HAS_BUTTON_EXPLICIT: bool = "META_OTP_TEMPLATE_HAS_BUTTON" in os.environ
+        self.META_OTP_TEMPLATE_HAS_URL_BUTTON: bool = (
+            os.getenv("META_OTP_TEMPLATE_HAS_URL_BUTTON", "true").strip().lower() == "true"
+        )
+        self.OTP_DELIVERY_PROVIDER: str = os.getenv(
+            "OTP_DELIVERY_PROVIDER",
+            "meta_whatsapp" if self.ENV == "production" else "development"
+        ).strip().lower()
 
         # SMS Gateway & Mobile OTP configuration (Indian DLT-compliant gateway)
         self.SMS_PROVIDER: str = os.getenv("SMS_PROVIDER", "mock" if self.ENV != "production" else "msg91").strip().lower()
@@ -165,6 +196,20 @@ class Config:
             twilio_webhook_url = (os.getenv("TWILIO_WEBHOOK_URL") or self.TWILIO_WEBHOOK_URL or "").strip()
             if not twilio_account_sid or not twilio_auth_token or not twilio_webhook_url:
                 raise RuntimeError("CRITICAL CONFIGURATION ERROR: Twilio production settings require TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_URL.")
+
+        # Validate Meta OTP delivery in production
+        otp_provider = (os.getenv("OTP_DELIVERY_PROVIDER") or "").strip().lower()
+        if otp_provider == "meta_whatsapp":
+            missing_otp = []
+            if not self.META_WHATSAPP_ACCESS_TOKEN:
+                missing_otp.append("META_WHATSAPP_ACCESS_TOKEN (or WHATSAPP_TOKEN)")
+            if not self.META_WHATSAPP_PHONE_NUMBER_ID:
+                missing_otp.append("META_WHATSAPP_PHONE_NUMBER_ID (or WHATSAPP_PHONE_NUMBER_ID)")
+            if missing_otp:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION ERROR: Meta WhatsApp OTP delivery settings are incomplete: "
+                    + ", ".join(missing_otp)
+                )
 
         storage_backend = (os.getenv("MEDIA_STORAGE_BACKEND") or self.MEDIA_STORAGE_BACKEND or "local").strip().lower()
         if storage_backend in ("r2", "s3", "cloudflare"):

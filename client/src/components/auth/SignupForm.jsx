@@ -386,7 +386,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
               </div>
             ) : (
               <div className="flex items-center gap-1.5">
-                <span>Continue & Verify Mobile</span>
+                <span>Continue & Verify via WhatsApp</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </div>
             )}
@@ -397,7 +397,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
         <form onSubmit={handleVerifyAndRegister} className="space-y-3">
           <div className="flex items-center justify-between text-xs p-2 rounded-xl bg-emerald-50/60 border border-emerald-100">
             <div>
-              <div className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Verifying Phone</div>
+              <div className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Verifying WhatsApp</div>
               <div className="font-extrabold text-gray-800 text-xs">+91 {cleanPhone(phone)}</div>
             </div>
             <button
@@ -433,7 +433,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
                   disabled={isSubmitting}
                   className="text-[#005C2B] font-extrabold hover:underline cursor-pointer"
                 >
-                  Resend OTP
+                  Resend WhatsApp OTP
                 </button>
               )}
             </div>

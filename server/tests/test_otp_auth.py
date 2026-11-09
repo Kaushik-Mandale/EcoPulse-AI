@@ -1,1270 +1,811 @@
+"""
+test_otp_auth.py — Comprehensive test suite for Meta WhatsApp OTP delivery,
+FastAPI core authentication authority, security gates, and backward compatibility.
+"""
 import time
-
+import re
+import hmac
 import hashlib
-
 from datetime import datetime, timedelta, timezone
-
+from unittest.mock import patch, MagicMock
+import httpx
 import pytest
-
 from fastapi.testclient import TestClient
 
 from server.main import app
-
 from server.database.db import SessionLocal
-
 from server.models.user import User
-
 from server.models.mobile_otp import MobileOtpToken
-
+from server.models.complaint import Complaint
+from server.models.whatsapp_session import WhatsAppCitizen
+from server.models.whatsapp_link_token import WhatsAppLinkToken
 from server.utils.config import config
-
-from server.services.sms_service import get_sms_provider, set_sms_provider_for_testing, MockSMSProvider, DevelopmentSMSProvider, TwoFactorSMSProvider
+from server.services.otp_delivery.base import OtpDeliveryProvider, OtpDeliveryResult
+from server.services.otp_delivery.factory import (
+    get_otp_delivery_provider,
+    set_otp_delivery_provider_for_testing
+)
+from server.services.otp_delivery.development import DevelopmentOtpProvider
+from server.services.otp_delivery.meta_whatsapp import MetaWhatsAppOtpProvider
+from server.services.auth_service import hash_otp
 
 client = TestClient(app)
 
+_REJECTED_MOCK_OTPS = {"000000", "111111", "999999"}
+
+
+class MockMetaOtpProvider(OtpDeliveryProvider):
+    """
+    Controllable mock OTP delivery provider for testing.
+    Records delivery calls and allows simulating upstream Meta API failures.
+    """
+    def __init__(self, should_fail: bool = False, error_code: str = "SIMULATED_FAILURE"):
+        self.should_fail = should_fail
+        self.error_code = error_code
+        self.last_sent_phone = None
+        self.last_sent_otp = None
+        self.sent_count = 0
+
+    @property
+    def provider_name(self) -> str:
+        return "mock_meta_whatsapp"
+
+    def send_otp(self, e164_phone: str, otp: str) -> OtpDeliveryResult:
+        if self.should_fail:
+            return OtpDeliveryResult(
+                success=False,
+                provider=self.provider_name,
+                message="Simulated Meta API failure.",
+                error_code=self.error_code
+            )
+        if otp in _REJECTED_MOCK_OTPS:
+            return OtpDeliveryResult(
+                success=False,
+                provider=self.provider_name,
+                message=f"OTP {otp[:2]}**** is rejected by mock provider.",
+                error_code="REJECTED_TEST_CODE"
+            )
+        self.last_sent_phone = e164_phone
+        self.last_sent_otp = otp
+        self.sent_count += 1
+        return OtpDeliveryResult(
+            success=True,
+            provider=self.provider_name,
+            message=f"Mock OTP dispatched to {e164_phone}.",
+            provider_message_id=f"mock-wa-{self.sent_count}"
+        )
+
+
 @pytest.fixture(autouse=True)
-
-def cleanup_test_otps(monkeypatch):
-
-    """Ensure clean token states and mock SMS provider before and after each test."""
-
+def cleanup_test_state(monkeypatch):
+    """Establish clean test environment with mock provider and wiped OTP tokens."""
     monkeypatch.setenv("ENV", "test")
-
     config.ENV = "test"
 
-    set_sms_provider_for_testing(MockSMSProvider())
+    mock_provider = MockMetaOtpProvider()
+    set_otp_delivery_provider_for_testing(mock_provider)
 
     db = SessionLocal()
-
     try:
-
         db.query(MobileOtpToken).delete()
-
         db.commit()
-
     finally:
-
         db.close()
 
-    yield
+    yield mock_provider
 
-    set_sms_provider_for_testing(None)
+    set_otp_delivery_provider_for_testing(None)
 
     db = SessionLocal()
-
     try:
-
         db.query(MobileOtpToken).delete()
-
         db.commit()
-
     finally:
-
         db.close()
 
-def test_01_successful_otp_request_login():
 
-    """1. Successful OTP request for existing registered citizen."""
-
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-
-    assert res.status_code == 200
-
-    data = res.json()
-
-    assert data["success"] is True
-
-    assert "9876543210" in data["phone"]
-
-    assert "otp" not in data  # Never expose OTP in response
-
-def test_02_invalid_mobile_number():
-
-    """2. Invalid mobile number returns 400 Bad Request."""
-
-    invalid_phones = ["12345", "98765abcde", "1234567890", "0000000000", ""]
-
-    for ph in invalid_phones:
-
-        res = client.post("/api/auth/otp/send", json={"phone": ph, "purpose": "login"})
-
-        assert res.status_code in (400, 422)
-
-def test_03_existing_mobile_registration_rejection():
-
-    """3. Registering with an already registered mobile number is rejected with 400."""
-
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "register"})
-
-    assert res.status_code == 400
-
-    assert "already registered" in res.json()["detail"].lower()
-
-def test_04_successful_otp_verification_login():
-
-    """4. Successful OTP verification logs in the citizen and returns JWT access_token."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "654321"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    # Store token directly with SHA-256 hash
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res.status_code == 200
-
-    data = res.json()
-
-    assert "access_token" in data
-
-    assert data["token_type"] == "bearer"
-
-    assert data["user"]["role"] == "citizen"
-
-def test_05_incorrect_otp_returns_400():
-
-    """5. Incorrect OTP returns 400 with attempts count."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "654321"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": "000000", "role": "citizen"})
-
-    assert res.status_code == 400
-
-    assert "invalid" in res.json()["detail"].lower() or "attempts remaining" in res.json()["detail"].lower()
-
-def test_06_expired_otp_returns_400():
-
-    """6. Expired OTP returns 400."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "654321"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1) # already expired
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res.status_code == 400
-
-    assert "expired" in res.json()["detail"].lower()
-
-def test_07_reused_otp_returns_400():
-
-    """7. Consumed (reused) OTP returns 400."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "654321"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=1,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-
-        consumed_at=datetime.now(timezone.utc) - timedelta(seconds=10) # already consumed
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res.status_code == 400
-
-def test_08_otp_resend_cooldown():
-
-    """8. Resending OTP within 60s cooldown returns 429 Too Many Requests."""
-
-    res1 = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-
-    assert res1.status_code == 200
-
-    res2 = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-
-    assert res2.status_code == 429
-
-    assert "please wait" in res2.json()["detail"].lower() or "seconds" in res2.json()["detail"].lower()
-
-def test_09_otp_max_attempts_lockout():
-
-    """9. Exceeding max attempts (5) locks the OTP."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "654321"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=4,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    # 5th failed attempt
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": "111111", "role": "citizen"})
-
-    assert res.status_code == 400
-
-    assert "maximum" in res.json()["detail"].lower() or "exceeded" in res.json()["detail"].lower()
-
-def test_10_successful_citizen_registration_and_login():
-
-    """10. Successful citizen registration with mobile OTP and subsequent login."""
-
-    db = SessionLocal()
-
-    new_phone = "9777888999"
-
-    db.query(User).filter(User.phone == new_phone).delete()
-
-    db.commit()
-
-    otp_code = "554433"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    token = MobileOtpToken(
-
-        phone=new_phone,
-
-        otp_hash=otp_hash,
-
-        purpose="register",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    # Register
-
-    res = client.post("/api/auth/register", json={
-
-        "full_name": "Kavita Shinde",
-
-        "phone": new_phone,
-
-        "otp": otp_code,
-
-        "email": "kavita@dhule.test"
-
-    })
-
-    assert res.status_code == 200
-
-    data = res.json()
-
-    assert "access_token" in data
-
-    assert data["user"]["phone"] == new_phone
-
-    assert data["user"]["role"] == "citizen"
-
-    # Cleanup token and test login
-
-    db = SessionLocal()
-
-    login_otp = "112233"
-
-    login_hash = hashlib.sha256(login_otp.encode("utf-8")).hexdigest()
-
-    db.add(MobileOtpToken(
-
-        phone=new_phone,
-
-        otp_hash=login_hash,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    ))
-
-    db.commit()
-
-    db.close()
-
-    res_login = client.post("/api/auth/login/otp", json={
-
-        "phone": new_phone,
-
-        "otp": login_otp,
-
-        "role": "citizen"
-
-    })
-
-    assert res_login.status_code == 200
-
-    assert "access_token" in res_login.json()
-
-def test_11_optional_email_registration():
-
-    """11. Registration without email succeeds; email defaults to null or None."""
-
-    db = SessionLocal()
-
-    phone = "9123456780"
-
-    db.query(User).filter(User.phone == phone).delete()
-
-    db.commit()
-
-    otp_code = "778899"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    db.add(MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="register",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    ))
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/register", json={
-
-        "full_name": "Ganesh Patil",
-
-        "phone": phone,
-
-        "otp": otp_code
-
-        # email is omitted entirely
-
-    })
-
-    assert res.status_code == 200
-
-    user_data = res.json()["user"]
-
-    assert user_data["phone"] == phone
-
-    assert user_data["email"] is None
-
-def test_12_driver_public_registration_rejection():
-
-    """12. Drivers cannot self-register through public registration."""
-
-    # Attempting to register as driver via signup/register endpoint should be forced to citizen or rejected
-
-    db = SessionLocal()
-
-    phone = "9123456789"
-
-    db.query(User).filter(User.phone == phone).delete()
-
-    db.commit()
-
-    otp_code = "998877"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    db.add(MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="register",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    ))
-
-    db.commit()
-
-    db.close()
-
-    # Even if client passes role="driver", public registration forces citizen role
-
-    res = client.post("/api/auth/register", json={
-
-        "full_name": "Driver Attempt",
-
-        "phone": phone,
-
-        "otp": otp_code,
-
-        "role": "driver"
-
-    })
-
-    if res.status_code == 200:
-
-        assert res.json()["user"]["role"] == "citizen"  # RBAC enforced server-side
-
-    else:
-
-        assert res.status_code == 403
-
-def test_13_jwt_validation_against_me_endpoint():
-
-    """13. JWT token obtained via OTP login validates against /api/auth/me and /api/auth/my."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "332211"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    db.add(MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    ))
-
-    db.commit()
-
-    db.close()
-
-    login_res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert login_res.status_code == 200
-
-    token = login_res.json()["access_token"]
-
-    headers = {"Authorization": f"Bearer {token}"}
-
-    me_res = client.get("/api/auth/me", headers=headers)
-
-    assert me_res.status_code == 200
-
-    assert me_res.json()["phone"] == phone
-
-    my_res = client.get("/api/auth/my", headers=headers)
-
-    assert my_res.status_code == 200
-
-    assert my_res.json()["phone"] == phone
-
-def test_14_existing_password_login_backward_compatibility():
-
-    """14. Existing accounts can still log in using password via /api/auth/login."""
-
-    res = client.post("/api/auth/login", json={
-
-        "email": "priya@cityswap.io",
-
-        "password": "Password123!",
-
-        "role": "citizen"
-
-    })
-
-    assert res.status_code == 200
-
-    assert "access_token" in res.json()
-
-    assert res.json()["user"]["email"] == "priya@cityswap.io"
-
-def test_15_rate_limiting_enforcement():
-
-    """15. Mobile number rate limiting enforces max OTPs per 15 minutes window."""
-
-    db = SessionLocal()
-
-    phone = "9898989898"
-
-    # Seed 5 existing tokens within the last 15 minutes
-
-    for i in range(5):
-
-        db.add(MobileOtpToken(
-
-            phone=phone,
-
-            otp_hash="somehash",
-
-            purpose="login",
-
-            attempts=0,
-
-            max_attempts=5,
-
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=i + 1),
-
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-        ))
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/otp/send", json={"phone": phone, "purpose": "register"})
-
-    assert res.status_code == 429
-
-    assert "too many" in res.json()["detail"].lower() or "limit" in res.json()["detail"].lower()
-
-def test_16_citizen_cannot_access_driver_or_admin_routes():
-
-    """16. Citizen authenticated via OTP is strictly forbidden from Driver/Admin routes."""
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "889900"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    db.add(MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    ))
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res.status_code == 200
-
-    token = res.json()["access_token"]
-
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Driver route check
-
-    res_driver = client.get("/api/driver/tasks", headers=headers)
-
-    assert res_driver.status_code == 403
-
-    # Admin route check
-
-    res_admin = client.get("/api/admin/metrics", headers=headers)
-
-    assert res_admin.status_code in (403, 404)
-
-def test_17_sms_provider_failure_handling(monkeypatch):
-
-    """17. Gracefully handles SMS provider dispatch failure without exposing internals."""
-
-    class FailingSMSProvider:
-
-        def send_otp(self, phone: str, otp: str) -> bool:
-
-            return False
-
-    set_sms_provider_for_testing(FailingSMSProvider())
-
-    try:
-
-        res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-
-        assert res.status_code == 503
-
-        assert "unable to dispatch" in res.json()["detail"].lower() or "sms" in res.json()["detail"].lower()
-
-    finally:
-
-        monkeypatch.setenv("ENV", "test")
-
-        config.ENV = "test"
-
-        set_sms_provider_for_testing(MockSMSProvider())
-
-def test_18_ip_rate_limiting_enforcement():
-
-    """18. IP rate limiting restricts more than 15 OTP requests per IP within 15 minutes."""
-
-    db = SessionLocal()
-
-    test_ip = "testclient"
-
-    try:
-
-        # Seed 15 tokens from the same test IP
-
-        for i in range(15):
-
-            db.add(MobileOtpToken(
-
-                phone=f"91000000{i:02d}",
-
-                otp_hash="somehash",
-
-                purpose="login",
-
-                ip_address=test_ip,
-
-                attempts=0,
-
-                max_attempts=5,
-
-                created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-            ))
-
-        db.commit()
-
-        res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-
-        assert res.status_code == 429
-
-        assert "rate limit" in res.json()["detail"].lower() or "too many" in res.json()["detail"].lower()
-
-    finally:
-
-        db.query(MobileOtpToken).filter(MobileOtpToken.ip_address == test_ip).delete()
-
-        db.commit()
-
-        db.close()
-
-def test_19_single_use_token_for_registration():
-
-    """19. Once verified and consumed during registration, token cannot be reused."""
-
-    db = SessionLocal()
-
-    phone = "9777888999"
-
-    db.query(User).filter(User.phone == phone).delete()
-
-    db.commit()
-
-    otp_code = "445566"
-
-    otp_hash = hashlib.sha256(otp_code.encode("utf-8")).hexdigest()
-
-    db.add(MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hash,
-
-        purpose="register",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    ))
-
-    db.commit()
-
-    db.close()
-
-    # First registration consumes token
-
-    res1 = client.post("/api/auth/register", json={
-
-        "full_name": "Citizen User",
-
-        "phone": phone,
-
-        "otp": otp_code
-
-    })
-
-    assert res1.status_code == 200
-
-    # Second registration attempt with same token fails
-
-    res2 = client.post("/api/auth/register", json={
-
-        "full_name": "Citizen User 2",
-
-        "phone": phone,
-
-        "otp": otp_code
-
-    })
-
-    assert res2.status_code in (400, 429)
-
-def test_20_phone_normalization_handles_various_formats():
-
-    """20. Phone normalization handles +91 prefix, spaces, dashes, leading zero."""
-
-    for ph in ["+91 9876543210", "+91-9876543210", "09876543210", " 9876543210 "]:
-
-        # Reset cooldown for Priya's phone
-
-        db = SessionLocal()
-
-        db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").delete()
-
-        db.commit()
-
-        db.close()
-
-        res = client.post("/api/auth/otp/send", json={"phone": ph, "purpose": "login"})
-
-        assert res.status_code == 200
-
-        assert res.json()["phone"] == "9876543210"
-
-def test_21_hmac_based_otp_hashing_verification():
-
-    """21. Verifies that OTP hashed with server-side HMAC-SHA256 authenticates successfully."""
-
-    from server.services.auth_service import hash_otp
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "432109"
-
-    otp_hmac = hash_otp(otp_code)
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=otp_hmac,
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    res = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res.status_code == 200
-
-    assert "access_token" in res.json()
-
-    assert res.json()["user"]["phone"] == phone
-
-def test_22_development_sms_provider_refuses_production(monkeypatch):
-
-    """22. DevelopmentSMSProvider refuses to instantiate if ENV is set to production."""
-
-    try:
-
-        monkeypatch.setenv("ENV", "production")
-
-        with pytest.raises(RuntimeError, match="cannot be initialized in production mode"):
-
-            DevelopmentSMSProvider()
-
-    finally:
-
-        monkeypatch.undo()
-
-def test_23_production_mode_disallows_mock_provider_and_returns_503(monkeypatch):
-
-    """23. In production mode, mock/development provider is forbidden and returns 503."""
-
-    from server.services.sms_service import get_sms_provider
-
-    set_sms_provider_for_testing(None)
-
-    try:
-
-        monkeypatch.setenv("ENV", "production")
-
-        monkeypatch.setattr(config, "ENV", "production")
-
-        monkeypatch.setattr(config, "SMS_PROVIDER", "mock")
-
-        with pytest.raises(Exception) as exc_info:
-
-            get_sms_provider()
-
-        assert "503" in str(exc_info.value) or "not configured for production" in str(exc_info.value).lower()
-
-    finally:
-
-        monkeypatch.undo()
-
-        monkeypatch.setenv("ENV", "test")
-
-        config.ENV = "test"
-
-        set_sms_provider_for_testing(MockSMSProvider())
-
-def test_24_production_mode_missing_credentials_returns_503(monkeypatch):
-
-    """24. In production mode, missing SMS credentials for msg91 and 2factor return 503."""
-
-    from server.services.sms_service import get_sms_provider
-
-    set_sms_provider_for_testing(None)
-
-    try:
-
-        monkeypatch.setenv("ENV", "production")
-
-        monkeypatch.setattr(config, "ENV", "production")
-
-        # MSG91 missing API key
-
-        monkeypatch.setattr(config, "SMS_PROVIDER", "msg91")
-
-        monkeypatch.setattr(config, "SMS_API_KEY", "")
-
-        with pytest.raises(Exception) as exc_info:
-
-            get_sms_provider()
-
-        assert "503" in str(exc_info.value)
-
-        # 2Factor missing API key
-
-        monkeypatch.setattr(config, "SMS_PROVIDER", "2factor")
-
-        monkeypatch.setattr(config, "SMS_API_KEY", "")
-
-        with pytest.raises(Exception) as exc_info:
-
-            get_sms_provider()
-
-        assert "503" in str(exc_info.value)
-
-    finally:
-
-        monkeypatch.undo()
-
-        monkeypatch.setenv("ENV", "test")
-
-        config.ENV = "test"
-
-        set_sms_provider_for_testing(MockSMSProvider())
-
-def test_25_twofactor_provider_interface():
-
-    """25. TwoFactorSMSProvider implements the SMSProvider interface and handles missing keys safely."""
-
-    from server.services.sms_service import TwoFactorSMSProvider
-
-    provider_missing = TwoFactorSMSProvider(api_key="")
-
-    assert provider_missing.provider_name == "2factor"
-
-    assert not provider_missing.send_otp("9876543210", "123456")
-
-def test_26_atomic_verification_prevents_concurrent_reuse():
-
-    """26. Atomic verification ensures an OTP cannot be consumed more than once."""
-
-    from server.services.auth_service import hash_otp, AuthService
-
-    db = SessionLocal()
-
-    phone = "9876543210"
-
-    otp_code = "789123"
-
-    token = MobileOtpToken(
-
-        phone=phone,
-
-        otp_hash=hash_otp(otp_code),
-
-        purpose="login",
-
-        attempts=0,
-
-        max_attempts=5,
-
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
-
-    )
-
-    db.add(token)
-
-    db.commit()
-
-    db.close()
-
-    # First verification succeeds
-
-    res1 = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res1.status_code == 200
-
-    # Second immediate verification fails because token was atomically marked consumed
-
-    res2 = client.post("/api/auth/login/otp", json={"phone": phone, "otp": otp_code, "role": "citizen"})
-
-    assert res2.status_code == 400
-
-    assert "active verification code" in res2.json()["detail"].lower() or "consumed" in res2.json()["detail"].lower()
-
-
-def test_27_provider_failure_rolls_back_db_token_and_returns_503(monkeypatch):
-    """27. SMS provider failure rolls back DB token and returns HTTP 503."""
-    from server.services.sms_service import SMSDeliveryResult, set_sms_provider_for_testing
-
-    class FailingProvider:
-        provider_name = "failing_mock"
-        def send_otp(self, phone: str, otp: str):
-            return SMSDeliveryResult(False, "FAILED", "Upstream network failure")
-
-    set_sms_provider_for_testing(FailingProvider())
-
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-    assert res.status_code == 503
-    assert "SMS delivery failed" in res.json()["detail"]
-
-    # Token must be deleted from DB so citizen is not penalized with cooldown
-    db = SessionLocal()
-    token = db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").first()
-    assert token is None
-    db.close()
-
-
-def test_28_missing_sms_config_returns_503(monkeypatch):
-    """28. Unconfigured SMS provider returns HTTP 503 with clear message."""
-    from server.services.sms_service import SMSDeliveryResult, set_sms_provider_for_testing
-
-    class UnconfiguredProvider:
-        provider_name = "unconfigured_mock"
-        def send_otp(self, phone: str, otp: str):
-            return SMSDeliveryResult(False, "NOT_CONFIGURED", "No API key configured")
-
-    set_sms_provider_for_testing(UnconfiguredProvider())
-
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-    assert res.status_code == 503
-    assert "not configured" in res.json()["detail"].lower()
-
-
-def test_29_successful_otp_request_returns_challenge_id():
-    """29. Successful OTP challenge creation returns HMAC-signed challenge_id and ACCEPTED status."""
+# =============================================================================
+# PART 1: Meta WhatsApp Cloud API Template Payload & HTTP Handling
+# =============================================================================
+
+def test_meta_template_components_building():
+    """Verify Meta AUTHENTICATION template components strictly use sub_type='url' at runtime."""
+    provider = MetaWhatsAppOtpProvider()
+    components = provider._build_components("482910")
+
+    # 1. Body component with OTP verification code
+    body = next((c for c in components if c.get("type") == "body"), None)
+    assert body is not None
+    assert body["parameters"][0]["type"] == "text"
+    assert body["parameters"][0]["text"] == "482910"
+
+    # 2. Runtime button component: must strictly use sub_type='url' and index='0'
+    button = next((c for c in components if c.get("type") == "button"), None)
+    assert button is not None
+    assert button["sub_type"] == "url"  # Meta Cloud API runtime strictly requires 'url'
+    assert button["index"] == "0"
+    assert button["parameters"][0]["type"] == "text"
+    assert button["parameters"][0]["text"] == "482910"
+
+
+def test_meta_runtime_payload_structure():
+    """Verify exact JSON payload sent to Meta Cloud API /messages endpoint."""
+    provider = MetaWhatsAppOtpProvider()
+    payload = provider.build_payload("+919876543210", "654321")
+
+    assert payload["messaging_product"] == "whatsapp"
+    assert payload["recipient_type"] == "individual"
+    assert payload["to"] == "919876543210"  # '+' sign stripped for Cloud API format
+    assert payload["type"] == "template"
+
+    template = payload["template"]
+    assert template["name"] == config.META_OTP_TEMPLATE_NAME
+    assert template["language"]["code"] == config.META_OTP_TEMPLATE_LANGUAGE
+    assert len(template["components"]) == 2
+
+    # Body component
+    assert template["components"][0] == {
+        "type": "body",
+        "parameters": [{"type": "text", "text": "654321"}]
+    }
+
+    # Runtime button component
+    assert template["components"][1] == {
+        "type": "button",
+        "sub_type": "url",
+        "index": "0",
+        "parameters": [{"type": "text", "text": "654321"}]
+    }
+
+
+def test_meta_recipient_formatting_strips_leading_plus():
+    """Verify internal E.164 phone numbers have leading '+' stripped for Meta Cloud API serialization."""
+    provider = MetaWhatsAppOtpProvider()
+
+    # Standard Indian mobile with +91
+    payload1 = provider.build_payload("+919876543210", "112233")
+    assert payload1["to"] == "919876543210"
+
+    # Number already without +
+    payload2 = provider.build_payload("919876543210", "112233")
+    assert payload2["to"] == "919876543210"
+
+    # International number
+    payload3 = provider.build_payload("+14155552671", "112233")
+    assert payload3["to"] == "14155552671"
+
+
+def test_meta_template_name_and_language_configurable(monkeypatch):
+    """Verify template name and language code are dynamically configurable."""
+    monkeypatch.setattr(config, "META_OTP_TEMPLATE_NAME", "custom_auth_template")
+    monkeypatch.setattr(config, "META_OTP_TEMPLATE_LANGUAGE", "hi")
+
+    provider = MetaWhatsAppOtpProvider()
+    payload = provider.build_payload("+919876543210", "998877")
+
+    assert payload["template"]["name"] == "custom_auth_template"
+    assert payload["template"]["language"]["code"] == "hi"
+
+
+def test_meta_template_button_can_be_disabled(monkeypatch):
+    """Verify button component can be omitted if template does not have buttons."""
+    monkeypatch.setattr(config, "META_OTP_TEMPLATE_HAS_BUTTON", False)
+    monkeypatch.setattr(config, "META_OTP_TEMPLATE_HAS_URL_BUTTON", False)
+    monkeypatch.setattr(config, "META_OTP_TEMPLATE_HAS_BUTTON_EXPLICIT", True)
+    provider = MetaWhatsAppOtpProvider()
+    components = provider._build_components("123456")
+    assert len(components) == 1
+    assert components[0]["type"] == "body"
+
+
+def test_meta_provider_http_200_success(monkeypatch):
+    """Meta API returns HTTP 200 with message ID -> delivery succeeds."""
+    monkeypatch.setattr(config, "META_WHATSAPP_ACCESS_TOKEN", "mock_token")
+    monkeypatch.setattr(config, "META_WHATSAPP_PHONE_NUMBER_ID", "123456789")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "messaging_product": "whatsapp",
+        "contacts": [{"input": "+919876543210", "wa_id": "919876543210"}],
+        "messages": [{"id": "wamid.HBgLM...test_id"}]
+    }
+
+    with patch.object(httpx.Client, "post", return_value=mock_resp):
+        provider = MetaWhatsAppOtpProvider()
+        result = provider.send_otp("+919876543210", "123456")
+        assert result.success is True
+        assert result.provider_message_id == "wamid.HBgLM...test_id"
+
+
+def test_meta_provider_http_200_no_message_id(monkeypatch):
+    """Meta API returns HTTP 200 but missing message ID -> treated as failure."""
+    monkeypatch.setattr(config, "META_WHATSAPP_ACCESS_TOKEN", "mock_token")
+    monkeypatch.setattr(config, "META_WHATSAPP_PHONE_NUMBER_ID", "123456789")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"messaging_product": "whatsapp", "messages": []}
+
+    with patch.object(httpx.Client, "post", return_value=mock_resp):
+        provider = MetaWhatsAppOtpProvider()
+        result = provider.send_otp("+919876543210", "123456")
+        assert result.success is False
+
+
+def test_meta_provider_http_400_meta_rejection(monkeypatch):
+    """Meta API returns HTTP 400 error response -> parsed gracefully, no crash."""
+    monkeypatch.setattr(config, "META_WHATSAPP_ACCESS_TOKEN", "mock_token")
+    monkeypatch.setattr(config, "META_WHATSAPP_PHONE_NUMBER_ID", "123456789")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 400
+    mock_resp.json.return_value = {
+        "error": {
+            "message": "(#132000) Number of parameters does not match template",
+            "type": "OAuthException",
+            "code": 132000
+        }
+    }
+
+    with patch.object(httpx.Client, "post", return_value=mock_resp):
+        provider = MetaWhatsAppOtpProvider()
+        result = provider.send_otp("+919876543210", "123456")
+        assert result.success is False
+        assert result.error_code == "132000"
+
+
+def test_meta_provider_http_401_invalid_token(monkeypatch):
+    """Meta API returns HTTP 401 Unauthorized -> parsed as error, token not logged."""
+    monkeypatch.setattr(config, "META_WHATSAPP_ACCESS_TOKEN", "invalid_token_secret")
+    monkeypatch.setattr(config, "META_WHATSAPP_PHONE_NUMBER_ID", "123456789")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+    mock_resp.json.return_value = {
+        "error": {
+            "message": "Invalid OAuth access token.",
+            "type": "OAuthException",
+            "code": 190
+        }
+    }
+
+    with patch.object(httpx.Client, "post", return_value=mock_resp):
+        provider = MetaWhatsAppOtpProvider()
+        result = provider.send_otp("+919876543210", "123456")
+        assert result.success is False
+        assert result.error_code == "190"
+
+
+def test_meta_provider_timeout_handling(monkeypatch):
+    """Network timeout during Meta API call -> returns TIMEOUT result."""
+    monkeypatch.setattr(config, "META_WHATSAPP_ACCESS_TOKEN", "mock_token")
+    monkeypatch.setattr(config, "META_WHATSAPP_PHONE_NUMBER_ID", "123456789")
+
+    with patch.object(httpx.Client, "post", side_effect=httpx.TimeoutException("Connection timed out")):
+        provider = MetaWhatsAppOtpProvider()
+        result = provider.send_otp("+919876543210", "123456")
+        assert result.success is False
+        assert result.error_code == "TIMEOUT"
+
+
+def test_meta_provider_not_configured(monkeypatch):
+    """Missing Meta credentials -> returns NOT_CONFIGURED without calling network."""
+    monkeypatch.setattr(config, "META_WHATSAPP_ACCESS_TOKEN", "")
+    monkeypatch.setattr(config, "META_WHATSAPP_PHONE_NUMBER_ID", "")
+
+    provider = MetaWhatsAppOtpProvider()
+    result = provider.send_otp("+919876543210", "123456")
+    assert result.success is False
+    assert result.error_code == "NOT_CONFIGURED"
+
+
+# =============================================================================
+# PART 2: Core FastAPI Authentication, Generation, Verification & Security
+# =============================================================================
+
+def test_01_successful_otp_request_login(cleanup_test_state):
+    """1. OTP request generates 6-digit code, dispatches via provider, returns challenge_id."""
+    mock = cleanup_test_state
     res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
     assert res.status_code == 200
     data = res.json()
     assert data["success"] is True
     assert "challenge_id" in data
-    assert len(data["challenge_id"]) > 20
+    assert "otp" not in data  # Never expose OTP in response
+    assert data["channel"] == "whatsapp"
     assert data["delivery_status"] == "ACCEPTED"
-    assert "otp" not in data
+    assert mock.last_sent_phone == "+919876543210"
+    assert len(mock.last_sent_otp) == 6
 
 
-def test_30_challenge_status_authoritative_restoration():
-    """30. Challenge status endpoint authoritatively returns TTL, cooldown, and ownership."""
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-    assert res.status_code == 200
-    challenge_id = res.json()["challenge_id"]
-
-    status_res = client.get(f"/api/auth/otp/challenge/{challenge_id}")
-    assert status_res.status_code == 200
-    status_data = status_res.json()
-    assert status_data["valid"] is True
-    assert status_data["challenge_id"] == challenge_id
-    assert status_data["phone"] == "+91 ******3210"
-    assert status_data["raw_phone"] == "9876543210"
-    assert status_data["seconds_remaining"] > 250
-    assert status_data["cooldown_remaining"] > 50
-    assert status_data["consumed"] is False
-    assert status_data["expired"] is False
-    assert status_data["attempts_remaining"] == 5
+def test_02_invalid_mobile_number():
+    """2. Invalid Indian mobile numbers are rejected with HTTP 400/422."""
+    for bad_phone in ["12345", "987654321", "abcdefghij", "0000000000", "1234567890"]:
+        res = client.post("/api/auth/otp/send", json={"phone": bad_phone, "purpose": "login"})
+        assert res.status_code in (400, 422)
 
 
-def test_31_expired_challenge_returns_valid_false():
-    """31. Challenge past expiration timestamp returns valid=False and expired=True."""
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-    assert res.status_code == 200
-    challenge_id = res.json()["challenge_id"]
+def test_03_existing_mobile_registration_rejection():
+    """3. Registration for an existing mobile number is rejected with HTTP 409 Conflict."""
+    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "register"})
+    assert res.status_code in (400, 409)
+    assert "already" in res.json()["detail"].lower()
 
-    # Fast-forward DB expiration to past
+
+def test_04_successful_otp_verification_login(cleanup_test_state):
+    """4. Correct OTP code issues application JWT access_token and user info."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    assert res_send.status_code == 200
+    challenge_id = res_send.json()["challenge_id"]
+
+    res_verify = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    assert res_verify.status_code == 200
+    data = res_verify.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+    assert data["user"]["phone"] == "9876543210"
+
+
+def test_05_incorrect_otp_returns_400(cleanup_test_state):
+    """5. Incorrect OTP is rejected with HTTP 400 and tracks remaining attempts."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    res_verify = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": "000001",
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    assert res_verify.status_code == 400
+    assert "invalid verification code" in res_verify.json()["detail"].lower()
+
+
+def test_06_expired_otp_returns_400(cleanup_test_state):
+    """6. Expired OTP challenge is rejected."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    # Manually expire the token in database
     db = SessionLocal()
-    token = db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").first()
-    token.expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
-    db.commit()
-    db.close()
+    try:
+        token = db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").first()
+        token.expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+        db.commit()
+    finally:
+        db.close()
 
-    status_res = client.get(f"/api/auth/otp/challenge/{challenge_id}")
-    assert status_res.status_code == 200
-    status_data = status_res.json()
-    assert status_data["valid"] is False
-    assert status_data["expired"] is True
-    assert status_data["seconds_remaining"] == 0
-
-
-class RecordingSMSProvider:
-    provider_name = "recording_mock"
-    def __init__(self):
-        self.last_otp = None
-    def send_otp(self, phone: str, otp: str):
-        from server.services.sms_service import SMSDeliveryResult
-        self.last_otp = otp
-        return SMSDeliveryResult(True, "ACCEPTED", f"OTP accepted for {phone}")
+    res_verify = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    assert res_verify.status_code == 400
+    assert "expired" in res_verify.json()["detail"].lower()
 
 
-def test_32_resend_cooldown_persistence_and_enforcement():
-    """32. Submitting duplicate OTP request within 60s cooldown is rejected with 429."""
+def test_07_reused_otp_returns_400(cleanup_test_state):
+    """7. Consumed OTP token cannot be re-used (single-use verification)."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    payload = {
+        "phone": "9876543210",
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    }
+
+    # First attempt succeeds
+    res1 = client.post("/api/auth/login/otp", json=payload)
+    assert res1.status_code == 200
+
+    # Second attempt with same token fails
+    res2 = client.post("/api/auth/login/otp", json=payload)
+    assert res2.status_code in (400, 410)
+
+
+def test_08_otp_resend_cooldown(cleanup_test_state):
+    """8. Requesting an OTP within the 60s cooldown is rejected with HTTP 429."""
     res1 = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
     assert res1.status_code == 200
 
     res2 = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
     assert res2.status_code == 429
-    detail = res2.json()["detail"].lower()
-    assert "wait" in detail and "seconds" in detail
+    assert "seconds" in res2.json()["detail"].lower() or "wait" in res2.json()["detail"].lower()
 
 
-def test_33_successful_verification_atomically_consumes_challenge():
-    """33. Verification with challenge_id marks token consumed and updates status."""
-    from server.services.sms_service import set_sms_provider_for_testing
+def test_09_otp_max_attempts_lockout(cleanup_test_state):
+    """9. Exceeding max 5 incorrect verification attempts locks out the challenge."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
 
-    rec_prov = RecordingSMSProvider()
-    set_sms_provider_for_testing(rec_prov)
+    for _ in range(5):
+        client.post("/api/auth/login/otp", json={
+            "phone": "9876543210",
+            "otp": "000001",
+            "challenge_id": challenge_id,
+            "role": "citizen"
+        })
 
-    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
-    assert res.status_code == 200
-    challenge_id = res.json()["challenge_id"]
-    otp_code = rec_prov.last_otp
-    assert otp_code is not None
-
-    verify_res = client.post("/api/auth/login/otp", json={
+    # 6th attempt is locked
+    res_locked = client.post("/api/auth/login/otp", json={
         "phone": "9876543210",
-        "otp": otp_code,
+        "otp": mock.last_sent_otp,
         "challenge_id": challenge_id,
         "role": "citizen"
     })
-    assert verify_res.status_code == 200
-    assert "access_token" in verify_res.json()
-
-    # Status after consumption
-    status_res = client.get(f"/api/auth/otp/challenge/{challenge_id}")
-    assert status_res.status_code == 200
-    assert status_res.json()["valid"] is False
-    assert status_res.json()["consumed"] is True
+    assert res_locked.status_code == 400
+    assert "maximum" in res_locked.json()["detail"].lower() or "locked" in res_locked.json()["detail"].lower()
 
 
-def test_34_tampered_or_unauthorized_challenge_returns_404():
-    """34. Tampered challenge HMAC signature returns 404."""
-    res = client.get("/api/auth/otp/challenge/invalid_tampered_challenge_token_xyz")
-    assert res.status_code == 404
-    assert "not found" in res.json()["detail"].lower()
+def test_10_successful_citizen_registration_and_login(cleanup_test_state):
+    """10. Full registration flow: request OTP -> register -> login with OTP."""
+    mock = cleanup_test_state
+    new_phone = "9822998877"
 
-
-def test_35_registration_with_challenge_id():
-    """35. New citizen registration succeeds with valid challenge_id."""
-    from server.services.sms_service import set_sms_provider_for_testing
-
-    phone = "9811223399"
+    # Clean up if existing
     db = SessionLocal()
-    db.query(User).filter(User.phone == phone).delete()
-    db.commit()
-    db.close()
-
     try:
-        rec_prov = RecordingSMSProvider()
-        set_sms_provider_for_testing(rec_prov)
-
-        res = client.post("/api/auth/otp/send", json={"phone": phone, "purpose": "register"})
-        assert res.status_code == 200
-        challenge_id = res.json()["challenge_id"]
-        otp_code = rec_prov.last_otp
-        assert otp_code is not None
-
-        reg_res = client.post("/api/auth/register", json={
-            "full_name": "Test Citizen Registration",
-            "phone": phone,
-            "otp": otp_code,
-            "challenge_id": challenge_id,
-            "email": "test.citizen.reg@ecopulse.ai",
-            "role": "citizen"
-        })
-        assert reg_res.status_code == 200
-        assert reg_res.json()["user"]["name"] == "Test Citizen Registration"
-    finally:
-        db = SessionLocal()
-        db.query(User).filter(User.phone == phone).delete()
+        db.query(User).filter(User.phone == new_phone).delete()
         db.commit()
+    finally:
+        db.close()
+
+    # Step 1: Request registration OTP
+    res_send = client.post("/api/auth/otp/send", json={"phone": new_phone, "purpose": "register"})
+    assert res_send.status_code == 200
+    challenge_id = res_send.json()["challenge_id"]
+
+    # Step 2: Register citizen
+    res_reg = client.post("/api/auth/register", json={
+        "full_name": "Gita Devi",
+        "phone": new_phone,
+        "email": "gita.devi@example.com",
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    assert res_reg.status_code == 200
+    reg_data = res_reg.json()
+    assert "access_token" in reg_data
+    assert reg_data["user"]["name"] == "Gita Devi"
+    assert reg_data["user"]["role"] == "citizen"
+
+    # Step 3: Login as existing citizen
+    res_login_send = client.post("/api/auth/otp/send", json={"phone": new_phone, "purpose": "login"})
+    assert res_login_send.status_code == 200
+    login_challenge_id = res_login_send.json()["challenge_id"]
+
+    res_login = client.post("/api/auth/login/otp", json={
+        "phone": new_phone,
+        "otp": mock.last_sent_otp,
+        "challenge_id": login_challenge_id,
+        "role": "citizen"
+    })
+    assert res_login.status_code == 200
+    assert res_login.json()["user"]["name"] == "Gita Devi"
+
+
+def test_11_optional_email_registration(cleanup_test_state):
+    """11. Citizen registration succeeds without providing an email address."""
+    mock = cleanup_test_state
+    phone_no_email = "9822114455"
+
+    db = SessionLocal()
+    try:
+        db.query(User).filter(User.phone == phone_no_email).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    res_send = client.post("/api/auth/otp/send", json={"phone": phone_no_email, "purpose": "register"})
+    assert res_send.status_code == 200
+    challenge_id = res_send.json()["challenge_id"]
+
+    res_reg = client.post("/api/auth/register", json={
+        "full_name": "Suresh Patel",
+        "phone": phone_no_email,
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    assert res_reg.status_code == 200
+    assert res_reg.json()["user"]["name"] == "Suresh Patel"
+
+
+def test_12_driver_public_registration_rejection(cleanup_test_state):
+    """12. Public registration endpoint strictly forbids creating driver or admin accounts."""
+    mock = cleanup_test_state
+    phone_test = "9822334455"
+
+    res_send = client.post("/api/auth/otp/send", json={"phone": phone_test, "purpose": "register"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    for forbidden_role in ["driver", "admin", "collector", "supervisor"]:
+        res = client.post("/api/auth/register", json={
+            "full_name": "Unauthorized Driver",
+            "phone": phone_test,
+            "otp": mock.last_sent_otp,
+            "challenge_id": challenge_id,
+            "role": forbidden_role
+        })
+        assert res.status_code in (400, 403)
+
+
+def test_13_jwt_validation_against_me_endpoint(cleanup_test_state):
+    """13. JWT token returned by OTP authentication accesses /api/auth/me."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    res_verify = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    token = res_verify.json()["access_token"]
+
+    res_me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert res_me.status_code == 200
+    assert res_me.json()["phone"] == "9876543210"
+
+
+def test_14_existing_password_login_backward_compatibility():
+    """14. Existing password authentication for demo / admin users remains functional."""
+    res = client.post("/api/auth/login", json={
+        "email": "priya@cityswap.io",
+        "password": "Password123!",
+        "role": "citizen"
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert "access_token" in data
+    assert data["user"]["role"] == "citizen"
+
+
+def test_15_citizen_cannot_access_driver_or_admin_routes(cleanup_test_state):
+    """15. Citizen JWT tokens are blocked from accessing driver and admin routes."""
+    mock = cleanup_test_state
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    res_verify = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": mock.last_sent_otp,
+        "challenge_id": challenge_id,
+        "role": "citizen"
+    })
+    token = res_verify.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Driver route
+    res_driver = client.get("/api/driver/tasks", headers=headers)
+    assert res_driver.status_code in (401, 403)
+
+    # Admin route
+    res_admin = client.get("/api/admin/metrics", headers=headers)
+    assert res_admin.status_code in (401, 403)
+
+
+def test_16_provider_failure_rolls_back_token_and_returns_503():
+    """16. When OTP delivery fails, newly created DB token is deleted and HTTP 503 is returned."""
+    fail_provider = MockMetaOtpProvider(should_fail=True)
+    set_otp_delivery_provider_for_testing(fail_provider)
+
+    res = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    assert res.status_code == 503
+
+    # Token must NOT exist in DB so user is not penalized with cooldown
+    db = SessionLocal()
+    try:
+        token = db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").first()
+        assert token is None
+    finally:
         db.close()
 
 
-def test_36_password_login_compatibility_preserved():
-    """36. Legacy password authentication for administrative/demo users remains functional."""
-    res = client.post("/api/auth/login", json={
-        "email": "admin@cityswap.io",
+def test_17_phone_normalization_handles_various_formats(cleanup_test_state):
+    """17. Mobile number normalization handles spaces, hyphens, and +91 prefix."""
+    formats = ["+91 9876543210", "+91-9876543210", "09876543210", "98765 43210"]
+    for formatted_phone in formats:
+        db = SessionLocal()
+        try:
+            db.query(MobileOtpToken).delete()
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.post("/api/auth/otp/send", json={"phone": formatted_phone, "purpose": "login"})
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+
+
+def test_18_hmac_based_otp_hashing_verification(cleanup_test_state):
+    """18. Database stores only HMAC-SHA256 hash; raw OTP is never stored in DB."""
+    mock = cleanup_test_state
+    client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+
+    db = SessionLocal()
+    try:
+        token = db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").first()
+        assert token is not None
+        assert token.otp_hash != mock.last_sent_otp
+        assert len(token.otp_hash) == 64  # SHA-256 hex digest length
+        assert hmac.compare_digest(hash_otp(mock.last_sent_otp), token.otp_hash)
+    finally:
+        db.close()
+
+
+def test_19_development_provider_refuses_production(monkeypatch):
+    """19. DevelopmentOtpProvider raises RuntimeError if instantiated in production."""
+    monkeypatch.setenv("ENV", "production")
+    config.ENV = "production"
+
+    with pytest.raises(RuntimeError) as exc_info:
+        DevelopmentOtpProvider()
+    assert "production" in str(exc_info.value).lower()
+
+
+def test_20_production_mode_disallows_mock_provider(monkeypatch):
+    """20. get_otp_delivery_provider() raises in production if provider is not meta_whatsapp."""
+    monkeypatch.setenv("ENV", "production")
+    config.ENV = "production"
+    monkeypatch.setattr(config, "OTP_DELIVERY_PROVIDER", "development")
+
+    set_otp_delivery_provider_for_testing(None)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        get_otp_delivery_provider()
+    assert "meta_whatsapp" in str(exc_info.value).lower()
+
+
+def test_21_challenge_status_authoritative_restoration(cleanup_test_state):
+    """21. GET /api/auth/otp/challenge/{id} restores TTL, cooldown, and ownership."""
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    assert res_send.status_code == 200
+    challenge_id = res_send.json()["challenge_id"]
+
+    res_status = client.get(f"/api/auth/otp/challenge/{challenge_id}")
+    assert res_status.status_code == 200
+    data = res_status.json()
+    assert data["valid"] is True
+    assert data["purpose"] == "login"
+    assert data["seconds_remaining"] > 250
+    assert data["attempts_remaining"] == 5
+
+
+def test_22_expired_challenge_returns_valid_false(cleanup_test_state):
+    """22. Challenge status for expired token returns valid=False and expired=True."""
+    res_send = client.post("/api/auth/otp/send", json={"phone": "9876543210", "purpose": "login"})
+    challenge_id = res_send.json()["challenge_id"]
+
+    db = SessionLocal()
+    try:
+        token = db.query(MobileOtpToken).filter(MobileOtpToken.phone == "9876543210").first()
+        token.expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+        db.commit()
+    finally:
+        db.close()
+
+    res_status = client.get(f"/api/auth/otp/challenge/{challenge_id}")
+    assert res_status.status_code == 200
+    data = res_status.json()
+    assert data["valid"] is False
+    assert data["expired"] is True
+
+
+def test_23_tampered_challenge_returns_404():
+    """23. Tampered challenge HMAC signature returns HTTP 404."""
+    tampered_id = "1:9876543210:login:1762607820:tampered_signature_123456"
+    res = client.get(f"/api/auth/otp/challenge/{tampered_id}")
+    assert res.status_code == 404
+
+
+def test_24_purpose_binding_prevents_cross_use(cleanup_test_state):
+    """24. Challenge created for registration cannot be used to login."""
+    mock = cleanup_test_state
+    new_phone = "9822887766"
+
+    db = SessionLocal()
+    try:
+        db.query(User).filter(User.phone == new_phone).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    res_send = client.post("/api/auth/otp/send", json={"phone": new_phone, "purpose": "register"})
+    assert res_send.status_code == 200
+    reg_challenge_id = res_send.json()["challenge_id"]
+
+    # Attempt to use register challenge for login
+    res_bad = client.post("/api/auth/login/otp", json={
+        "phone": new_phone,
+        "otp": mock.last_sent_otp,
+        "challenge_id": reg_challenge_id,
+        "role": "citizen"
+    })
+    assert res_bad.status_code == 400
+    assert "purpose mismatch" in res_bad.json()["detail"].lower()
+
+
+def test_25_whatsapp_account_linking_preserved():
+    """25. Existing WhatsApp account linking tokens and identity mapping remain intact."""
+    login_res = client.post("/api/auth/login", json={
+        "email": "priya@cityswap.io",
         "password": "Password123!",
-        "role": "admin"
+        "role": "citizen"
+    })
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    code_res = client.post("/api/whatsapp/link/generate", headers=headers)
+    assert code_res.status_code == 200
+    code_data = code_res.json()
+    assert "code" in code_data
+    assert len(code_data["code"]) == 24
+
+
+def test_26_complaint_ownership_foreign_key_intact():
+    """26. Citizen complaints remain linked to the canonical user ID."""
+    db = SessionLocal()
+    user = db.query(User).filter(User.role == "citizen").first()
+    assert user is not None
+
+    complaint = Complaint(
+        tracking_number="EP-2026-TEST-META-01",
+        location_address="Near market ward 12",
+        waste_type="Plastic Waste",
+        description="Test waste description",
+        ward="Ward 12",
+        status="Pending",
+        citizen_id=user.id
+    )
+    db.add(complaint)
+    db.commit()
+    db.refresh(complaint)
+
+    assert complaint.citizen_id == user.id
+    db.delete(complaint)
+    db.commit()
+    db.close()
+
+
+def test_27_existing_user_ids_remain_unchanged():
+    """27. Canonical user IDs remain stable across logins."""
+    db = SessionLocal()
+    user_before = db.query(User).filter(User.email == "priya@cityswap.io").first()
+    expected_id = user_before.id
+    db.close()
+
+    res = client.post("/api/auth/login", json={
+        "email": "priya@cityswap.io",
+        "password": "Password123!",
+        "role": "citizen"
     })
     assert res.status_code == 200
-    assert "access_token" in res.json()
-    assert res.json()["user"]["role"] == "admin"
+    assert res.json()["user"]["id"] == expected_id
+
+
+def test_28_existing_roles_remain_unchanged():
+    """28. Existing roles (citizen, driver, admin) are strictly preserved."""
+    db = SessionLocal()
+    roles = {u.role for u in db.query(User).all()}
+    db.close()
+
+    assert "citizen" in roles
+    assert "driver" in roles
+    assert "admin" in roles

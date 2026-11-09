@@ -274,7 +274,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
             }`}
           >
             <Phone className="w-3.5 h-3.5" />
-            <span>Mobile OTP</span>
+            <span>WhatsApp OTP</span>
           </button>
 
           <button
@@ -381,7 +381,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
                     </div>
                   ) : (
                     <>
-                      <span>Get OTP Verification Code</span>
+                      <span>Get WhatsApp Verification Code</span>
                       <ChevronRight className="w-4 h-4" />
                     </>
                   )}
@@ -392,7 +392,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
               <form onSubmit={handleVerifyOtp} className="space-y-3">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-600 font-semibold">
-                    Code sent to <span className="font-extrabold text-slate-800">+91 ******{cleanPhone(mobileNumber).slice(-4)}</span>
+                    Code sent via WhatsApp to <span className="font-extrabold text-slate-800">+91 ******{cleanPhone(mobileNumber).slice(-4)}</span>
                   </span>
                   <button
                     type="button"
@@ -429,7 +429,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
                         disabled={isSubmitting}
                         className="text-[#16a34a] font-extrabold hover:underline cursor-pointer"
                       >
-                        Resend OTP
+                        Resend WhatsApp OTP
                       </button>
                     )}
                   </div>

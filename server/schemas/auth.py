@@ -126,7 +126,7 @@ class OtpLoginRequest(BaseModel):
 
 class SendOtpRequest(BaseModel):
     phone: str
-    purpose: Optional[str] = "login" # "login" | "register"
+    purpose: Optional[str] = "login"  # "login" | "register"
 
     @field_validator("phone")
     @classmethod
@@ -146,6 +146,7 @@ class SendOtpResponse(BaseModel):
     phone: str
     challenge_id: str
     delivery_status: str = "ACCEPTED"
+    channel: str = "whatsapp"
     cooldown_seconds: int = 60
     expires_in: int = 300
     account_exists: Optional[bool] = None
