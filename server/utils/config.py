@@ -142,7 +142,7 @@ class Config:
         raw = os.getenv("CORS_ORIGINS", os.getenv("BACKEND_CORS_ORIGINS", "")).strip()
         parsed: list[str] = []
         if raw:
-            parsed = [orig.strip() for orig in raw.split(",") if orig.strip()]
+            parsed = [orig.strip().rstrip("/") for orig in raw.split(",") if orig.strip()]
         if not parsed:
             env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", self.ENV)))
             if env == "production":
@@ -151,6 +151,7 @@ class Config:
                 "http://localhost:5173",
                 "http://127.0.0.1:5173",
                 "http://localhost:3000",
+                "https://ecopulse-ai-frontend.onrender.com",
             ]
         invalid = [origin for origin in parsed if not is_valid_http_origin(origin)]
         if invalid:

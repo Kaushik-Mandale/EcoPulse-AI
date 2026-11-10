@@ -75,10 +75,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Canonical production frontend origin
+CANONICAL_FRONTEND_ORIGIN = "https://ecopulse-ai-frontend.onrender.com"
+
+# Build allowed CORS origins: preserve configured origins and ensure the
+# canonical production frontend origin is always explicitly permitted.
+cors_origins: list[str] = [orig.rstrip("/") for orig in config.CORS_ORIGINS]
+if CANONICAL_FRONTEND_ORIGIN not in cors_origins:
+    cors_origins.append(CANONICAL_FRONTEND_ORIGIN)
+
 # Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
