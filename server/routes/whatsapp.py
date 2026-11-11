@@ -18,6 +18,7 @@ from server.database.db import get_db
 from server.utils.config import config, normalize_environment
 from server.utils.security import get_current_admin_user, get_current_user
 from server.services.whatsapp_service import WhatsAppService
+from server.services.auth_service import AuthService
 from server.services.whatsapp_link_service import WhatsAppLinkService
 from server.schemas.whatsapp_link import GenerateLinkCodeResponse, LinkStatusResponse, UnlinkResponse
 from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
@@ -115,6 +116,20 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
     for entry in body.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
+
+            # 1. Process Meta WhatsApp delivery status callbacks (sent, delivered, read, failed)
+            statuses = value.get("statuses", [])
+            for status_obj in statuses:
+                try:
+                    AuthService.process_meta_delivery_status(db, status_obj)
+                except Exception as status_err:
+                    logger.error(
+                        "[META WHATSAPP] Status callback processing error (%s).",
+                        type(status_err).__name__,
+                        exc_info=True,
+                    )
+
+            # 2. Process incoming citizen messages
             messages = value.get("messages", [])
             for msg in messages:
                 msg_id = (msg.get("id") or "").strip()

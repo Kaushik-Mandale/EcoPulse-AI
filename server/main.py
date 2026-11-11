@@ -49,6 +49,14 @@ async def lifespan(app: FastAPI):
     if env == "production":
         config.validate_production_settings()
 
+    # Read-only schema compatibility validation for Phase 2 OTP delivery observability
+    # and website-generated WhatsApp registration verification
+    # (Does NOT mutate database or execute ALTER TABLE at runtime)
+    from server.models.mobile_otp import check_mobile_otp_tokens_schema
+    from server.models.whatsapp_registration_challenge import check_whatsapp_registration_challenges_schema
+    check_mobile_otp_tokens_schema(engine)
+    check_whatsapp_registration_challenges_schema(engine)
+
     db = SessionLocal()
     try:
         if AuthService.should_seed_demo_users():

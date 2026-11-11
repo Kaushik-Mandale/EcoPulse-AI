@@ -168,6 +168,7 @@ class OtpChallengeStatusResponse(BaseModel):
     locked: bool
     max_attempts: int
     attempts_remaining: int
+    delivery_status: Optional[str] = "ACCEPTED"
 
 class VerifyOtpRequest(BaseModel):
     phone: str

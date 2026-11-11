@@ -70,7 +70,7 @@ class Config:
         self.WHATSAPP_VERIFY_TOKEN: str = (os.getenv("WHATSAPP_VERIFY_TOKEN") or "").strip()
         if not self.WHATSAPP_VERIFY_TOKEN and not is_production_environment(self.ENV):
             self.WHATSAPP_VERIFY_TOKEN = "dev-whatsapp-verify-token"
-        self.WHATSAPP_BUSINESS_PHONE: str = os.getenv("WHATSAPP_BUSINESS_PHONE", "+919876543210")
+        self.WHATSAPP_BUSINESS_PHONE: str = os.getenv("WHATSAPP_BUSINESS_PHONE", "")
         self.WHATSAPP_GRAPH_API_VERSION: str = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v20.0")
         self.META_APP_SECRET: str = (os.getenv("META_APP_SECRET", "") or "").strip()
         self.UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")

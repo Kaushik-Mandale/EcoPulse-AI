@@ -165,7 +165,7 @@ const WhatsAppLinkCard = ({ user }) => {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  const botNumberClean = (linkData?.bot_phone || '919876543210').replace(/[^0-9]/g, '');
+  const botNumberClean = (linkData?.bot_phone || '').replace(/[^0-9]/g, '');
   const waDirectUrl = linkData?.code 
     ? `https://wa.me/${botNumberClean}?text=${encodeURIComponent(`LINK ${linkData.code}`)}`
     : `https://wa.me/${botNumberClean}`;

@@ -699,6 +699,29 @@ class WhatsAppService:
         media_url = (media_url or "").strip()
 
         # ----------------------------------------------------------------
+        # STEP 0a: Detect VERIFY <code> command — Website Registration Verification
+        # Processed BEFORE auth gatekeeper so registering citizens can verify mobile.
+        # ----------------------------------------------------------------
+        verify_match = re.match(r'^VERIFY(?:\s+(.*))?$', clean_text, re.IGNORECASE)
+        if verify_match:
+            raw_code = (verify_match.group(1) or "").strip()
+            from server.services.whatsapp_verification_service import WhatsAppVerificationService
+            result = WhatsAppVerificationService.process_verification_message(
+                db=db,
+                sender_phone=sender_phone,
+                raw_code=raw_code,
+                preferred_language=lang
+            )
+            reply = result["reply"]
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {
+                "status": result["status"],
+                "citizen": citizen.phone_number,
+                "reply": reply,
+                "verified": result.get("verified", False)
+            }
+
+        # ----------------------------------------------------------------
         # STEP 0: Detect LINK <code> command — processed BEFORE auth gatekeeper.
         # This allows unlinked senders to link their account.
         # ----------------------------------------------------------------

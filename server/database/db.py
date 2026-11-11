@@ -178,6 +178,11 @@ def ensure_users_schema(engine) -> None:
                     conn.execute(text("PRAGMA foreign_keys=ON;"))
                     conn.commit()
                     logger.info("[SCHEMA] SQLite users table migrated to nullable email/hashed_password.")
+                try:
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_phone ON users(phone);"))
+                    conn.commit()
+                except Exception:
+                    pass
         except Exception as exc:
             logger.warning("[SCHEMA] SQLite users schema check warning: %s", type(exc).__name__)
 

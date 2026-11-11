@@ -14,6 +14,7 @@ Security model:
 
 import hashlib
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -127,7 +128,7 @@ class WhatsAppLinkService:
             "link_code": plaintext,
             "code": plaintext,
             "expires_in": TOKEN_TTL_SECONDS,
-            "bot_phone": (config.WHATSAPP_BUSINESS_PHONE or "919876543210").replace("+", "").replace(" ", ""),
+            "bot_phone": re.sub(r"\D", "", config.WHATSAPP_BUSINESS_PHONE or ""),
             "message": f"Send: LINK {plaintext}  from the WhatsApp number you want to connect.",
         }
 

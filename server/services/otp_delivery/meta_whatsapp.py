@@ -130,14 +130,15 @@ class MetaWhatsAppOtpProvider(OtpDeliveryProvider):
                 data = response.json()
                 messages = data.get("messages", [])
                 if messages and messages[0].get("id"):
+                    wamid = messages[0]["id"]
                     logger.info(
-                        "[META-WA-OTP] OTP dispatched successfully via WhatsApp to %s", masked_phone
+                        "[META-WA-OTP] OTP accepted by Meta (wamid=%s) for %s", wamid, masked_phone
                     )
                     return OtpDeliveryResult(
                         success=True,
                         provider=self.provider_name,
                         message=f"WhatsApp OTP sent to {masked_phone}.",
-                        provider_message_id=messages[0]["id"]
+                        provider_message_id=wamid
                     )
                 # HTTP 200 but no message ID — treat as failure
                 error_obj = data.get("error", {})
@@ -156,14 +157,20 @@ class MetaWhatsAppOtpProvider(OtpDeliveryProvider):
                 error_body = response.json()
                 error_obj = error_body.get("error", {})
                 err_code = str(error_obj.get("code", response.status_code))
+                err_subcode = str(error_obj.get("error_subcode", ""))
+                fbtrace_id = str(error_obj.get("fbtrace_id", ""))
                 err_msg = error_obj.get("message", f"HTTP {response.status_code}")
             except Exception:
                 err_code = str(response.status_code)
+                err_subcode = ""
+                fbtrace_id = ""
                 err_msg = f"HTTP {response.status_code}"
 
+            subcode_info = f", subcode={err_subcode}" if err_subcode else ""
+            trace_info = f", fbtrace_id={fbtrace_id}" if fbtrace_id else ""
             logger.error(
-                "[META-WA-OTP] API returned HTTP %d for %s: %s",
-                response.status_code, masked_phone, err_msg
+                "[META-WA-OTP] API returned HTTP %d for %s (code=%s%s%s): %s",
+                response.status_code, masked_phone, err_code, subcode_info, trace_info, err_msg
             )
             return OtpDeliveryResult(
                 success=False,

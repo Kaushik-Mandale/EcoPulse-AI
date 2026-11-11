@@ -1,70 +1,164 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { User, Mail, Phone, ShieldCheck, CheckCircle2, ShieldAlert, ArrowRight, Sparkles, UserCheck, ArrowLeft, RefreshCw, Info } from 'lucide-react';
 import {
-  sendOtp,
-  registerWithOtp,
-  getOtpChallengeStatus,
+  User,
+  Mail,
+  Phone,
+  ShieldCheck,
+  CheckCircle2,
+  ShieldAlert,
+  ArrowRight,
+  Sparkles,
+  ArrowLeft,
+  RefreshCw,
+  Info,
+  Copy,
+  Check,
+  MessageSquare,
+  ExternalLink,
+  Clock
+} from 'lucide-react';
+import {
+  generateWhatsAppVerification,
+  getWhatsAppVerificationStatus,
   saveOtpSession,
   getStoredOtpSession,
   clearOtpSession
 } from '../../services/authService';
-import OtpInput from './OtpInput';
 
 const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
-  const [step, setStep] = useState('DETAILS'); // 'DETAILS' | 'OTP'
+  const [step, setStep] = useState('DETAILS'); // 'DETAILS' | 'VERIFY'
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [acceptTerms, setAcceptTerms] = useState(false);
-  const [otp, setOtp] = useState('');
+
+  // Verification challenge state
   const [challengeId, setChallengeId] = useState(null);
-  const [cooldown, setCooldown] = useState(0);
+  const [challengeSecret, setChallengeSecret] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
   const [timer, setTimer] = useState(300);
+  const [cooldown, setCooldown] = useState(0);
+  const [verificationStatus, setVerificationStatus] = useState('PENDING'); // PENDING | VERIFIED | EXPIRED | FAILED
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [authSuccess, setAuthSuccess] = useState(false);
   const [serverError, setServerError] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
   const [accountExists, setAccountExists] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  // Restore active verification session on page load / refresh
+  const pollIntervalRef = useRef(null);
+  const timerIntervalRef = useRef(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    };
+  }, []);
+
+  // Restore active verification challenge on page refresh
   useEffect(() => {
     const restoreSession = async () => {
       const session = getStoredOtpSession('register');
       if (!session || !session.challenge_id) return;
 
-      // Immediately restore draft inputs so citizen never loses what was typed
+      // Check if session has timed out beyond 5 minutes (300 seconds)
+      const elapsed = Math.floor((Date.now() - (session.timestamp || 0)) / 1000);
+      if (elapsed >= 300) {
+        clearOtpSession('register');
+        return;
+      }
+
       if (session.draft?.fullName) setFullName(session.draft.fullName);
       if (session.draft?.email) setEmail(session.draft.email);
       if (session.phone) setPhone(session.phone);
+      if (session.whatsapp_number) setWhatsappNumber(session.whatsapp_number);
+      if (session.challenge_secret) setChallengeSecret(session.challenge_secret);
+      setChallengeId(session.challenge_id);
       setAcceptTerms(true);
 
       try {
-        const status = await getOtpChallengeStatus(session.challenge_id);
-        if (status.valid && status.seconds_remaining > 0) {
+        const res = await getWhatsAppVerificationStatus(session.challenge_id, session.challenge_secret);
+        if (!isMountedRef.current) return;
+
+        if (res.status === 'VERIFIED') {
+          setVerificationStatus('VERIFIED');
+          setAuthSuccess(true);
+          clearOtpSession('register');
+          setTimeout(() => {
+            if (onSuccess) onSuccess(res?.user);
+          }, 800);
+        } else if (res.status === 'PENDING' && res.seconds_remaining > 0) {
           setChallengeId(session.challenge_id);
-          setStep('OTP');
-          setTimer(status.seconds_remaining);
-          setCooldown(status.cooldown_remaining);
-          setInfoMsg(`Verification session restored for +91 ******${(session.phone || '').slice(-4)}`);
+          setChallengeSecret(session.challenge_secret);
+          if (res.whatsapp_number) setWhatsappNumber(res.whatsapp_number);
+          setStep('VERIFY');
+          setTimer(res.seconds_remaining);
+          setVerificationStatus('PENDING');
+          setInfoMsg(`Verification in progress for +91 ******${(session.phone || '').slice(-4)}`);
+        } else if (res.status === 'CONSUMED' || res.consumed) {
+          clearOtpSession('register');
+          setChallengeId(null);
+          setChallengeSecret('');
+          setStep('DETAILS');
+          setServerError('This verification session has already been claimed. If you already registered, please sign in.');
         } else {
           clearOtpSession('register');
-          if (status.expired) {
-            setServerError('Your previous verification code has expired. Please request a new code.');
-          } else if (status.consumed) {
-            setServerError('Your previous verification session was already completed.');
+          setChallengeId(null);
+          setChallengeSecret('');
+          setStep('DETAILS');
+          if (res.expired || res.status === 'EXPIRED') {
+            setServerError('Your previous verification session has expired. Please enter your details to generate a new code.');
+          } else {
+            setServerError(res.message || 'Previous verification session is no longer active. Please generate a new code.');
           }
         }
       } catch (err) {
         clearOtpSession('register');
+        setChallengeId(null);
+        setChallengeSecret('');
+        setStep('DETAILS');
+        const msg = err.message || '';
+        if (msg.includes('claimed') || msg.includes('409')) {
+          setServerError('This verification session has already been claimed. If you already registered, please sign in.');
+        } else if (msg.includes('403') || msg.includes('unauthorized')) {
+          setServerError('Verification session authorization expired. Please generate a new code.');
+        } else {
+          setServerError('Previous verification session could not be resumed. Please generate a new code.');
+        }
       }
     };
 
     restoreSession();
-  }, []);
+  }, [onSuccess]);
 
-  // Cooldown timer
+  // Expiration timer
+  useEffect(() => {
+    if (step === 'VERIFY' && timer > 0 && verificationStatus === 'PENDING') {
+      timerIntervalRef.current = setInterval(() => {
+        setTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(timerIntervalRef.current);
+            setVerificationStatus('EXPIRED');
+            clearOtpSession('register');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    };
+  }, [step, timer, verificationStatus]);
+
+  // Resend cooldown timer
   useEffect(() => {
     let interval = null;
     if (cooldown > 0) {
@@ -75,20 +169,64 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
     return () => clearInterval(interval);
   }, [cooldown]);
 
-  // Expiration countdown
+  // Background status polling when in VERIFY step
   useEffect(() => {
-    let interval = null;
-    if (step === 'OTP' && timer > 0) {
-      interval = setInterval(() => {
-        setTimer((prev) => (prev > 1 ? prev - 1 : 0));
-      }, 1000);
+    if (step !== 'VERIFY' || !challengeId || verificationStatus !== 'PENDING') {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      return;
     }
-    return () => clearInterval(interval);
-  }, [step, timer]);
+
+    pollIntervalRef.current = setInterval(async () => {
+      if (!isMountedRef.current) return;
+      try {
+        const res = await getWhatsAppVerificationStatus(challengeId, challengeSecret);
+        if (!isMountedRef.current) return;
+
+        if (res.status === 'VERIFIED') {
+          clearInterval(pollIntervalRef.current);
+          setVerificationStatus('VERIFIED');
+          setAuthSuccess(true);
+          clearOtpSession('register');
+          setTimeout(() => {
+            if (onSuccess) {
+              onSuccess(res?.user || { full_name: fullName, phone: cleanPhone(phone), role: 'citizen' });
+            }
+          }, 900);
+        } else if (res.status === 'EXPIRED') {
+          clearInterval(pollIntervalRef.current);
+          setVerificationStatus('EXPIRED');
+          clearOtpSession('register');
+          setServerError('Verification code expired. Please generate a new code.');
+        } else if (res.status === 'CONSUMED') {
+          clearInterval(pollIntervalRef.current);
+          setVerificationStatus('CONSUMED');
+          clearOtpSession('register');
+          setServerError('This verification session has already been claimed. Please sign in instead.');
+        } else if (res.status === 'FAILED') {
+          clearInterval(pollIntervalRef.current);
+          setVerificationStatus('FAILED');
+          clearOtpSession('register');
+          setServerError('Maximum verification attempts reached. Please generate a new code.');
+        }
+      } catch (err) {
+        const errMsg = err.message || '';
+        if (errMsg.includes('403') || errMsg.includes('unauthorized') || errMsg.includes('409') || errMsg.includes('claimed')) {
+          clearInterval(pollIntervalRef.current);
+          clearOtpSession('register');
+          setVerificationStatus('FAILED');
+          setServerError(errMsg);
+        }
+      }
+    }, 2500);
+
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [step, challengeId, challengeSecret, verificationStatus, fullName, phone, onSuccess]);
 
   const cleanPhone = (val) => val.replace(/\D/g, '').slice(0, 10);
 
-  const handleRequestOtp = async (e) => {
+  const handleRequestVerification = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
     setServerError('');
@@ -122,20 +260,33 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
 
     setIsSubmitting(true);
     try {
-      const res = await sendOtp({ phone: cleaned, purpose: 'register' });
+      const res = await generateWhatsAppVerification({
+        fullName: fullName.trim(),
+        phone: cleaned,
+        email: email.trim() || null
+      });
+
       setChallengeId(res.challenge_id);
+      setChallengeSecret(res.challenge_secret || '');
+      setVerificationCode(res.code);
+      setWhatsappNumber(res.whatsapp_number);
+      setTimer(res.expires_in || 300);
+      setCooldown(res.cooldown_seconds || 60);
+      setVerificationStatus('PENDING');
+
+      // Save session without persisting OTP code to browser storage
       saveOtpSession('register', {
         challenge_id: res.challenge_id,
+        challenge_secret: res.challenge_secret,
         phone: cleaned,
+        whatsapp_number: res.whatsapp_number,
         draft: { fullName: fullName.trim(), email: email.trim() }
       });
-      setStep('OTP');
-      setOtp('');
-      setCooldown(res.cooldown_seconds || 60);
-      setTimer(res.expires_in || 300);
-      setInfoMsg(res.message || `OTP dispatched to +91 ******${cleaned.slice(-4)}`);
+
+      setStep('VERIFY');
+      setInfoMsg(res.instructions || `Send VERIFY ${res.code} to our WhatsApp number`);
     } catch (err) {
-      const msg = err.message || 'Failed to dispatch verification code';
+      const msg = err.message || 'Failed to generate verification challenge';
       setServerError(msg);
       if (msg.toLowerCase().includes('already registered')) {
         setAccountExists(true);
@@ -145,70 +296,61 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
     }
   };
 
-  const handleVerifyAndRegister = async (e) => {
-    e.preventDefault();
-    if (isSubmitting) return;
-    if (!otp || otp.length !== 6) {
-      setServerError('Please enter the complete 6-digit verification code');
-      return;
-    }
-
-    setServerError('');
-    setIsSubmitting(true);
-
-    try {
-      const cleaned = cleanPhone(phone);
-      const res = await registerWithOtp({
-        fullName: fullName.trim(),
-        phone: cleaned,
-        email: email.trim() || null,
-        otp,
-        challengeId
-      });
-
-      clearOtpSession('register');
-      setAuthSuccess(true);
-      setTimeout(() => {
-        if (onSuccess) {
-          onSuccess(res?.user || { full_name: fullName, phone: cleaned, role: 'citizen' });
-        }
-      }, 700);
-    } catch (err) {
-      setServerError(err.message || 'Registration failed. Please check the OTP code.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleResendOtp = async () => {
+  const handleRegenerateCode = async () => {
     if (cooldown > 0 || isSubmitting) return;
     setServerError('');
     setIsSubmitting(true);
     try {
       const cleaned = cleanPhone(phone);
-      const res = await sendOtp({ phone: cleaned, purpose: 'register' });
+      const res = await generateWhatsAppVerification({
+        fullName: fullName.trim(),
+        phone: cleaned,
+        email: email.trim() || null
+      });
+
       setChallengeId(res.challenge_id);
+      setChallengeSecret(res.challenge_secret || '');
+      setVerificationCode(res.code);
+      setWhatsappNumber(res.whatsapp_number);
+      setTimer(res.expires_in || 300);
+      setCooldown(res.cooldown_seconds || 60);
+      setVerificationStatus('PENDING');
+
+      // Save session without persisting OTP code to browser storage
       saveOtpSession('register', {
         challenge_id: res.challenge_id,
+        challenge_secret: res.challenge_secret,
         phone: cleaned,
+        whatsapp_number: res.whatsapp_number,
         draft: { fullName: fullName.trim(), email: email.trim() }
       });
-      setCooldown(res.cooldown_seconds || 60);
-      setTimer(res.expires_in || 300);
-      setInfoMsg(`New code sent to +91 ******${cleaned.slice(-4)}`);
+
+      setInfoMsg(`New code generated: VERIFY ${res.code}`);
     } catch (err) {
-      setServerError(err.message || 'Failed to resend OTP.');
+      setServerError(err.message || 'Failed to generate new code.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const handleCopyMessage = () => {
+    const textToCopy = `VERIFY ${verificationCode}`;
+    navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const handleEditDetails = () => {
     clearOtpSession('register');
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     setStep('DETAILS');
-    setOtp('');
+    setVerificationCode('');
     setServerError('');
+    setInfoMsg('');
     setChallengeId(null);
+    setChallengeSecret('');
+    setVerificationStatus('PENDING');
   };
 
   const handleSwitchToLoginSafe = () => {
@@ -221,6 +363,10 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
     const secs = seconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
+
+  // WhatsApp deep link for 1-click message prefill
+  const cleanBotPhone = (whatsappNumber || '').replace(/\D/g, '');
+  const waDeepLink = `https://wa.me/${cleanBotPhone}?text=${encodeURIComponent(`VERIFY ${verificationCode}`)}`;
 
   return (
     <div className="w-full text-gray-900">
@@ -237,12 +383,12 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
       {/* Form Heading & Subtitle */}
       <div className="text-center sm:text-left mb-3">
         <h2 className="text-xl sm:text-2xl font-black text-[#101828] tracking-tight leading-tight">
-          {step === 'DETAILS' ? 'Create Citizen Account' : 'Verify Mobile Number'}
+          {step === 'DETAILS' ? 'Create Citizen Account' : 'Verify via WhatsApp'}
         </h2>
         <p className="text-[11px] sm:text-xs font-semibold text-gray-600 mt-0.5 leading-relaxed">
           {step === 'DETAILS'
             ? 'Enter your name and mobile number. Email is optional.'
-            : `Enter the 6-digit OTP code sent to +91 ******${cleanPhone(phone).slice(-4)}`}
+            : 'Send the verification code below to our official WhatsApp Business account.'}
         </p>
       </div>
 
@@ -286,7 +432,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
 
       {/* STEP 1: Personal Details */}
       {step === 'DETAILS' ? (
-        <form onSubmit={handleRequestOtp} className="space-y-3">
+        <form onSubmit={handleRequestVerification} className="space-y-3">
           {/* Full Name (Required) */}
           <div>
             <label className="block text-[11px] font-bold text-gray-800 uppercase tracking-wider mb-1">
@@ -329,7 +475,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
               />
             </div>
             <p className="mt-0.5 text-[10px] text-gray-500 font-medium">
-              We'll send an OTP to verify your ownership of this mobile number.
+              You will verify your mobile number directly by sending a WhatsApp message.
             </p>
           </div>
 
@@ -382,7 +528,7 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
             {isSubmitting ? (
               <div className="flex items-center gap-2">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Sending OTP...</span>
+                <span>Generating Verification Code...</span>
               </div>
             ) : (
               <div className="flex items-center gap-1.5">
@@ -393,11 +539,12 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
           </motion.button>
         </form>
       ) : (
-        /* STEP 2: OTP Verification & Completion */
-        <form onSubmit={handleVerifyAndRegister} className="space-y-3">
+        /* STEP 2: Website-Generated WhatsApp Verification Instructions */
+        <div className="space-y-3">
+          {/* Active Number & Edit Link */}
           <div className="flex items-center justify-between text-xs p-2 rounded-xl bg-emerald-50/60 border border-emerald-100">
             <div>
-              <div className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Verifying WhatsApp</div>
+              <div className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Verifying Phone</div>
               <div className="font-extrabold text-gray-800 text-xs">+91 {cleanPhone(phone)}</div>
             </div>
             <button
@@ -410,60 +557,138 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
             </button>
           </div>
 
-          <div>
-            <label className="block text-[11px] font-bold text-gray-800 text-center mb-1">
-              Enter 6-Digit Verification Code
-            </label>
-            <OtpInput
-              value={otp}
-              onChange={(val) => {
-                setOtp(val);
-                if (val.length === 6) setServerError('');
-              }}
-              disabled={isSubmitting || authSuccess}
-            />
-            <div className="flex items-center justify-between text-[11px] text-gray-500 font-semibold mt-1">
-              <span>Code expires in: <strong className="text-gray-700">{formatTimer(timer)}</strong></span>
-              {cooldown > 0 ? (
-                <span className="text-gray-400">Resend in {cooldown}s</span>
-              ) : (
+          {/* Verification Code Box */}
+          {verificationCode ? (
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50/80 via-white to-emerald-50/50 border border-emerald-200 text-center shadow-xs">
+              <span className="text-[10px] font-bold text-[#005C2B] uppercase tracking-widest block mb-1">
+                Your 6-Digit Verification Code
+              </span>
+
+              {/* Verification Code Digits */}
+              <div className="text-3xl sm:text-4xl font-black text-gray-900 tracking-[0.2em] font-mono py-1 select-all">
+                {verificationCode}
+              </div>
+
+              <p className="mt-2 text-xs font-medium text-gray-700 leading-snug">
+                Send <strong className="font-mono bg-emerald-100/90 text-[#005C2B] px-1.5 py-0.5 rounded font-black">VERIFY {verificationCode}</strong> to our WhatsApp Business number:
+              </p>
+
+              <div className="mt-1.5 inline-flex items-center gap-1.5 bg-white px-3 py-1 rounded-full border border-gray-200 text-xs font-extrabold text-gray-900 shadow-2xs">
+                <MessageSquare className="w-3.5 h-3.5 text-[#25D366]" />
+                <span>{whatsappNumber}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 text-center shadow-xs">
+              <span className="text-[10px] font-bold text-amber-800 uppercase tracking-widest block mb-1">
+                Verification In Progress
+              </span>
+              <p className="text-xs font-medium text-amber-900 leading-snug">
+                Active verification session for <strong>+91 {cleanPhone(phone)}</strong>
+              </p>
+              <p className="text-[11px] text-gray-600 mt-1.5 leading-relaxed">
+                If you already sent your <strong>VERIFY</strong> message on WhatsApp, please wait while we confirm your account.
+              </p>
+              <div className="mt-3 flex items-center justify-center gap-2">
                 <button
                   type="button"
-                  onClick={handleResendOtp}
-                  disabled={isSubmitting}
-                  className="text-[#005C2B] font-extrabold hover:underline cursor-pointer"
+                  onClick={handleRegenerateCode}
+                  disabled={cooldown > 0 || isSubmitting}
+                  className="py-1.5 px-3 rounded-xl bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer"
                 >
-                  Resend WhatsApp OTP
+                  <RefreshCw className={`w-3 h-3 ${isSubmitting ? 'animate-spin' : ''}`} />
+                  <span>{cooldown > 0 ? `Wait ${cooldown}s` : 'Generate New Verification Code'}</span>
                 </button>
-              )}
-            </div>
-          </div>
-
-          <motion.button
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.98 }}
-            type="submit"
-            disabled={isSubmitting || authSuccess || otp.length !== 6}
-            className="w-full mt-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#005C2B] to-[#007a33] text-white text-xs font-bold shadow-xs hover:from-[#004821] hover:to-[#005C2B] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 min-h-[42px]"
-          >
-            {authSuccess ? (
-              <div className="flex items-center gap-1.5 text-white font-black text-xs">
-                <CheckCircle2 className="w-4 h-4 text-emerald-300" />
-                <span>Account Created! Redirecting...</span>
               </div>
-            ) : isSubmitting ? (
-              <div className="flex items-center gap-2">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Creating Account...</span>
+            </div>
+          )}
+
+          {/* Action Buttons: 1-Click WhatsApp + Copy Code (shown when verificationCode is present) */}
+          {verificationCode && (
+            <div className="grid grid-cols-2 gap-2">
+              <a
+                href={waDeepLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="py-2.5 px-3 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Open WhatsApp</span>
+                <ExternalLink className="w-3 h-3 opacity-80" />
+              </a>
+
+              <button
+                type="button"
+                onClick={handleCopyMessage}
+                className="py-2.5 px-3 rounded-xl bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer"
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="text-emerald-700">Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5 text-gray-500" />
+                    <span>Copy Code</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Live Status Indicator & Expiry Timer */}
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+            {authSuccess || verificationStatus === 'VERIFIED' ? (
+              <div className="flex items-center gap-2 text-emerald-700 font-extrabold justify-center py-1">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Verification Successful! Launching your portal...</span>
+              </div>
+            ) : verificationStatus === 'PENDING' ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-gray-700 font-bold">
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                  </span>
+                  <span>Waiting for WhatsApp message...</span>
+                </div>
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-gray-500">
+                  <Clock className="w-3 h-3" />
+                  <span>{formatTimer(timer)}</span>
+                </div>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4" />
-                <span>Verify & Complete Registration</span>
+              <div className="flex items-center justify-between">
+                <span className="text-red-600 font-bold">Code Expired</span>
+                <button
+                  type="button"
+                  onClick={handleRegenerateCode}
+                  disabled={cooldown > 0 || isSubmitting}
+                  className="text-[#005C2B] font-extrabold hover:underline text-xs cursor-pointer"
+                >
+                  {cooldown > 0 ? `Wait ${cooldown}s` : 'Generate New Code'}
+                </button>
               </div>
             )}
-          </motion.button>
-        </form>
+          </div>
+
+          {/* Step-by-Step Instructions */}
+          <div className="text-[11px] text-gray-500 space-y-1 px-1">
+            <div className="flex items-start gap-1.5">
+              <span className="font-bold text-gray-700">1.</span>
+              <span>Click <strong>Open WhatsApp</strong> or open WhatsApp on your phone (+91 {cleanPhone(phone)}).</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="font-bold text-gray-700">2.</span>
+              <span>Send the message <strong>VERIFY {verificationCode || '<code>'}</strong> to {whatsappNumber}.</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="font-bold text-gray-700">3.</span>
+              <span>Once received, your account will be activated here automatically!</span>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Driver/Admin Provisioning Notice */}

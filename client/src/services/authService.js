@@ -11,9 +11,13 @@ const handleAuthSuccess = (data) => {
 // ── Session Storage Helpers for Refresh-Safe OTP ────────────────────────────
 export const saveOtpSession = (purpose, data) => {
   try {
+    // Preserve challenge_id and challenge_secret in tab-scoped sessionStorage
+    // NEVER persist the OTP code itself in browser storage
     sessionStorage.setItem(`ecopulse_otp_${purpose}`, JSON.stringify({
       challenge_id: data.challenge_id,
+      challenge_secret: data.challenge_secret || null,
       phone: data.phone,
+      whatsapp_number: data.whatsapp_number || null,
       draft: data.draft || {},
       timestamp: Date.now()
     }));
@@ -204,6 +208,49 @@ export const logoutUser = () => {
 export const resetPasswordRequest = async ({ identifier, role }) => {
   try {
     const response = await api.post('/auth/forgot-password', { identifier, role });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+
+export const generateWhatsAppVerification = async ({ fullName, phone, email, password, ward }) => {
+  try {
+    const payload = {
+      full_name: fullName,
+      phone,
+      ward: ward || 'Ward 12'
+    };
+    if (email && email.trim()) {
+      payload.email = email.trim();
+    }
+    if (password && password.trim()) {
+      payload.password = password.trim();
+    }
+    const response = await api.post('/auth/whatsapp-verification/generate', payload);
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const getWhatsAppVerificationStatus = async (challengeId, challengeSecret = null) => {
+  try {
+    const config = {};
+    if (challengeSecret) {
+      config.headers = { 'X-Challenge-Secret': challengeSecret };
+    }
+    const response = await api.get(`/auth/whatsapp-verification/status/${encodeURIComponent(challengeId)}`, config);
+    if (response.data?.access_token) {
+      handleAuthSuccess(response.data);
+    }
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {

@@ -1,6 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from server.schemas.whatsapp_verification import (
+    WhatsAppVerificationGenerateRequest,
+    WhatsAppVerificationGenerateResponse,
+    WhatsAppVerificationStatusResponse
+)
+from server.services.whatsapp_verification_service import WhatsAppVerificationService
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Header
 from sqlalchemy.orm import Session
-from typing import Union
+from typing import Union, Optional
 from server.database.db import get_db
 from server.schemas.auth import (
     LoginRequest, SignupRequest, RegisterRequest, OtpLoginRequest,
@@ -91,6 +97,52 @@ def register(request: Request, payload: Union[RegisterRequest, SignupRequest], d
     """
     client_ip = request.client.host if request.client else None
     return AuthService.register_user(db, payload, ip_address=client_ip)
+
+
+# ─────────────────────────────────────────────────────────────
+# 1b. Website-Generated WhatsApp Registration Verification Flow
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/whatsapp-verification/generate", response_model=WhatsAppVerificationGenerateResponse)
+def generate_whatsapp_verification(
+    request: Request,
+    payload: WhatsAppVerificationGenerateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Generates a 6-digit verification code for citizen registration.
+    No outbound message is dispatched.
+    Instructions display: 'Send VERIFY <code> to official EcoPulse AI WhatsApp Business number.'
+    Returns the plaintext code once in the response.
+    """
+    client_ip = request.client.host if request.client else None
+    full_name = payload.resolve_full_name()
+    return WhatsAppVerificationService.generate_verification_challenge(
+        db,
+        phone=payload.phone,
+        full_name=full_name,
+        email=payload.email,
+        password=payload.password,
+        ward=payload.ward,
+        ip_address=client_ip
+    )
+
+
+@router.get("/whatsapp-verification/status/{challenge_id}", response_model=WhatsAppVerificationStatusResponse)
+def get_whatsapp_verification_status(
+    challenge_id: str,
+    db: Session = Depends(get_db),
+    x_challenge_secret: Optional[str] = Header(None, alias="X-Challenge-Secret"),
+    secret: Optional[str] = None
+):
+    """
+    Polls the verification status of a website-generated challenge.
+    Possession of challenge_id alone permits checking status without exposing session.
+    A valid challenge_secret (via X-Challenge-Secret header) is required to claim the JWT.
+    Does not disclose sensitive challenge secrets or database keys.
+    """
+    effective_secret = x_challenge_secret or secret
+    return WhatsAppVerificationService.get_challenge_status(db, challenge_id, challenge_secret=effective_secret)
 
 
 # ─────────────────────────────────────────────────────────────

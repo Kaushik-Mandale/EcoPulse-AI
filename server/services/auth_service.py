@@ -287,11 +287,27 @@ class AuthService:
                 detail=detail
             )
 
-        challenge_id = AuthService.create_challenge_id(new_token.id, clean_phone, expires_at, purpose=purpose)
+        # 7. Persist provider message ID (wamid) and initial ACCEPTED delivery status
+        # Fails safely with clear diagnostic log if migration 005 has not been applied yet
+        token_id = new_token.id
+        try:
+            new_token.provider_message_id = result.provider_message_id
+            new_token.delivery_status = "ACCEPTED"
+            new_token.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        except Exception as schema_err:
+            db.rollback()
+            logger.error(
+                "[SCHEMA COMPATIBILITY ERROR] Failed to record provider_message_id/delivery_status in mobile_otp_tokens (%s). "
+                "Authoritative migration required: execute migrations/005_meta_otp_delivery_observability.sql.",
+                type(schema_err).__name__
+            )
+
+        challenge_id = AuthService.create_challenge_id(token_id, clean_phone, expires_at, purpose=purpose)
         masked_phone = f"+91 ******{clean_phone[-4:]}"
         return {
             "success": True,
-            "message": f"Verification code sent via WhatsApp to {masked_phone}.",
+            "message": f"Verification code dispatched via WhatsApp to {masked_phone}.",
             "phone": clean_phone,
             "challenge_id": challenge_id,
             "delivery_status": "ACCEPTED",
@@ -382,8 +398,167 @@ class AuthService:
             "expired": expired,
             "locked": locked,
             "max_attempts": token.max_attempts,
-            "attempts_remaining": max(0, token.max_attempts - token.attempts)
+            "attempts_remaining": max(0, token.max_attempts - token.attempts),
+            "delivery_status": getattr(token, "delivery_status", None) or "ACCEPTED"
         }
+
+    @staticmethod
+    def process_meta_delivery_status(db: Session, status_obj: dict) -> Optional[MobileOtpToken]:
+        """
+        Processes Meta WhatsApp Cloud API asynchronous message delivery status callbacks.
+        Supports: sent, delivered, read, failed.
+        Correlates callbacks with MobileOtpToken by provider_message_id (wamid).
+        Handles duplicate and out-of-order callbacks via state precedence.
+        Never logs complete phone numbers, OTP values, or secret tokens.
+        """
+        if not isinstance(status_obj, dict):
+            return None
+
+        wamid = (status_obj.get("id") or "").strip()
+        status_raw = (status_obj.get("status") or "").strip().lower()
+        recipient_id = (status_obj.get("recipient_id") or "").strip()
+        timestamp_val = status_obj.get("timestamp")
+        errors = status_obj.get("errors") or []
+
+        if not wamid:
+            logger.warning("[META-WA-STATUS] Status callback missing message ID (wamid).")
+            return None
+
+        try:
+            token = db.query(MobileOtpToken).filter(MobileOtpToken.provider_message_id == wamid).first()
+        except Exception as schema_err:
+            db.rollback()
+            logger.error(
+                "[SCHEMA COMPATIBILITY ERROR] Column 'provider_message_id' not queryable on mobile_otp_tokens (%s). "
+                "Authoritative migration required: execute migrations/005_meta_otp_delivery_observability.sql.",
+                type(schema_err).__name__
+            )
+            return None
+        if not token:
+            masked_recipient = f"+91 ******{recipient_id[-4:]}" if len(recipient_id) >= 4 else (recipient_id or "unknown")
+            logger.info(
+                "[META-WA-STATUS] Status callback for non-OTP or uncataloged message (wamid=%s, status=%s, recipient=%s)",
+                wamid, status_raw, masked_recipient
+            )
+            return None
+
+        masked_phone = f"+91 ******{token.phone[-4:]}" if len(token.phone) >= 4 else token.phone
+        current_status = (token.delivery_status or "PENDING").upper()
+        incoming_status = status_raw.upper()
+
+        status_precedence = {
+            "PENDING": 0,
+            "ACCEPTED": 1,
+            "SENT": 2,
+            "DELIVERED": 3,
+            "READ": 4,
+        }
+
+        if incoming_status == "FAILED":
+            # Once confirmed delivered or read on handset, late failures should not downgrade status
+            if current_status in {"DELIVERED", "READ"}:
+                logger.info(
+                    "[META-WA-STATUS] Ignoring late failure callback for already %s OTP (wamid=%s)",
+                    current_status, wamid
+                )
+                return token
+
+            if current_status == "FAILED":
+                # Duplicate failure callback
+                return token
+
+            err_code = "FAILED"
+            err_msg = "Meta reported message delivery failure."
+            if errors and isinstance(errors, list):
+                first_err = errors[0]
+                if isinstance(first_err, dict):
+                    err_code = str(first_err.get("code") or "FAILED")[:50]
+                    title = first_err.get("title") or ""
+                    detail = first_err.get("message") or ""
+                    err_msg = (f"{title}: {detail}".strip(": ") if title and detail else (title or detail or err_msg))[:255]
+
+            token.delivery_status = "FAILED"
+            token.delivery_error_code = err_code
+            token.delivery_error_message = err_msg
+            token.updated_at = datetime.now(timezone.utc)
+            try:
+                db.commit()
+            except Exception as commit_err:
+                db.rollback()
+                logger.error("[META-WA-STATUS] Failed to persist FAILED status (wamid=%s): %s", wamid, commit_err)
+                return token
+
+            logger.error(
+                "[META-WA-STATUS] OTP delivery FAILED (wamid=%s, recipient=%s, code=%s, reason=%s)",
+                wamid, masked_phone, err_code, err_msg
+            )
+            return token
+
+        if incoming_status in status_precedence:
+            incoming_rank = status_precedence[incoming_status]
+            current_rank = status_precedence.get(current_status, 0)
+
+            # If current is FAILED, allow DELIVERED or READ to recover if Meta resolved delivery
+            if current_status == "FAILED" and incoming_status in {"DELIVERED", "READ"}:
+                token.delivery_status = incoming_status
+                token.delivery_error_code = None
+                token.delivery_error_message = None
+                if timestamp_val:
+                    try:
+                        token.delivered_at = datetime.fromtimestamp(float(timestamp_val), tz=timezone.utc)
+                    except Exception:
+                        token.delivered_at = datetime.now(timezone.utc)
+                else:
+                    token.delivered_at = datetime.now(timezone.utc)
+                token.updated_at = datetime.now(timezone.utc)
+                try:
+                    db.commit()
+                    logger.info(
+                        "[META-WA-STATUS] OTP delivery recovered to %s (wamid=%s, recipient=%s)",
+                        incoming_status, wamid, masked_phone
+                    )
+                except Exception as commit_err:
+                    db.rollback()
+                    logger.error("[META-WA-STATUS] Failed to persist recovered status (wamid=%s): %s", wamid, commit_err)
+                    return token
+                return token
+
+            # Handle duplicate or out-of-order callbacks
+            if incoming_rank <= current_rank:
+                logger.info(
+                    "[META-WA-STATUS] Duplicate or out-of-order callback '%s' ignored for wamid=%s (current status: %s)",
+                    incoming_status, wamid, current_status
+                )
+                return token
+
+            token.delivery_status = incoming_status
+            if incoming_status in {"DELIVERED", "READ"}:
+                if timestamp_val:
+                    try:
+                        token.delivered_at = datetime.fromtimestamp(float(timestamp_val), tz=timezone.utc)
+                    except Exception:
+                        token.delivered_at = datetime.now(timezone.utc)
+                else:
+                    token.delivered_at = datetime.now(timezone.utc)
+
+            token.updated_at = datetime.now(timezone.utc)
+            try:
+                db.commit()
+                logger.info(
+                    "[META-WA-STATUS] OTP delivery status updated to %s (wamid=%s, recipient=%s)",
+                    incoming_status, wamid, masked_phone
+                )
+            except Exception as commit_err:
+                db.rollback()
+                logger.error("[META-WA-STATUS] Failed to persist %s status (wamid=%s): %s", incoming_status, wamid, commit_err)
+                return token
+            return token
+
+        logger.warning(
+            "[META-WA-STATUS] Unrecognized status '%s' received for wamid=%s",
+            status_raw, wamid
+        )
+        return token
 
     @staticmethod
     def _verify_otp_hash(submitted_otp: str, stored_hash: str) -> bool:
