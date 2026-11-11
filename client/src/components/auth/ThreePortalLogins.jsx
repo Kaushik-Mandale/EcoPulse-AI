@@ -112,7 +112,6 @@ const ThreePortalLogins = ({ onSuccess }) => {
             <div className="w-full flex flex-col">
               <CitizenPortalLogin
                 onSuccess={onSuccess}
-                onOpenForgotPassword={() => setIsForgotPasswordOpen(true)}
                 onSwitchToSignup={() => navigate('/signup')}
               />
             </div>

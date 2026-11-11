@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Phone, ShieldCheck, ChevronRight, CheckCircle2, ShieldAlert, Lock, Eye, EyeOff, Mail, Key, ArrowLeft, RefreshCw } from 'lucide-react';
+import { Phone, ShieldCheck, ChevronRight, CheckCircle2, ShieldAlert, ArrowLeft, RefreshCw } from 'lucide-react';
 import {
-  loginUser,
   sendOtp,
   loginWithOtp,
   getOtpChallengeStatus,
@@ -12,20 +11,13 @@ import {
 } from '../../services/authService';
 import OtpInput from './OtpInput';
 
-const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup }) => {
-  const [loginMode, setLoginMode] = useState('otp'); // 'otp' (primary) | 'password' (fallback)
+const CitizenPortalLogin = ({ onSuccess, onSwitchToSignup }) => {
   const [mobileNumber, setMobileNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [challengeId, setChallengeId] = useState(null);
   const [cooldown, setCooldown] = useState(0);
   const [timer, setTimer] = useState(300);
-
-  // Password mode states
-  const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
 
   // Request status
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -46,7 +38,6 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
         if (status.valid && status.seconds_remaining > 0) {
           setChallengeId(session.challenge_id);
           setOtpSent(true);
-          setLoginMode('otp');
           setTimer(status.seconds_remaining);
           setCooldown(status.cooldown_remaining);
           setInfoMsg(`Verification session restored for +91 ******${(session.phone || '').slice(-4)}`);
@@ -162,55 +153,9 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
     setInfoMsg('');
   };
 
-  const handleSwitchMode = (mode) => {
-    if (mode !== 'otp') {
-      clearOtpSession('login');
-      setOtpSent(false);
-      setOtp('');
-      setChallengeId(null);
-    }
-    setLoginMode(mode);
-    setErrorMsg('');
-    setInfoMsg('');
-  };
-
   const handleSwitchToSignupSafe = () => {
     clearOtpSession('login');
     if (onSwitchToSignup) onSwitchToSignup();
-  };
-
-  const handlePasswordSubmit = async (e) => {
-    e.preventDefault();
-    setErrorMsg('');
-
-    if (!identifier.trim()) {
-      setErrorMsg('Please enter your email or mobile number');
-      return;
-    }
-    if (!password) {
-      setErrorMsg('Please enter your password');
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const res = await loginUser({
-        email: identifier.trim(),
-        password,
-        role: 'citizen',
-        rememberMe
-      });
-      setAuthSuccess(true);
-      setTimeout(() => {
-        if (onSuccess) {
-          onSuccess(res?.user || { email: identifier, role: 'citizen' });
-        }
-      }, 600);
-    } catch (err) {
-      setErrorMsg(err.message || 'Authentication failed. Please verify your credentials.');
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   const formatTimer = (seconds) => {
@@ -262,35 +207,6 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
           />
         </div>
 
-        {/* Auth Mode Toggle Pills */}
-        <div className="flex rounded-xl bg-slate-100 p-1 mb-3 border border-slate-200">
-          <button
-            type="button"
-            onClick={() => handleSwitchMode('otp')}
-            className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              loginMode === 'otp'
-                ? 'bg-white text-[#16a34a] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Phone className="w-3.5 h-3.5" />
-            <span>WhatsApp OTP</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleSwitchMode('password')}
-            className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              loginMode === 'password'
-                ? 'bg-white text-[#16a34a] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Key className="w-3.5 h-3.5" />
-            <span>Password</span>
-          </button>
-        </div>
-
         {/* Feedback Messages */}
         <AnimatePresence>
           {errorMsg && (
@@ -329,9 +245,8 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
           )}
         </AnimatePresence>
 
-        {/* PRIMARY MODE: Mobile OTP Flow */}
-        {loginMode === 'otp' ? (
-          <div>
+        {/* WhatsApp OTP authentication */}
+        <div>
             {!otpSent ? (
               /* Step 1: Enter Mobile Number */
               <div className="space-y-3">
@@ -362,7 +277,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
                     />
                   </div>
                   <p className="text-[10px] text-slate-500 font-medium mt-1">
-                    We will send a 6-digit verification code via SMS.
+                    We will send a 6-digit verification code via WhatsApp.
                   </p>
                 </div>
 
@@ -461,96 +376,7 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
                 </motion.button>
               </form>
             )}
-          </div>
-        ) : (
-          /* FALLBACK MODE: Email / Mobile + Password */
-          <form onSubmit={handlePasswordSubmit} className="space-y-2.5 sm:space-y-3">
-            <div>
-              <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                Email or Mobile Number
-              </label>
-              <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#16a34a] focus-within:ring-2 focus-within:ring-emerald-100 transition-all overflow-hidden">
-                <div className="pl-3.5 text-slate-400">
-                  <Mail className="w-4 h-4" />
-                </div>
-                <input
-                  type="text"
-                  value={identifier}
-                  onChange={(e) => setIdentifier(e.target.value)}
-                  placeholder="Enter email or mobile number"
-                  className="w-full pl-2.5 pr-4 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                Password
-              </label>
-              <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#16a34a] focus-within:ring-2 focus-within:ring-emerald-100 transition-all">
-                <div className="pl-3.5 text-slate-400">
-                  <Lock className="w-4 h-4" />
-                </div>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  className="w-full pl-2.5 pr-10 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 text-slate-400 hover:text-slate-600 cursor-pointer"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-[11px] sm:text-xs pt-0.5">
-              <label className="flex items-center gap-1.5 cursor-pointer font-bold text-slate-600 select-none">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-slate-300 text-[#16a34a] focus:ring-emerald-200 accent-[#16a34a] cursor-pointer"
-                />
-                <span>Remember me</span>
-              </label>
-
-              <button
-                type="button"
-                onClick={onOpenForgotPassword}
-                className="font-bold text-[#16a34a] hover:underline cursor-pointer"
-              >
-                Forgot Password?
-              </button>
-            </div>
-
-            <motion.button
-              whileHover={{ scale: 1.01 }}
-              whileTap={{ scale: 0.98 }}
-              type="submit"
-              disabled={isSubmitting || authSuccess}
-              className="w-full py-2.5 sm:py-3 px-4 rounded-xl bg-[#16a34a] hover:bg-[#15803d] text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 disabled:opacity-80 min-h-[42px]"
-            >
-              {authSuccess ? (
-                <span className="flex items-center gap-1.5 text-white">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                  Signed In!
-                </span>
-              ) : isSubmitting ? (
-                <span>Authenticating...</span>
-              ) : (
-                <>
-                  <span>Sign In with Password</span>
-                  <ChevronRight className="w-4 h-4" />
-                </>
-              )}
-            </motion.button>
-          </form>
-        )}
+        </div>
 
         {/* Dedicated Registration Switch for Citizens */}
         <div className="mt-3.5 pt-2.5 border-t border-slate-200/80 text-center">

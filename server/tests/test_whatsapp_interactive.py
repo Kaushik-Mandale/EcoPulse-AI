@@ -57,6 +57,23 @@ def auth_citizen(db):
         db.rollback()
 
 
+@pytest.fixture
+def sent_messages(monkeypatch):
+    messages = []
+
+    def capture(to_phone, message_text, buttons=None, interactive=None):
+        messages.append({
+            "to_phone": to_phone,
+            "message_text": message_text,
+            "buttons": buttons,
+            "interactive": interactive,
+        })
+        return {"status": "simulated"}
+
+    monkeypatch.setattr(WhatsAppService, "send_meta_whatsapp", staticmethod(capture))
+    return messages
+
+
 def test_build_main_menu_interactive_spec_compliance():
     """Verify that interactive list message complies strictly with Meta Cloud API specifications."""
     for lang in ["en", "mr"]:
@@ -207,6 +224,50 @@ def test_interactive_back_to_menu(db, auth_citizen):
     assert res["status"] == "menu_presented"
 
 
+@pytest.mark.parametrize("greeting", ["HI", "HELLO", "MENU"])
+def test_greeting_sends_chat_menu_and_quick_actions(db, auth_citizen, sent_messages, greeting):
+    """Greetings send the bilingual text menu in chat and a separate compliant shortcut message."""
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body=greeting
+    )
+
+    assert res["status"] == "menu_presented"
+    assert len(sent_messages) == 2
+    text_menu = sent_messages[0]["message_text"]
+    assert sent_messages[0]["interactive"] is None
+    assert "नमस्कार! Hello!" in text_menu
+    assert "Dhule Municipal Services / धुळे महानगरपालिका नागरी सेवा" in text_menu
+    assert "Reply with a number (1-9) or keyword" in text_menu
+    for label in (
+        "Report Waste", "General Complaint", "Garbage Vehicle Tracking",
+        "Collection Schedule", "EcoWallet & Rewards", "My Complaints",
+        "Leaderboard", "Municipal Notices", "Help / Change Language",
+    ):
+        assert label in text_menu
+
+    shortcut_message = sent_messages[1]
+    interactive = shortcut_message["interactive"]
+    assert interactive["type"] == "button"
+    assert len(interactive["action"]["buttons"]) == 3
+    assert [button["reply"]["id"] for button in interactive["action"]["buttons"]] == [
+        "MENU_REPORT_WASTE",
+        "MENU_GENERAL_COMPLAINT",
+        "MENU_FULL_MENU",
+    ]
+
+
+def test_full_menu_button_opens_existing_interactive_list(db, auth_citizen, sent_messages):
+    result = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="MENU_FULL_MENU"
+    )
+
+    assert result["status"] == "full_menu_presented"
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "list"
+    assert len(interactive["action"]["sections"][0]["rows"]) == 9
+
+
 def test_invalid_selection_handled(db, auth_citizen):
     """Test that invalid selections provide helpful feedback and present the menu."""
     res = WhatsAppService.handle_incoming_message(
@@ -216,21 +277,60 @@ def test_invalid_selection_handled(db, auth_citizen):
     assert "Unrecognized option" in res["reply"] or "पर्याय उपलब्ध नाही" in res["reply"]
 
 
-def test_numeric_compatibility_preserved(db, auth_citizen):
-    """Test that numeric 1 to 9 inputs remain 100% functional."""
-    # Option 1
-    res1 = WhatsAppService.handle_incoming_message(
-        db, auth_citizen.phone_number, "text", text_body="1"
-    )
-    assert res1["status"] == "awaiting_photo"
-    auth_citizen.conversation_state = "IDLE"
-    db.commit()
+def test_numeric_compatibility_preserved(db, auth_citizen, sent_messages):
+    """All numeric choices continue dispatching to their existing handlers."""
+    expected_statuses = [
+        "awaiting_photo",
+        "awaiting_general_complaint",
+        "truck_unavailable",
+        "schedule_unavailable",
+        "wallet_info",
+        "track_complaints",
+        "leaderboard_unavailable",
+        "notices_unavailable",
+        "help",
+    ]
 
-    # Option 5
-    res5 = WhatsAppService.handle_incoming_message(
-        db, auth_citizen.phone_number, "text", text_body="5"
+    for number, expected_status in enumerate(expected_statuses, start=1):
+        result = WhatsAppService.handle_incoming_message(
+            db, auth_citizen.phone_number, "text", text_body=str(number)
+        )
+        assert result["status"] == expected_status
+        auth_citizen.conversation_state = "IDLE"
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    ("keyword", "expected_status"),
+    [
+        ("report", "awaiting_photo"),
+        ("तक्रार नोंद", "awaiting_photo"),
+        ("general", "awaiting_general_complaint"),
+        ("सामान्य", "awaiting_general_complaint"),
+        ("vehicle", "truck_unavailable"),
+        ("घंटागाडी", "truck_unavailable"),
+        ("schedule", "schedule_unavailable"),
+        ("वेळापत्रक", "schedule_unavailable"),
+        ("wallet", "wallet_info"),
+        ("वॉलेट", "wallet_info"),
+        ("my complaints", "track_complaints"),
+        ("माझ्या तक्रारी", "track_complaints"),
+        ("leaderboard", "leaderboard_unavailable"),
+        ("लीडरबोर्ड", "leaderboard_unavailable"),
+        ("notices", "notices_unavailable"),
+        ("सूचना", "notices_unavailable"),
+        ("help", "help"),
+        ("मदत", "help"),
+    ],
+)
+def test_english_and_marathi_keywords_route_existing_handlers(
+    db, auth_citizen, sent_messages, keyword, expected_status
+):
+    result = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body=keyword
     )
-    assert res5["status"] == "wallet_info"
+
+    assert result["status"] == expected_status
 
 
 def test_webhook_interactive_list_and_button_parsing(auth_citizen, monkeypatch):
@@ -361,4 +461,3 @@ def test_complaint_creation_regression(db, auth_citizen):
     assert loc_res["status"] == "complaint_created"
     assert loc_res["ticket"].startswith("DHL-2026-")
     assert "Ticket ID" in loc_res["reply"] or "तक्रार क्र" in loc_res["reply"]
-

@@ -177,16 +177,16 @@ def _build_texts() -> dict:
                 "कृपया खालीलपैकी पर्याय निवडा:"
             ),
             "menu_options": (
-                "1️⃣ *कचरा तक्रार नोंदवा* — Report Waste\n"
-                "2️⃣ *सामान्य तक्रार* — General Complaint\n"
-                "3️⃣ *घंटागाडी ट्रॅकिंग* — Garbage Vehicle Tracking\n"
-                "4️⃣ *संकलन वेळापत्रक* — Collection Schedule\n"
-                "5️⃣ *ईको-वॉलेट आणि रिवॉर्ड्स* — Eco-Wallet & Rewards\n"
-                "6️⃣ *माझ्या तक्रारी* — My Complaints\n"
-                "7️⃣ *लीडरबोर्ड* — Leaderboard\n"
-                "8️⃣ *महानगरपालिका सूचना* — Municipal Notices\n"
-                "9️⃣ *मदत / भाषा बदला* — Help / Change Language\n\n"
-                "👉 *पर्याय क्रमांक (1-9) पाठवा किंवा थेट फोटो पाठवा.*"
+                "1️⃣ 🗑️ *कचरा तक्रार नोंदवा / Report Waste*\n"
+                "2️⃣ ⚠️ *सामान्य तक्रार / General Complaint*\n"
+                "3️⃣ 🚛 *घंटागाडी ट्रॅकिंग / Garbage Vehicle Tracking*\n"
+                "4️⃣ 📅 *संकलन वेळापत्रक / Collection Schedule*\n"
+                "5️⃣ 🪙 *ईको-वॉलेट आणि रिवॉर्ड्स / EcoWallet & Rewards*\n"
+                "6️⃣ 📋 *माझ्या तक्रारी / My Complaints*\n"
+                "7️⃣ 🏆 *लीडरबोर्ड / Leaderboard*\n"
+                "8️⃣ 🏛️ *महानगरपालिका सूचना / Municipal Notices*\n"
+                "9️⃣ ❓ *मदत / भाषा बदला — Help / Change Language*\n\n"
+                "👉 *क्रमांक (1-9) किंवा keyword पाठवा / Reply with a number (1-9) or keyword.*"
             ),
             "ask_photo": (
                 "📸 *कचरा तक्रार नोंदणी*\n\n"
@@ -301,16 +301,16 @@ def _build_texts() -> dict:
                 "Please choose an option below:"
             ),
             "menu_options": (
-                "1️⃣ *Report Waste* — कचरा तक्रार नोंदवा\n"
-                "2️⃣ *General Complaint* — सामान्य तक्रार\n"
-                "3️⃣ *Garbage Vehicle Tracking* — घंटागाडी ट्रॅकिंग\n"
-                "4️⃣ *Collection Schedule* — संकलन वेळापत्रक\n"
-                "5️⃣ *Eco-Wallet & Rewards* — ईको-वॉलेट आणि रिवॉर्ड्स\n"
-                "6️⃣ *My Complaints* — माझ्या तक्रारी\n"
-                "7️⃣ *Leaderboard* — लीडरबोर्ड\n"
-                "8️⃣ *Municipal Notices* — महानगरपालिका सूचना\n"
-                "9️⃣ *Help / Change Language* — मदत / भाषा बदला\n\n"
-                "👉 *Reply with number (1-9) or send a photo directly.*"
+                "1️⃣ 🗑️ *कचरा तक्रार नोंदवा / Report Waste*\n"
+                "2️⃣ ⚠️ *सामान्य तक्रार / General Complaint*\n"
+                "3️⃣ 🚛 *घंटागाडी ट्रॅकिंग / Garbage Vehicle Tracking*\n"
+                "4️⃣ 📅 *संकलन वेळापत्रक / Collection Schedule*\n"
+                "5️⃣ 🪙 *ईको-वॉलेट आणि रिवॉर्ड्स / EcoWallet & Rewards*\n"
+                "6️⃣ 📋 *माझ्या तक्रारी / My Complaints*\n"
+                "7️⃣ 🏆 *लीडरबोर्ड / Leaderboard*\n"
+                "8️⃣ 🏛️ *महानगरपालिका सूचना / Municipal Notices*\n"
+                "9️⃣ ❓ *मदत / भाषा बदला — Help / Change Language*\n\n"
+                "👉 *क्रमांक (1-9) किंवा keyword पाठवा / Reply with a number (1-9) or keyword.*"
             ),
             "ask_photo": (
                 "📸 *Report Waste Incident*\n\n"
@@ -1002,6 +1002,10 @@ class WhatsAppService:
 
         # Greeting or Main Menu request for linked citizens
         lowered = clean_text.lower()
+        is_full_menu_cmd = (
+            clean_text in {"MENU_FULL_MENU", "FULL_MENU"}
+            or lowered == "full menu"
+        )
         is_menu_cmd = (
             lowered in {"hey", "hello", "hi", "namaskar", "namaste", "नमस्कार", "start", "menu"}
             or clean_text in {"MENU_MAIN", "MAIN_MENU", "MENU_BACK", "BACK_TO_MENU"}
@@ -1024,14 +1028,45 @@ class WhatsAppService:
             if extra_note:
                 welcome = extra_note + "\n\n" + welcome
 
-            full_text_menu = welcome + "\n\n" + strings["menu_options"]
-            interactive_menu = WhatsAppService.build_main_menu_interactive(lang=lang, greeting_text=welcome)
+            full_text_menu = (
+                "🏛️ *EcoPulse AI — Dhule Municipal Services / धुळे महानगरपालिका नागरी सेवा*\n\n"
+                "नमस्कार! Hello! 👋\n\n"
+                f"{welcome}\n\n{strings['menu_options']}"
+            )
             WhatsAppService.send_meta_whatsapp(
                 citizen.phone_number,
-                message_text=full_text_menu,
-                interactive=interactive_menu
+                message_text=full_text_menu
+            )
+            quick_actions = WhatsAppService.build_quick_buttons_interactive(
+                body_text="⚡ Quick actions / झटपट सेवा",
+                buttons=[
+                    ("MENU_REPORT_WASTE", "कचरा / Waste" if lang == "mr" else "Waste / कचरा"),
+                    ("MENU_GENERAL_COMPLAINT", "तक्रार / Complaint" if lang == "mr" else "Complaint / तक्रार"),
+                    ("MENU_FULL_MENU", "पूर्ण मेनू" if lang == "mr" else "Full Menu")
+                ]
+            )
+            WhatsAppService.send_meta_whatsapp(
+                citizen.phone_number,
+                message_text="⚡ Quick actions / झटपट सेवा",
+                interactive=quick_actions
             )
             return {"status": "menu_presented", "reply": full_text_menu}
+
+        if is_full_menu_cmd:
+            interactive_menu = WhatsAppService.build_main_menu_interactive(
+                lang=lang,
+                greeting_text=(
+                    "सेवा निवडा / Select a service"
+                    if lang == "mr"
+                    else "Select a service / सेवा निवडा"
+                )
+            )
+            WhatsAppService.send_meta_whatsapp(
+                citizen.phone_number,
+                message_text=strings["menu_options"],
+                interactive=interactive_menu
+            )
+            return {"status": "full_menu_presented", "reply": strings["menu_options"]}
 
         if is_menu_cmd:
             return _present_main_menu()
@@ -1389,7 +1424,7 @@ class WhatsAppService:
             return {"status": "general_complaint_created", "ticket": ticket_num, "reply": reply}
 
         # Option 3: Garbage Truck Tracking (stub — no live GPS available)
-        if clean_text in {"MENU_VEHICLE_TRACKING", "3"} or "truck" in lowered or "घंटागाडी" in lowered or "गाडी" in lowered:
+        if clean_text in {"MENU_VEHICLE_TRACKING", "3"} or "truck" in lowered or "vehicle" in lowered or "घंटागाडी" in lowered or "गाडी" in lowered:
             reply = strings["truck_unavailable"]
             btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
             interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
@@ -1416,7 +1451,7 @@ class WhatsAppService:
             return {"status": "wallet_info", "reply": reply}
 
         # Option 6: My Complaints
-        if clean_text in {"MENU_MY_COMPLAINTS", "6"} or "track" in lowered or "स्थिती" in lowered or "my complaint" in lowered:
+        if clean_text in {"MENU_MY_COMPLAINTS", "6"} or "track" in lowered or "स्थिती" in lowered or "my complaint" in lowered or "माझ्या तक्रारी" in clean_text:
             identity_filters = [Complaint.whatsapp_citizen_id == citizen.id]
             if citizen.user_id:
                 identity_filters.append(Complaint.citizen_id == citizen.user_id)
