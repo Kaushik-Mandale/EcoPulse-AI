@@ -84,10 +84,10 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
                 <path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
               </svg>
             </div>
-            <span className="text-lg sm:text-xl font-black text-[#16a34a] tracking-tight">EcoPulse Ai</span>
+            <span className="text-lg sm:text-xl font-black text-[#16a34a] tracking-tight">EcoPulse AI</span>
           </div>
           <div className="text-[11px] sm:text-xs font-bold text-slate-700 tracking-wide">
-            City Swap | <span className="text-[#16a34a]">जनसेवक</span>
+            EcoPulse AI | <span className="text-[#16a34a]">चालक</span>
           </div>
           <div className="text-[10px] font-bold text-[#16a34a] mt-0.5">
             🌱 एकत्र येऊ, स्वच्छ शहर घडवू. 🌱
@@ -166,7 +166,7 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
                     type="text"
                     value={identifier}
                     onChange={(e) => setIdentifier(e.target.value)}
-                    placeholder="EMP-DRIVER-01 or ramesh@cityswap.io"
+                    placeholder="EMP-DRIVER-01 or ramesh@ecopulse.ai"
                     className="w-full pl-2.5 pr-4 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
                   />
                 </div>
@@ -308,7 +308,7 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
         <div className="mt-3 sm:mt-3.5">
           <button
             type="button"
-            onClick={() => alert('Driver Helpline: 1800-CITY-SWAP-DRIVER')}
+            onClick={() => alert('Driver Helpline: 1800-ECOPULSE-DRIVER')}
             className="w-full p-2.5 sm:p-3 rounded-2xl bg-[#eff6ff] border border-blue-200/80 hover:bg-blue-100/60 flex items-center justify-between transition-all group cursor-pointer"
           >
             <div className="flex items-center gap-2.5 sm:gap-3">
@@ -328,7 +328,7 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
       {/* Decorative Bottom Line */}
       <div className="mt-4 pt-2 border-t border-blue-100 flex items-center justify-between text-[10px] text-blue-800/70 font-bold">
         <span>🚛 Route Logistics</span>
-        <span>City Swap 2026</span>
+        <span>EcoPulse AI 2026</span>
       </div>
     </div>
   );

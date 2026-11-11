@@ -100,7 +100,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
                     <input
                       {...register('email')}
                       type="email"
-                      placeholder="alex@cityswap.io"
+                      placeholder="alex@ecopulse.ai"
                       className={`w-full pl-10 pr-4 py-3 rounded-xl border text-sm font-medium transition-all outline-none bg-white/90 ${
                         errors.email
                           ? 'border-red-400 focus:ring-4 focus:ring-red-100'

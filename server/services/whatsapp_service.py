@@ -524,15 +524,211 @@ class WhatsAppService:
         return selected_driver
 
     @staticmethod
-    def send_meta_whatsapp(to_phone: str, message_text: str, buttons: list = None) -> dict:
-        """Send message via official Meta WhatsApp Business Cloud API."""
+    def build_main_menu_interactive(lang: str = "mr", greeting_text: str = "") -> dict:
+        """Construct a Meta WhatsApp Cloud API interactive list message payload for the 9-option main menu."""
+        is_mr = (lang or "mr").lower() == "mr"
+        header_text = "🏛️ EcoPulse AI"
+        footer_text = "धुळे महानगरपालिका" if is_mr else "Dhule Municipal Corporation"
+        button_label = "मेनू उघडा" if is_mr else "Main Menu"
+        section_title = "नागरी सेवा" if is_mr else "Civic Services"
+
+        menu_rows = [
+            {
+                "id": "MENU_REPORT_WASTE",
+                "title": "कचरा तक्रार" if is_mr else "Report Waste",
+                "description": "फोटो व स्थान पाठवून तक्रार करा" if is_mr else "Submit photo & location report"
+            },
+            {
+                "id": "MENU_GENERAL_COMPLAINT",
+                "title": "सामान्य तक्रार" if is_mr else "General Complaint",
+                "description": "रस्ते, पाणी, दिवे इ. समस्या" if is_mr else "Roads, water, streetlights"
+            },
+            {
+                "id": "MENU_VEHICLE_TRACKING",
+                "title": "घंटागाडी ट्रॅकिंग" if is_mr else "Vehicle Tracking",
+                "description": "कचरा संकलन गाडीची स्थिती" if is_mr else "Garbage collection truck status"
+            },
+            {
+                "id": "MENU_COLLECTION_SCHEDULE",
+                "title": "संकलन वेळापत्रक" if is_mr else "Collection Schedule",
+                "description": "आपल्या प्रभागाचे संकलन वेळ" if is_mr else "Daily waste pickup timings"
+            },
+            {
+                "id": "MENU_ECO_WALLET",
+                "title": "ईको-वॉलेट" if is_mr else "Eco-Wallet & Rewards",
+                "description": "गुण शिल्लक व कर सवलत माहिती" if is_mr else "EcoCoins balance & tax rebates"
+            },
+            {
+                "id": "MENU_MY_COMPLAINTS",
+                "title": "माझ्या तक्रारी" if is_mr else "My Complaints",
+                "description": "नोंदवलेल्या तक्रारींची स्थिती" if is_mr else "Track status of recent reports"
+            },
+            {
+                "id": "MENU_LEADERBOARD",
+                "title": "लीडरबोर्ड" if is_mr else "Leaderboard",
+                "description": "स्वच्छता क्रमवारी व सन्मान" if is_mr else "Civic green rankings"
+            },
+            {
+                "id": "MENU_NOTICES",
+                "title": "महापालिका सूचना" if is_mr else "Municipal Notices",
+                "description": "धुळे महापालिका अधिकृत सूचना" if is_mr else "Official municipal notices"
+            },
+            {
+                "id": "MENU_HELP_LANG",
+                "title": "मदत / भाषा बदला" if is_mr else "Help / Language",
+                "description": "मदत व मराठी/English भाषा निवड" if is_mr else "Assistance & language change"
+            }
+        ]
+
+        body = (greeting_text or "").strip()
+        if not body:
+            body = (
+                "🏛️ *इकोपल्स AI — धुळे महानगरपालिका*\nकृपया खालील मेनूमधून सेवा निवडा:"
+                if is_mr
+                else "🏛️ *EcoPulse AI — Dhule Municipal Services*\nPlease select a service from the menu:"
+            )
+
+        return {
+            "type": "list",
+            "header": {
+                "type": "text",
+                "text": header_text[:60]
+            },
+            "body": {
+                "text": body[:1024]
+            },
+            "footer": {
+                "text": footer_text[:60]
+            },
+            "action": {
+                "button": button_label[:20],
+                "sections": [
+                    {
+                        "title": section_title[:24],
+                        "rows": [
+                            {
+                                "id": r["id"][:200],
+                                "title": r["title"][:24],
+                                "description": r["description"][:72]
+                            }
+                            for r in menu_rows
+                        ]
+                    }
+                ]
+            }
+        }
+
+    @staticmethod
+    def build_quick_buttons_interactive(
+        body_text: str,
+        buttons: list,
+        header_text: Optional[str] = None,
+        footer_text: Optional[str] = None
+    ) -> dict:
+        """Construct a Meta WhatsApp Cloud API reply button interactive payload (up to 3 buttons)."""
+        clean_buttons = []
+        for btn in buttons[:3]:
+            if isinstance(btn, (list, tuple)) and len(btn) >= 2:
+                btn_id, btn_title = str(btn[0]), str(btn[1])
+            elif isinstance(btn, dict):
+                btn_id = str(btn.get("id", ""))
+                btn_title = str(btn.get("title", ""))
+            else:
+                continue
+            clean_buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": btn_id[:256],
+                    "title": btn_title[:20]
+                }
+            })
+
+        interactive = {
+            "type": "button",
+            "body": {"text": (body_text or "")[:1024]},
+            "action": {"buttons": clean_buttons}
+        }
+        if header_text:
+            interactive["header"] = {"type": "text", "text": header_text[:60]}
+        if footer_text:
+            interactive["footer"] = {"text": footer_text[:60]}
+        return interactive
+
+    @staticmethod
+    def send_meta_interactive_list(
+        to_phone: str,
+        body_text: str,
+        button_label: str,
+        sections: list,
+        header_text: Optional[str] = None,
+        footer_text: Optional[str] = None,
+        fallback_text: Optional[str] = None
+    ) -> dict:
+        """Send a native Meta interactive list message with plain text fallback."""
+        interactive = {
+            "type": "list",
+            "body": {"text": (body_text or "")[:1024]},
+            "action": {
+                "button": (button_label or "Menu")[:20],
+                "sections": sections
+            }
+        }
+        if header_text:
+            interactive["header"] = {"type": "text", "text": header_text[:60]}
+        if footer_text:
+            interactive["footer"] = {"text": footer_text[:60]}
+
+        return WhatsAppService.send_meta_whatsapp(
+            to_phone=to_phone,
+            message_text=fallback_text or body_text,
+            interactive=interactive
+        )
+
+    @staticmethod
+    def send_meta_interactive_buttons(
+        to_phone: str,
+        body_text: str,
+        buttons: list,
+        header_text: Optional[str] = None,
+        footer_text: Optional[str] = None,
+        fallback_text: Optional[str] = None
+    ) -> dict:
+        """Send a native Meta interactive reply button message with plain text fallback."""
+        interactive = WhatsAppService.build_quick_buttons_interactive(
+            body_text=body_text,
+            buttons=buttons,
+            header_text=header_text,
+            footer_text=footer_text
+        )
+        return WhatsAppService.send_meta_whatsapp(
+            to_phone=to_phone,
+            message_text=fallback_text or body_text,
+            interactive=interactive
+        )
+
+    @staticmethod
+    def send_meta_whatsapp(
+        to_phone: str,
+        message_text: str,
+        buttons: list = None,
+        interactive: Optional[dict] = None
+    ) -> dict:
+        """Send message via official Meta WhatsApp Business Cloud API.
+        
+        Supports both traditional text messages and native interactive messages (lists and buttons).
+        If interactive message delivery fails or is rejected, gracefully falls back to plain text.
+        """
         token = config.WHATSAPP_TOKEN
         phone_id = config.WHATSAPP_PHONE_NUMBER_ID
         api_version = config.WHATSAPP_GRAPH_API_VERSION or "v20.0"
 
         if not token or not phone_id:
             logger.info("[MOCK META WHATSAPP] Outbound message simulated; provider credentials are not configured.")
-            return {"status": "simulated"}
+            return {
+                "status": "simulated",
+                "type": "interactive" if interactive else "text",
+                "interactive": interactive
+            }
 
         url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
         headers = {
@@ -540,17 +736,40 @@ class WhatsAppService:
             "Content-Type": "application/json"
         }
 
-        payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": to_phone,
-            "type": "text",
-            "text": {"body": message_text}
-        }
+        if interactive:
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_phone,
+                "type": "interactive",
+                "interactive": interactive
+            }
+        else:
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_phone,
+                "type": "text",
+                "text": {"body": message_text}
+            }
 
         try:
             with httpx.Client(timeout=10.0) as client:
                 res = client.post(url, headers=headers, json=payload)
+                # If interactive delivery returns 400 client error, fallback to text
+                if res.status_code == 400 and interactive and message_text:
+                    logger.warning("[META WHATSAPP] Interactive message rejected (HTTP 400); falling back to plain text.")
+                    fallback_payload = {
+                        "messaging_product": "whatsapp",
+                        "recipient_type": "individual",
+                        "to": to_phone,
+                        "type": "text",
+                        "text": {"body": message_text}
+                    }
+                    fallback_res = client.post(url, headers=headers, json=fallback_payload)
+                    fallback_res.raise_for_status()
+                    return fallback_res.json()
+
                 res.raise_for_status()
                 return res.json()
         except httpx.HTTPStatusError as exc:
@@ -781,24 +1000,41 @@ class WhatsAppService:
             WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
             return {"status": "not_linked", "reply": reply}
 
-        # Greeting handler for linked citizens
+        # Greeting or Main Menu request for linked citizens
         lowered = clean_text.lower()
-        if lowered in {"hey", "hello", "hi", "namaskar", "namaste", "नमस्कार", "start", "menu"}:
-            citizen_name = "Citizen"
-            if citizen.user_id:
-                user_obj = db.query(User).filter(User.id == citizen.user_id).first()
-                if user_obj and user_obj.full_name:
-                    citizen_name = user_obj.full_name
-            elif citizen.full_name and citizen.full_name != "Shirpur Resident":
-                citizen_name = citizen.full_name
+        is_menu_cmd = (
+            lowered in {"hey", "hello", "hi", "namaskar", "namaste", "नमस्कार", "start", "menu"}
+            or clean_text in {"MENU_MAIN", "MAIN_MENU", "MENU_BACK", "BACK_TO_MENU"}
+        )
 
-            reply = strings["authorized_welcome"].format(
-                name=citizen_name,
+        def _present_main_menu(extra_note: str = ""):
+            c_name = "Citizen"
+            if citizen.user_id:
+                u_obj = db.query(User).filter(User.id == citizen.user_id).first()
+                if u_obj and u_obj.full_name:
+                    c_name = u_obj.full_name
+            elif citizen.full_name and citizen.full_name != "Shirpur Resident":
+                c_name = citizen.full_name
+
+            welcome = strings["authorized_welcome"].format(
+                name=c_name,
                 coins=citizen.eco_coins,
                 rupees=citizen.eco_coins // 2
-            ) + "\n\n" + strings["menu_options"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "menu_presented", "reply": reply}
+            )
+            if extra_note:
+                welcome = extra_note + "\n\n" + welcome
+
+            full_text_menu = welcome + "\n\n" + strings["menu_options"]
+            interactive_menu = WhatsAppService.build_main_menu_interactive(lang=lang, greeting_text=welcome)
+            WhatsAppService.send_meta_whatsapp(
+                citizen.phone_number,
+                message_text=full_text_menu,
+                interactive=interactive_menu
+            )
+            return {"status": "menu_presented", "reply": full_text_menu}
+
+        if is_menu_cmd:
+            return _present_main_menu()
 
         if citizen.conversation_state == "AWAITING_LOCATION" and message_type == "text":
             reply = strings["ask_location"]
@@ -1048,16 +1284,21 @@ class WhatsAppService:
                 driver=driver_display,
                 coins=citizen.eco_coins
             )
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            report_buttons = [
+                ("MENU_MY_COMPLAINTS", "माझ्या तक्रारी" if lang == "mr" else "My Complaints"),
+                ("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")
+            ]
+            report_interactive = WhatsAppService.build_quick_buttons_interactive(reply, report_buttons)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=report_interactive)
             return {"status": "complaint_created", "ticket": ticket_num, "reply": reply}
 
         # ----------------------------------------------------------------
-        # STEP 4: Dashboard Menu Selection Routing (9 options)
+        # STEP 4: Dashboard Menu Selection Routing (9 options & Interactive Actions)
         # ----------------------------------------------------------------
         lowered = clean_text.lower()
 
         # Option 1: Report Waste
-        if clean_text == "1" or "report" in lowered or "तक्रार नोंद" in lowered:
+        if clean_text in {"MENU_REPORT_WASTE", "1"} or "report" in lowered or "तक्रार नोंद" in lowered:
             citizen.conversation_state = "AWAITING_PHOTO"
             db.commit()
             reply = strings["ask_photo"]
@@ -1065,7 +1306,7 @@ class WhatsAppService:
             return {"status": "awaiting_photo", "reply": reply}
 
         # Option 2: General Complaint
-        if clean_text == "2" or "general" in lowered or "सामान्य" in lowered:
+        if clean_text in {"MENU_GENERAL_COMPLAINT", "2"} or "general" in lowered or "सामान्य" in lowered:
             citizen.conversation_state = "AWAITING_GENERAL_COMPLAINT"
             db.commit()
             reply = strings["general_complaint_prompt"]
@@ -1139,33 +1380,43 @@ class WhatsAppService:
                 description=clean_text[:100] + ("..." if len(clean_text) > 100 else ""),
                 driver=driver_display
             )
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            gen_buttons = [
+                ("MENU_MY_COMPLAINTS", "माझ्या तक्रारी" if lang == "mr" else "My Complaints"),
+                ("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")
+            ]
+            gen_interactive = WhatsAppService.build_quick_buttons_interactive(reply, gen_buttons)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=gen_interactive)
             return {"status": "general_complaint_created", "ticket": ticket_num, "reply": reply}
 
         # Option 3: Garbage Truck Tracking (stub — no live GPS available)
-        if clean_text == "3" or "truck" in lowered or "घंटागाडी" in lowered or "गाडी" in lowered:
+        if clean_text in {"MENU_VEHICLE_TRACKING", "3"} or "truck" in lowered or "घंटागाडी" in lowered or "गाडी" in lowered:
             reply = strings["truck_unavailable"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "truck_unavailable", "reply": reply}
 
         # Option 4: Collection Schedule (stub — not yet available)
-        if clean_text == "4" or "schedule" in lowered or "वेळापत्रक" in lowered:
+        if clean_text in {"MENU_COLLECTION_SCHEDULE", "4"} or "schedule" in lowered or "वेळापत्रक" in lowered:
             reply = strings["schedule_unavailable"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "schedule_unavailable", "reply": reply}
 
         # Option 5: Eco Wallet
-        if clean_text == "5" or "wallet" in lowered or "coin" in lowered or "वॉलेट" in lowered:
+        if clean_text in {"MENU_ECO_WALLET", "5"} or "wallet" in lowered or "coin" in lowered or "वॉलेट" in lowered:
             reply = strings["wallet_info"].format(
                 coins=citizen.eco_coins,
                 rupees=citizen.eco_coins // 2
             )
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "wallet_info", "reply": reply}
 
         # Option 6: My Complaints
-        if clean_text == "6" or "track" in lowered or "स्थिती" in lowered or "my complaint" in lowered:
-            # Query by whatsapp_citizen_id OR citizen_id (user_id from link)
+        if clean_text in {"MENU_MY_COMPLAINTS", "6"} or "track" in lowered or "स्थिती" in lowered or "my complaint" in lowered:
             identity_filters = [Complaint.whatsapp_citizen_id == citizen.id]
             if citizen.user_id:
                 identity_filters.append(Complaint.citizen_id == citizen.user_id)
@@ -1184,55 +1435,75 @@ class WhatsAppService:
                         f"चालक: {c.assigned_driver_name or ('नियुक्त केला जात आहे' if lang == 'mr' else 'Pending')}\n"
                     )
                 reply = "\n".join(lines)
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            complaint_buttons = [
+                ("MENU_REPORT_WASTE", "कचरा तक्रार" if lang == "mr" else "Report Waste"),
+                ("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")
+            ]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, complaint_buttons)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "track_complaints", "reply": reply}
 
         # Option 7: Leaderboard (stub)
-        if clean_text == "7" or "leaderboard" in lowered or "लीडर" in lowered:
+        if clean_text in {"MENU_LEADERBOARD", "7"} or "leaderboard" in lowered or "लीडर" in lowered:
             reply = strings["leaderboard_unavailable"].format(coins=citizen.eco_coins)
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "leaderboard_unavailable", "reply": reply}
 
         # Option 8: Municipal Notices (stub)
-        if clean_text == "8" or "notice" in lowered or "सूचना" in lowered:
+        if clean_text in {"MENU_NOTICES", "8"} or "notice" in lowered or "सूचना" in lowered:
             reply = strings["notices_unavailable"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "notices_unavailable", "reply": reply}
 
-        # Option 9: Help / Switch Language
-        if (clean_text == "9" or "help" in lowered or "भाषा" in lowered
-                or "english" in lowered or "marathi" in lowered or "मराठी" in lowered):
-            # Switch language if requested
-            if "english" in lowered:
-                new_lang = "en"
-                citizen.preferred_language = new_lang
-                db.commit()
-                new_strings = TEXTS[new_lang]
-                reply = new_strings["lang_switched"] + "\n\n" + new_strings["menu_options"]
-            elif "marathi" in lowered or "मराठी" in lowered:
-                new_lang = "mr"
-                citizen.preferred_language = new_lang
-                db.commit()
-                new_strings = TEXTS[new_lang]
-                reply = new_strings["lang_switched"] + "\n\n" + new_strings["menu_options"]
-            else:
-                reply = strings["help_text"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+        # Direct Language Switch Buttons or Words
+        if clean_text == "LANG_EN" or (clean_text != "9" and lowered == "english"):
+            new_lang = "en"
+            citizen.preferred_language = new_lang
+            db.commit()
+            new_strings = all_texts[new_lang]
+            reply = new_strings["lang_switched"]
+            lang_buttons = [
+                ("MENU_MAIN", "Main Menu"),
+                ("MENU_REPORT_WASTE", "Report Waste")
+            ]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, lang_buttons)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
             return {"status": "help", "reply": reply}
 
-        # Default Fallback: Present Dashboard Menu
-        citizen_name = "Citizen"
-        if citizen.user_id:
-            user_obj = db.query(User).filter(User.id == citizen.user_id).first()
-            if user_obj and user_obj.full_name:
-                citizen_name = user_obj.full_name
-        elif citizen.full_name and citizen.full_name != "Shirpur Resident":
-            citizen_name = citizen.full_name
+        if clean_text == "LANG_MR" or (clean_text != "9" and lowered in {"marathi", "मराठी"}):
+            new_lang = "mr"
+            citizen.preferred_language = new_lang
+            db.commit()
+            new_strings = all_texts[new_lang]
+            reply = new_strings["lang_switched"]
+            lang_buttons = [
+                ("MENU_MAIN", "मुख्य मेनू"),
+                ("MENU_REPORT_WASTE", "कचरा तक्रार")
+            ]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, lang_buttons)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+            return {"status": "help", "reply": reply}
 
-        reply = strings["authorized_welcome"].format(
-            name=citizen_name,
-            coins=citizen.eco_coins,
-            rupees=citizen.eco_coins // 2
-        ) + "\n\n" + strings["menu_options"]
-        WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-        return {"status": "menu_presented", "reply": reply}
+        # Option 9: Help / Switch Language
+        if clean_text in {"MENU_HELP_LANG", "9"} or "help" in lowered or "मदत" in lowered or "भाषा" in lowered:
+            reply = strings["help_text"]
+            help_buttons = [
+                ("LANG_EN", "English"),
+                ("LANG_MR", "मराठी"),
+                ("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")
+            ]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, help_buttons)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+            return {"status": "help", "reply": reply}
+
+        # Invalid Selection Fallback: Inform user and present the interactive main menu
+        if lang == "mr":
+            invalid_note = f"⚠️ '{clean_text}' हा पर्याय उपलब्ध नाही. कृपया खालील मेनूमधून सेवा निवडा:"
+        else:
+            invalid_note = f"⚠️ Unrecognized option '{clean_text}'. Please choose a service from the menu below:"
+
+        return _present_main_menu(extra_note=invalid_note)

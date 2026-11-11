@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=config.PROJECT_NAME,
     version=config.VERSION,
-    description="Backend API for EcoPulse AI / CITY_SWAP - Full Stack Platform",
+    description="Backend API for EcoPulse AI - Smart Civic & Sustainability Ecosystem",
     lifespan=lifespan
 )
 

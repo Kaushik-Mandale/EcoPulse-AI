@@ -67,7 +67,7 @@ const LoginForm = ({ onSwitchToSignup, onOpenForgotPassword, onRoleChange, onSuc
     <div className="w-full text-slate-800">
       
       {/* ----------------------------------------------------------------- */}
-      {/* BRAND HEADER (ECOPULSE AI | CITY SWAP | जनसेवक)                   */}
+      {/* BRAND HEADER (ECOPULSE AI | जनसेवक)                             */}
       {/* ----------------------------------------------------------------- */}
       <div className="text-center mb-3">
         <div className="flex items-center justify-center gap-2 mb-1">
@@ -79,7 +79,7 @@ const LoginForm = ({ onSwitchToSignup, onOpenForgotPassword, onRoleChange, onSuc
           <span className="text-xl sm:text-2xl font-black text-[#005C2B] tracking-tight">EcoPulse AI</span>
         </div>
         <div className="text-xs font-extrabold text-slate-700 tracking-wide">
-          City Swap | <span className="text-[#005C2B]">जनसेवक</span>
+          EcoPulse AI | <span className="text-[#005C2B]">जनसेवक</span>
         </div>
         <div className="text-[10px] font-bold text-[#005C2B] mt-0.5">
           🌱 एकत्र येऊ, स्वच्छ शहर घडवू. 🌱
@@ -324,7 +324,7 @@ const LoginForm = ({ onSwitchToSignup, onOpenForgotPassword, onRoleChange, onSuc
       <div className="mt-3.5">
         <button
           type="button"
-          onClick={() => alert('Support helpline: 1800-CITY-SWAP (24x7)')}
+          onClick={() => alert('Support helpline: 1800-ECOPULSE (24x7)')}
           className="w-full p-3 rounded-2xl bg-orange-50/70 border border-orange-100 hover:bg-orange-100/60 flex items-center justify-between transition-all cursor-pointer group"
         >
           <div className="flex items-center gap-3">

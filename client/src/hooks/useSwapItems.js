@@ -30,7 +30,7 @@ export const useSwapItems = () => {
       if (healthData.status === 'fulfilled') {
         setHealth(healthData.value);
       } else {
-        setHealth({ status: 'offline', service: 'CITY_SWAP Backend (Connecting...)' });
+        setHealth({ status: 'offline', service: 'EcoPulse AI Backend (Connecting...)' });
       }
     } catch (err) {
       console.warn("Failed to fetch from backend, using local state:", err);

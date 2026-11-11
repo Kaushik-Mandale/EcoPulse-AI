@@ -45,7 +45,7 @@ const HomePage = ({ items, loading, error, onOpenCreateModal }) => {
       <section id="explore" className="section explore-section">
         <div className="section-header">
           <h2>Active Swap Opportunities</h2>
-          <p>Browse available items and places looking for a city swap.</p>
+          <p>Browse available items and places looking for an exchange.</p>
         </div>
 
         <div className="filter-bar">

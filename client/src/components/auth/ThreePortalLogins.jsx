@@ -82,7 +82,7 @@ const ThreePortalLogins = ({ onSuccess }) => {
           <span>Select municipal role portal</span>
           <Link to="/signup" className="text-[#005C2B] hover:underline font-black flex items-center gap-1">
             <UserPlus className="w-3 h-3" />
-            <span>Need an account? Sign Up →</span>
+            <span>Need an account? Create Your Account →</span>
           </Link>
         </div>
 

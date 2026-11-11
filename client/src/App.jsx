@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate, Navigate } from 'react-router-dom';
 import Navbar from './components/ecopulse/Navbar';
 import HeroSection from './components/ecopulse/HeroSection';
@@ -6,7 +6,6 @@ import RolesSection from './components/ecopulse/RolesSection';
 import HowItWorksSection from './components/ecopulse/HowItWorksSection';
 import ImpactSection from './components/ecopulse/ImpactSection';
 import FooterSection from './components/ecopulse/FooterSection';
-import AuthModal from './components/auth/AuthModal';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import DashboardPage from './pages/DashboardPage';
@@ -31,8 +30,6 @@ import './index.css';
 import './App.css';
 
 function LandingPage() {
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authModalMode] = useState('login'); // 'login' | 'signup'
   const navigate = useNavigate();
 
   const handleOpenLogin = () => {
@@ -65,14 +62,6 @@ function LandingPage() {
         <ImpactSection />
       </main>
       <FooterSection />
-
-      {/* Floating Auth Experience Modal */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-        initialMode={authModalMode}
-        onSuccess={handleAuthSuccess}
-      />
     </div>
   );
 }

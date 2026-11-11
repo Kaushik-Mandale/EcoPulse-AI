@@ -8,7 +8,7 @@ const Navbar = ({ onOpenCreateModal, health }) => {
       <div className="navbar-container">
         <div className="brand">
           <div className="brand-logo">🌆</div>
-          <span className="brand-title">CITY<span className="accent">_SWAP</span></span>
+          <span className="brand-title">EcoPulse<span className="accent"> AI</span></span>
         </div>
 
         <nav className="nav-links">

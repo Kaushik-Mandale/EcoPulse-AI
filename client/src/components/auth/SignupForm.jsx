@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   User,
@@ -27,6 +28,7 @@ import {
 } from '../../services/authService';
 
 const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
+  const navigate = useNavigate();
   const [step, setStep] = useState('DETAILS'); // 'DETAILS' | 'VERIFY'
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -355,7 +357,11 @@ const SignupForm = ({ onSwitchToLogin, onRoleChange, onSuccess }) => {
 
   const handleSwitchToLoginSafe = () => {
     clearOtpSession('register');
-    if (onSwitchToLogin) onSwitchToLogin();
+    if (onSwitchToLogin) {
+      onSwitchToLogin();
+    } else {
+      navigate('/login');
+    }
   };
 
   const formatTimer = (seconds) => {

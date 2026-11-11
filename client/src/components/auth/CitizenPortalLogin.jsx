@@ -552,6 +552,20 @@ const CitizenPortalLogin = ({ onSuccess, onOpenForgotPassword, onSwitchToSignup 
           </form>
         )}
 
+        {/* Dedicated Registration Switch for Citizens */}
+        <div className="mt-3.5 pt-2.5 border-t border-slate-200/80 text-center">
+          <p className="text-xs font-semibold text-slate-600">
+            Don't have an account?{' '}
+            <button
+              type="button"
+              onClick={handleSwitchToSignupSafe}
+              className="font-extrabold text-[#16a34a] hover:underline cursor-pointer ml-0.5"
+            >
+              Create Your Account →
+            </button>
+          </p>
+        </div>
+
         {/* WhatsApp Assistant Link */}
         <div className="mt-3 sm:mt-3.5">
           <a

@@ -38,7 +38,7 @@ export default function LegalPage() {
               </div>
               <h2 className="text-2xl font-black text-slate-900">Privacy Policy</h2>
               <p>
-                EcoPulse AI ("City Swap") respects citizen privacy and is committed to protecting personal information collected through our WhatsApp agent, mobile, and web interfaces.
+                EcoPulse AI respects citizen privacy and is committed to protecting personal information collected through our WhatsApp agent, mobile, and web interfaces.
               </p>
               <h3 className="text-base font-extrabold text-slate-900 pt-2">1. Data We Collect</h3>
               <ul className="list-disc pl-5 space-y-1">

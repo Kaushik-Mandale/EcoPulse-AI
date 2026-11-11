@@ -73,7 +73,7 @@ export default function ForgotPasswordPage() {
                 required 
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="e.g. priya@cityswap.io or EMP-4512"
+                placeholder="e.g. priya@ecopulse.ai or EMP-4512"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:border-[#005C2B]"
               />
             </div>

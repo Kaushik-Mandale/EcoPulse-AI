@@ -44,7 +44,7 @@ const CreateItemModal = ({ isOpen, onClose, onSubmit }) => {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Post a New City Swap</h2>
+          <h2>Post a New EcoPulse Item</h2>
           <button className="close-btn" onClick={onClose}>&times;</button>
         </div>
 

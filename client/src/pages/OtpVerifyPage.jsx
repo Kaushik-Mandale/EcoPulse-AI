@@ -49,7 +49,7 @@ export default function OtpVerifyPage() {
     const fallbackUser = {
       id: 1,
       name: `Citizen User (${mobile.slice(-4)})`,
-      email: `${mobile.replace(/[^0-9]/g, '')}@citizen.cityswap.io`,
+      email: `${mobile.replace(/[^0-9]/g, '')}@citizen.ecopulse.ai`,
       role: location.state?.role || 'citizen',
       ward: 'Ward 12',
       eco_coins: 150

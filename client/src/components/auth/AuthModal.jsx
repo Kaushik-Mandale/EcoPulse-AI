@@ -67,8 +67,8 @@ const AuthModal = ({ isOpen, onClose, initialMode = 'login', onSuccess }) => {
               </svg>
             </div>
             <div>
-              <div className="text-lg font-black text-gray-900 leading-tight">City Swap</div>
-              <div className="text-[11px] font-semibold text-gray-500">Smart Civic & Recycling Network</div>
+              <div className="text-lg font-black text-gray-900 leading-tight">EcoPulse AI</div>
+              <div className="text-[11px] font-semibold text-gray-500">Smart Civic & Sustainability Ecosystem</div>
             </div>
           </div>
 

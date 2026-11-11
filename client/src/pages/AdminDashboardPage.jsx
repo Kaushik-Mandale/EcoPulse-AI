@@ -289,7 +289,7 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
       case 'Notifications':
         return 'System Alerts & Communications';
       default:
-        return 'City Swap EcoPulse Admin';
+        return 'EcoPulse AI Admin';
     }
   };
 
@@ -371,7 +371,7 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
                     <span className="material-symbols-outlined text-xl">eco</span>
                   </div>
                   <div>
-                    <h1 className="font-bold text-sm leading-tight text-white">City Swap EcoPulse</h1>
+                    <h1 className="font-bold text-sm leading-tight text-white">EcoPulse AI</h1>
                     <p className="text-[10px] text-[#b8f0be]/80 font-medium">Admin Portal</p>
                   </div>
                 </div>
@@ -453,7 +453,7 @@ const AdminDashboardPage = ({ initialTab = 'Dashboard' }) => {
               <span className="material-symbols-outlined text-[#00421d] text-2xl font-bold transition-transform duration-500 group-hover:rotate-[360deg]">eco</span>
             </div>
             <div>
-              <h1 className="font-bold text-[15px] leading-tight text-white tracking-tight">City Swap EcoPulse</h1>
+              <h1 className="font-bold text-[15px] leading-tight text-white tracking-tight">EcoPulse AI</h1>
               <p className="text-[11px] text-[#b8f0be]/80 font-medium mt-0.5">Admin Portal</p>
             </div>
           </div>

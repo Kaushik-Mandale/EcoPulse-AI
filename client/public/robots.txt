@@ -1,4 +1,4 @@
-﻿User-agent: *
+User-agent: *
 Allow: /
 Allow: /report
 Allow: /track
@@ -14,4 +14,4 @@ Disallow: /admin
 Disallow: /driver
 Disallow: /citizen
 
-Sitemap: https://city-swap-frontend.onrender.com/sitemap.xml
+Sitemap: https://ecopulse-ai-frontend.onrender.com/sitemap.xml

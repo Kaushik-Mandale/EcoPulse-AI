@@ -8,7 +8,7 @@ const Footer = () => {
         <div className="footer-col">
           <div className="brand">
             <span className="brand-logo">🌆</span>
-            <span className="brand-title">CITY<span className="accent">_SWAP</span></span>
+            <span className="brand-title">EcoPulse<span className="accent"> AI</span></span>
           </div>
           <p className="footer-tagline">
             Connecting global travelers & locals to swap gear, accommodations, and experiences across cities worldwide.
@@ -36,7 +36,7 @@ const Footer = () => {
       </div>
 
       <div className="footer-bottom">
-        <p>&copy; {new Date().getFullYear()} CITY_SWAP Platform. Built as per AI Full-Stack Standards.</p>
+        <p>&copy; {new Date().getFullYear()} EcoPulse AI Platform. Smart Civic & Sustainability Ecosystem.</p>
       </div>
     </footer>
   );

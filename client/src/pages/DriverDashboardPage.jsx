@@ -249,7 +249,7 @@ const DriverDashboardPage = () => {
             >
               <div className="px-6 mb-6 flex items-center justify-between">
                 <div>
-                  <h1 className="text-base font-bold text-white leading-none">City Swap</h1>
+                  <h1 className="text-base font-bold text-white leading-none">EcoPulse AI</h1>
                   <p className="text-[10px] font-medium text-white/70 mt-1">Driver Portal</p>
                 </div>
                 <button
@@ -320,7 +320,7 @@ const DriverDashboardPage = () => {
             </svg>
           </div>
           <div>
-            <h1 className="text-base font-bold text-white leading-none">City Swap</h1>
+            <h1 className="text-base font-bold text-white leading-none">EcoPulse AI</h1>
             <p className="text-[10px] font-medium text-white/70 mt-1">Driver Portal</p>
           </div>
         </div>

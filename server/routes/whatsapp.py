@@ -203,9 +203,11 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                 elif msg_type == "interactive":
                     interactive = msg.get("interactive", {})
                     if "button_reply" in interactive:
-                        text_content = interactive["button_reply"].get("id", "")
+                        btn = interactive.get("button_reply", {})
+                        text_content = btn.get("id") or btn.get("title") or ""
                     elif "list_reply" in interactive:
-                        text_content = interactive["list_reply"].get("id", "")
+                        lst = interactive.get("list_reply", {})
+                        text_content = lst.get("id") or lst.get("title") or ""
                 elif msg_type == "image":
                     image_obj = msg.get("image", {})
                     media_id = image_obj.get("id", "")

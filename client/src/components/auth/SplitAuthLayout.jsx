@@ -1,19 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Sparkles, Shield, Zap, Leaf, Recycle, Building2, Users, Star } from 'lucide-react';
-import LoginForm from './LoginForm';
 import SignupForm from './SignupForm';
 import ForgotPasswordModal from './ForgotPasswordModal';
 
-const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
-  const [activeTab, setActiveTab] = useState(mode); // 'login' | 'signup'
+const SplitAuthLayout = ({ mode = 'signup', onSuccessNavigation }) => {
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState(mode); // 'signup'
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
-  const [activeRole, setActiveRole] = useState('collector'); // 'citizen' | 'driver' | 'collector' | 'admin'
+  const [activeRole, setActiveRole] = useState('citizen'); // 'citizen' | 'driver' | 'collector' | 'admin'
 
   useEffect(() => {
-    setActiveTab(mode);
-  }, [mode]);
+    // If ever loaded with login mode, navigate immediately to canonical /login
+    if (mode === 'login') {
+      navigate('/login', { replace: true });
+    }
+  }, [mode, navigate]);
 
   // Illustration based on role selection
   const getRoleIllustration = () => {
@@ -67,7 +70,7 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
             </div>
             <div>
               <div className="text-[19px] font-black text-gray-900 tracking-tight leading-none">
-                City Swap
+                EcoPulse AI
               </div>
               <div className="text-[10px] font-semibold text-gray-500 tracking-wide mt-0.5">
                 Smart Civic & Sustainability Ecosystem
@@ -110,7 +113,7 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
               </span> Together
             </h1>
             <p className="text-gray-700 text-xs xl:text-sm font-semibold leading-relaxed max-w-lg">
-              City Swap connects Citizens, Drivers, Collectors, and Municipalities on one intelligent platform to make waste management efficient, transparent and sustainable.
+              EcoPulse AI connects Citizens, Drivers, Collectors, and Municipalities on one intelligent platform to make waste management efficient, transparent and sustainable.
             </p>
           </div>
 
@@ -154,7 +157,7 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
               animate={{ scale: 1, opacity: 1 }}
               transition={{ duration: 0.3 }}
               src={getRoleIllustration()}
-              alt="City Swap Eco-City Infrastructure"
+              alt="EcoPulse AI Smart City Infrastructure"
               className="w-full h-auto max-h-[190px] xl:max-h-[220px] object-contain rounded-xl drop-shadow-md"
             />
           </div>
@@ -221,12 +224,12 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
             </div>
             <span className="font-bold text-gray-900">4.9/5 Municipal Rating</span>
           </div>
-          <span>© 2026 City Swap</span>
+          <span>© 2026 EcoPulse AI</span>
         </div>
       </div>
 
       {/* ----------------------------------------------------------------- */}
-      {/* RIGHT SECTION (AUTH CARD – STYLED LIKE LOGIN COMPONENT .JPEG)     */}
+      {/* RIGHT SECTION (AUTH CARD)                                         */}
       {/* ----------------------------------------------------------------- */}
       <div className="w-full lg:w-[44%] xl:w-[42%] min-h-screen lg:h-full relative z-10 flex flex-col justify-between p-4 sm:p-5 lg:p-5 xl:p-6 overflow-y-auto">
         
@@ -238,7 +241,7 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
                 <path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
               </svg>
             </div>
-            <span className="text-base font-black text-gray-900">City Swap</span>
+            <span className="text-base font-black text-gray-900">EcoPulse AI</span>
           </Link>
 
           <Link
@@ -260,45 +263,18 @@ const SplitAuthLayout = ({ mode = 'login', onSuccessNavigation }) => {
             {/* Top Accent Bar */}
             <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-[#d9531e] via-amber-500 to-[#005C2B]" />
 
-            {/* Form Component */}
-            <AnimatePresence mode="wait">
-              {activeTab === 'login' ? (
-                <motion.div
-                  key="split-login"
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 12 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <LoginForm
-                    onSwitchToSignup={() => setActiveTab('signup')}
-                    onOpenForgotPassword={() => setIsForgotPasswordOpen(true)}
-                    onRoleChange={(role) => setActiveRole(role)}
-                    onSuccess={onSuccessNavigation}
-                  />
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="split-signup"
-                  initial={{ opacity: 0, x: 12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -12 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <SignupForm
-                    onSwitchToLogin={() => setActiveTab('login')}
-                    onRoleChange={(role) => setActiveRole(role)}
-                    onSuccess={onSuccessNavigation}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Registration Form (Citizen sign-in redirects to /login) */}
+            <SignupForm
+              onSwitchToLogin={() => navigate('/login')}
+              onRoleChange={(role) => setActiveRole(role)}
+              onSuccess={onSuccessNavigation}
+            />
           </motion.div>
         </div>
 
         {/* Mobile & Right Footer */}
         <div className="pt-2 text-center text-[10px] font-semibold text-gray-500 shrink-0">
-          © 2026 City Swap • Smart Waste & Recycling Network
+          © 2026 EcoPulse AI • Smart Civic & Sustainability Ecosystem
         </div>
       </div>
 

@@ -52,10 +52,10 @@ const LoginPage = () => {
           </div>
           <div>
             <div className="text-xl font-black text-slate-900 tracking-tight leading-none">
-              City Swap
+              EcoPulse AI
             </div>
             <div className="text-[10px] font-bold text-emerald-700 tracking-wide mt-0.5">
-              EcoPulse AI Platform
+              Smart Civic & Sustainability Ecosystem
             </div>
           </div>
         </Link>
@@ -86,7 +86,7 @@ const LoginPage = () => {
           </span>
         </div>
         <p className="text-[11px] text-slate-400 font-semibold">
-          © 2026 City Swap • Smart Waste & Recycling Ecosystem
+          © 2026 EcoPulse AI • Smart Civic & Sustainability Ecosystem
         </p>
       </footer>
 
