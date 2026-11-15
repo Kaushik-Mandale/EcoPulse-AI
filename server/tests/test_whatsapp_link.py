@@ -25,7 +25,7 @@ def _create_test_user(db, email, role="citizen", phone=None):
         phone = f"9{uuid.uuid4().int % 1000000000:09d}"
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        user = User(
+        kwargs = dict(
             email=email,
             hashed_password=hash_password("Password123!"),
             full_name=f"Test {role.capitalize()}",
@@ -35,6 +35,9 @@ def _create_test_user(db, email, role="citizen", phone=None):
             is_locked=False,
             eco_coins=100
         )
+        if hasattr(User, "is_verified"):
+            kwargs["is_verified"] = True
+        user = User(**kwargs)
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -400,9 +403,9 @@ class TestWhatsAppWebhookRegression:
             data = res.json()
             assert data["status"] == "menu_presented"
             assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
-            # 9-option menu present
-            assert "1️⃣" in data["reply"]
-            assert "9️⃣" in data["reply"]
+            # 8-option menu present
+            assert "1." in data["reply"] or "1️⃣" in data["reply"]
+            assert "8." in data["reply"] or "8️⃣" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -423,8 +426,8 @@ class TestWhatsAppWebhookRegression:
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "menu_presented"
-            assert "1️⃣" in data["reply"]
-            assert "9️⃣" in data["reply"]
+            assert "1." in data["reply"] or "1️⃣" in data["reply"]
+            assert "8." in data["reply"] or "8️⃣" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -445,8 +448,8 @@ class TestWhatsAppWebhookRegression:
             data = res.json()
             assert data["status"] == "linked"
             assert "यशस्वीरित्या जोडले" in data["reply"]
-            assert "1️⃣" in data["reply"]
-            assert "9️⃣" in data["reply"]
+            assert "1." in data["reply"] or "1️⃣" in data["reply"]
+            assert "8." in data["reply"] or "8️⃣" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:

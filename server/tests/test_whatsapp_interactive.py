@@ -9,6 +9,8 @@ from server.services.whatsapp_service import WhatsAppService
 
 @pytest.fixture
 def db():
+    from server.database.db import Base, engine
+    Base.metadata.create_all(bind=engine)
     session = SessionLocal()
     try:
         yield session
@@ -91,7 +93,7 @@ def test_build_main_menu_interactive_spec_compliance():
         assert len(sections[0]["title"]) <= 24
 
         rows = sections[0]["rows"]
-        assert len(rows) == 9  # exactly 9 options
+        assert len(rows) == 8  # exactly 8 options (Leaderboard removed)
 
         expected_ids = {
             "MENU_REPORT_WASTE",
@@ -100,7 +102,6 @@ def test_build_main_menu_interactive_spec_compliance():
             "MENU_COLLECTION_SCHEDULE",
             "MENU_ECO_WALLET",
             "MENU_MY_COMPLAINTS",
-            "MENU_LEADERBOARD",
             "MENU_NOTICES",
             "MENU_HELP_LANG"
         }
@@ -137,7 +138,7 @@ def test_build_quick_buttons_interactive():
 
 
 def test_interactive_list_selections(db, auth_citizen):
-    """Test dispatching each of the 9 interactive list options."""
+    """Test dispatching each of the 8 interactive list options and verifying Leaderboard removal."""
     # 1. Report waste
     res1 = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "interactive", text_body="MENU_REPORT_WASTE"
@@ -178,23 +179,23 @@ def test_interactive_list_selections(db, auth_citizen):
     )
     assert res6["status"] == "track_complaints"
 
-    # 7. Leaderboard
+    # 7. Notices (renumbered option 7)
     res7 = WhatsAppService.handle_incoming_message(
-        db, auth_citizen.phone_number, "interactive", text_body="MENU_LEADERBOARD"
-    )
-    assert res7["status"] == "leaderboard_unavailable"
-
-    # 8. Notices
-    res8 = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "interactive", text_body="MENU_NOTICES"
     )
-    assert res8["status"] == "notices_unavailable"
+    assert res7["status"] == "notices_unavailable"
 
-    # 9. Help
-    res9 = WhatsAppService.handle_incoming_message(
+    # 8. Help & Language (renumbered option 8)
+    res8 = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "interactive", text_body="MENU_HELP_LANG"
     )
-    assert res9["status"] == "help"
+    assert res8["status"] == "help"
+
+    # Removed Leaderboard Option completely: MENU_LEADERBOARD is now unrecognized and presents menu
+    res_lb = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="MENU_LEADERBOARD"
+    )
+    assert res_lb["status"] == "menu_presented"
 
 
 def test_interactive_language_buttons(db, auth_citizen):
@@ -236,14 +237,15 @@ def test_greeting_sends_chat_menu_and_quick_actions(db, auth_citizen, sent_messa
     text_menu = sent_messages[0]["message_text"]
     assert sent_messages[0]["interactive"] is None
     assert "नमस्कार! Hello!" in text_menu
-    assert "Dhule Municipal Services / धुळे महानगरपालिका नागरी सेवा" in text_menu
-    assert "Reply with a number (1-9) or keyword" in text_menu
+    assert "EcoPulse AI" in text_menu
+    assert "Reply with a number (1-8) or keyword" in text_menu
     for label in (
         "Report Waste", "General Complaint", "Garbage Vehicle Tracking",
         "Collection Schedule", "EcoWallet & Rewards", "My Complaints",
-        "Leaderboard", "Municipal Notices", "Help / Change Language",
+        "Municipal Notices", "Help & Change Language",
     ):
         assert label in text_menu
+    assert "Leaderboard" not in text_menu
 
     shortcut_message = sent_messages[1]
     interactive = shortcut_message["interactive"]
@@ -265,7 +267,7 @@ def test_full_menu_button_opens_existing_interactive_list(db, auth_citizen, sent
     assert len(sent_messages) == 1
     interactive = sent_messages[0]["interactive"]
     assert interactive["type"] == "list"
-    assert len(interactive["action"]["sections"][0]["rows"]) == 9
+    assert len(interactive["action"]["sections"][0]["rows"]) == 8
 
 
 def test_invalid_selection_handled(db, auth_citizen):
@@ -278,7 +280,7 @@ def test_invalid_selection_handled(db, auth_citizen):
 
 
 def test_numeric_compatibility_preserved(db, auth_citizen, sent_messages):
-    """All numeric choices continue dispatching to their existing handlers."""
+    """All numeric choices (1-8) continue dispatching to their handlers, option 7 is notices, 8 is help."""
     expected_statuses = [
         "awaiting_photo",
         "awaiting_general_complaint",
@@ -286,7 +288,6 @@ def test_numeric_compatibility_preserved(db, auth_citizen, sent_messages):
         "schedule_unavailable",
         "wallet_info",
         "track_complaints",
-        "leaderboard_unavailable",
         "notices_unavailable",
         "help",
     ]
@@ -298,6 +299,12 @@ def test_numeric_compatibility_preserved(db, auth_citizen, sent_messages):
         assert result["status"] == expected_status
         auth_citizen.conversation_state = "IDLE"
         db.commit()
+
+    # Legacy option 9 maps to help
+    res9 = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="9"
+    )
+    assert res9["status"] == "help"
 
 
 @pytest.mark.parametrize(
@@ -315,8 +322,6 @@ def test_numeric_compatibility_preserved(db, auth_citizen, sent_messages):
         ("वॉलेट", "wallet_info"),
         ("my complaints", "track_complaints"),
         ("माझ्या तक्रारी", "track_complaints"),
-        ("leaderboard", "leaderboard_unavailable"),
-        ("लीडरबोर्ड", "leaderboard_unavailable"),
         ("notices", "notices_unavailable"),
         ("सूचना", "notices_unavailable"),
         ("help", "help"),
@@ -461,3 +466,335 @@ def test_complaint_creation_regression(db, auth_citizen):
     assert loc_res["status"] == "complaint_created"
     assert loc_res["ticket"].startswith("DHL-2026-")
     assert "Ticket ID" in loc_res["reply"] or "तक्रार क्र" in loc_res["reply"]
+
+
+def test_location_request_payload_format():
+    """Verify native location request message structure adheres to Meta specifications."""
+    prompt = "📍 कृपया कचरा असलेल्या ठिकाणाचे लोकेशन शेअर करा / Please share the waste location."
+    payload = WhatsAppService.build_location_request_interactive(prompt)
+    assert payload["type"] == "location_request_message"
+    assert payload["body"]["text"] == prompt
+    assert len(payload["body"]["text"]) <= 1024
+    assert payload["action"] == {"name": "send_location"}
+
+
+def test_photo_submission_triggers_photo_ack_and_location_request(db, auth_citizen, sent_messages):
+    """Submitting a photo sends photo acknowledgment and native location request interactive message."""
+    res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/sample_waste_photo.jpg"
+    )
+
+    assert res["status"] == "awaiting_location"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_LOCATION"
+
+    # Verifies both outbound messages: ack text message and native location request
+    assert len(sent_messages) == 2
+    ack_msg = sent_messages[0]
+    assert "Photo received" in ack_msg["message_text"] or "फोटो प्राप्त झाला" in ack_msg["message_text"]
+
+    loc_msg = sent_messages[1]
+    assert loc_msg["interactive"] is not None
+    assert loc_msg["interactive"]["type"] == "location_request_message"
+    assert loc_msg["interactive"]["action"]["name"] == "send_location"
+
+
+def test_manual_address_fallback_for_waste_complaint(db, auth_citizen):
+    """Test manual text address fallback for citizens whose devices do not share location pins."""
+    # Step 1: Send Photo
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/manual_waste.jpg"
+    )
+
+    # Step 2: Send Address in English format
+    addr_res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body="ADDRESS: 14 Agra Road, Near Municipal Corporation, Dhule"
+    )
+
+    assert addr_res["status"] == "complaint_created"
+    assert addr_res["ticket"].startswith("DHL-2026-")
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "IDLE"
+
+    # Verify complaint record in database has the provided address
+    from server.models.complaint import Complaint
+    c = db.query(Complaint).filter(Complaint.tracking_number == addr_res["ticket"]).first()
+    assert c is not None
+    assert "14 Agra Road" in c.location_address
+
+    # Step 3: Test Marathi prefix fallback
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/manual_waste2.jpg"
+    )
+    addr_mr_res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body="पत्ता: देवपूर, धुळे 424002"
+    )
+    assert addr_mr_res["status"] == "complaint_created"
+    c2 = db.query(Complaint).filter(Complaint.tracking_number == addr_mr_res["ticket"]).first()
+    assert c2 is not None
+    assert "देवपूर, धुळे 424002" in c2.location_address
+
+
+def test_event_reporting_full_flow_success(db, auth_citizen, sent_messages):
+    """Complete 5-step public event reporting workflow through confirmation and persistence."""
+    from server.models.event_report import EventReport
+
+    # Step 1: Initiate event reporting
+    init_res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="event"
+    )
+    assert init_res["status"] == "awaiting_event_category"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_CATEGORY"
+
+    # Step 2: Choose category (e.g. RELIGIOUS / Religious Event)
+    cat_res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="RELIGIOUS"
+    )
+    assert cat_res["status"] == "awaiting_event_date"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_DATE"
+
+    # Step 3: Provide event date
+    date_res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="28/11/2026"
+    )
+    assert date_res["status"] == "awaiting_event_time"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_TIME"
+
+    # Step 4: Provide event time
+    time_res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="06:30 PM"
+    )
+    assert time_res["status"] == "awaiting_event_location"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_LOCATION"
+
+    # Step 5: Send location pin
+    loc_res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "location",
+        latitude=20.9042,
+        longitude=74.7749
+    )
+    assert loc_res["status"] == "awaiting_event_confirmation"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_CONFIRMATION"
+    assert "28/11/2026" in loc_res["reply"]
+    assert "06:30 PM" in loc_res["reply"]
+
+    # Step 6: Confirm event submission
+    confirm_res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="EVENT_CONFIRM"
+    )
+    assert confirm_res["status"] == "event_created"
+    assert confirm_res["reference_id"].startswith("EVT-2026-")
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "IDLE"
+    assert auth_citizen.pending_complaint_data is None
+
+    # Verify event report persistence in database
+    from datetime import date
+    saved_event = db.query(EventReport).filter(
+        EventReport.reference_id == confirm_res["reference_id"]
+    ).first()
+    assert saved_event is not None
+    assert "Religious" in saved_event.category or "धार्मिक" in saved_event.category
+    assert saved_event.event_date == date(2026, 11, 28)
+    assert saved_event.event_time == "06:30 PM"
+    assert abs(saved_event.latitude - 20.9042) < 0.001
+    assert abs(saved_event.longitude - 74.7749) < 0.001
+    assert saved_event.whatsapp_citizen_id == auth_citizen.id
+
+
+def test_event_reporting_manual_address_fallback(db, auth_citizen):
+    """Event reporting supports manual address input as fallback when location pin unavailable."""
+    from server.models.event_report import EventReport
+
+    # Fast forward citizen to AWAITING_EVENT_LOCATION
+    auth_citizen.conversation_state = "AWAITING_EVENT_LOCATION"
+    auth_citizen.pending_complaint_data = json.dumps({
+        "event_category": "PUBLIC",
+        "event_date": "20/12/2026",
+        "event_time": "10:00 AM"
+    })
+    db.commit()
+
+    # Provide venue address
+    loc_res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body="ADDRESS: SSVPS Ground, Vidyanagari, Deopur, Dhule"
+    )
+    assert loc_res["status"] == "awaiting_event_confirmation"
+    assert "SSVPS Ground" in loc_res["reply"]
+
+    # Confirm
+    conf_res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="CONFIRM"
+    )
+    assert conf_res["status"] == "event_created"
+
+    saved = db.query(EventReport).filter(EventReport.reference_id == conf_res["reference_id"]).first()
+    assert saved is not None
+    assert "SSVPS Ground" in saved.location_address
+
+
+def test_event_reporting_date_validation(db, auth_citizen):
+    """Test date validation rejects past dates, invalid formats, and nonsensical dates."""
+    auth_citizen.conversation_state = "AWAITING_EVENT_DATE"
+    auth_citizen.pending_complaint_data = json.dumps({"event_category": "WEDDING"})
+    db.commit()
+
+    # Past date
+    res_past = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="01/01/2020"
+    )
+    assert res_past["status"] == "invalid_event_date"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_DATE"
+
+    # Wrong format (YYYY-MM-DD instead of DD/MM/YYYY)
+    res_fmt = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="2026-12-25"
+    )
+    assert res_fmt["status"] == "invalid_event_date"
+
+    # Non-existent date
+    res_bad = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="31/02/2026"
+    )
+    assert res_bad["status"] == "invalid_event_date"
+
+    # Valid future date transitions to next state
+    res_ok = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="15/12/2026"
+    )
+    assert res_ok["status"] == "awaiting_event_time"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_TIME"
+
+
+def test_event_reporting_time_validation(db, auth_citizen):
+    """Test time validation supports both 12-hour (AM/PM) and 24-hour formats and formats canonically."""
+    auth_citizen.conversation_state = "AWAITING_EVENT_TIME"
+    auth_citizen.pending_complaint_data = json.dumps({
+        "event_category": "CLEANUP",
+        "event_date": "10/12/2026"
+    })
+    db.commit()
+
+    # Invalid time string
+    res_bad = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="evening at sunset"
+    )
+    assert res_bad["status"] == "invalid_event_time"
+
+    # Valid 24-hour time 18:30 -> canonical 06:30 PM
+    res_24 = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="18:30"
+    )
+    assert res_24["status"] == "awaiting_event_location"
+    db.refresh(auth_citizen)
+    data = json.loads(auth_citizen.pending_complaint_data)
+    assert data["event_time"] == "06:30 PM"
+
+
+def test_event_reporting_cancellation(db, auth_citizen):
+    """Citizens can cancel event reporting at any point and return to clean IDLE state."""
+    auth_citizen.conversation_state = "AWAITING_EVENT_TIME"
+    auth_citizen.pending_complaint_data = json.dumps({
+        "event_category": "FESTIVAL",
+        "event_date": "15/12/2026"
+    })
+    db.commit()
+
+    # Cancel via CANCEL
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="CANCEL"
+    )
+    assert res["status"] in ("cancelled", "event_cancelled")
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "IDLE"
+    assert auth_citizen.pending_complaint_data is None
+
+
+def test_cross_state_isolation_event_vs_waste(db, auth_citizen):
+    """Ensure strict isolation between waste complaints and event reporting."""
+    # When in AWAITING_EVENT_DATE, sending a location pin is NOT processed as waste complaint
+    auth_citizen.conversation_state = "AWAITING_EVENT_DATE"
+    auth_citizen.pending_complaint_data = json.dumps({"event_category": "OTHER"})
+    db.commit()
+
+    loc_res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "location",
+        latitude=20.9042,
+        longitude=74.7749
+    )
+    # The event date validator rejects the unexpected location pin and preserves event date state
+    assert loc_res["status"] == "invalid_event_date"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_DATE"
+
+    # When in IDLE, sending a location pin without an image asks for photo
+    auth_citizen.conversation_state = "IDLE"
+    auth_citizen.pending_complaint_data = None
+    db.commit()
+
+    idle_loc = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "location",
+        latitude=20.9042,
+        longitude=74.7749
+    )
+    assert idle_loc["status"] == "awaiting_photo"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_PHOTO"
+
+
+def test_conversation_recovery_after_restart(db, auth_citizen):
+    """Conversation state and pending data survive application restarts and multi-turn persistence."""
+    auth_citizen.conversation_state = "AWAITING_EVENT_TIME"
+    auth_citizen.pending_complaint_data = json.dumps({
+        "event_category": "SCHOOL",
+        "event_date": "20/12/2026"
+    })
+    db.commit()
+
+    # Simulate restart by refreshing from clean session
+    db.expire_all()
+
+    step_res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body="11:00 AM"
+    )
+    assert step_res["status"] == "awaiting_event_location"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_EVENT_LOCATION"
+    data = json.loads(auth_citizen.pending_complaint_data)
+    assert data["event_category"] == "SCHOOL"
+    assert data["event_date"] == "20/12/2026"
+    assert data["event_time"] == "11:00 AM"

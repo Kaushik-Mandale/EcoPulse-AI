@@ -54,15 +54,17 @@ async def lifespan(app: FastAPI):
     # (Does NOT mutate database or execute ALTER TABLE at runtime)
     from server.models.mobile_otp import check_mobile_otp_tokens_schema
     from server.models.whatsapp_registration_challenge import check_whatsapp_registration_challenges_schema
+    from server.models.event_report import check_event_reports_schema
     check_mobile_otp_tokens_schema(engine)
     check_whatsapp_registration_challenges_schema(engine)
+    check_event_reports_schema(engine)
 
     db = SessionLocal()
     try:
         if AuthService.should_seed_demo_users():
             AuthService.seed_demo_users(db)
         from sqlalchemy import text
-        tables = ['tasks', 'complaints', 'users', 'items', 'notifications', 'fuel_logs', 'whatsapp_citizens', 'whatsapp_processed_messages']
+        tables = ['tasks', 'complaints', 'users', 'items', 'notifications', 'fuel_logs', 'whatsapp_citizens', 'whatsapp_processed_messages', 'event_reports']
         for t in tables:
             try:
                 seq = db.execute(text(f"SELECT pg_get_serial_sequence('{t}', 'id')")).scalar()

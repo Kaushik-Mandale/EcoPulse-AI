@@ -11,3 +11,4 @@ from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMes
 from server.models.whatsapp_link_token import WhatsAppLinkToken
 from server.models.mobile_otp import MobileOtpToken
 from server.models.whatsapp_registration_challenge import WhatsAppRegistrationChallenge
+from server.models.event_report import EventReport
