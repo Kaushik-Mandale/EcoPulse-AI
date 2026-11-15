@@ -253,16 +253,41 @@ def test_greeting_sends_chat_menu_and_quick_actions(db, auth_citizen, sent_messa
     assert "OPEN_FULL_MENU" in button_ids
 
 
-def test_full_menu_button_opens_existing_interactive_list(db, auth_citizen, sent_messages):
+def test_full_menu_button_sends_immediate_full_menu_with_quick_actions(db, auth_citizen, sent_messages):
+    """
+    Clicking MENU_FULL_MENU immediately sends the complete 8-option numbered menu in one message
+    accompanied by the 3 primary quick action reply buttons.
+    It does NOT send an intermediate list or a secondary 'Menu उघडा' CTA.
+    """
     result = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "interactive", text_body="MENU_FULL_MENU"
     )
 
     assert result["status"] == "full_menu_presented"
     assert len(sent_messages) == 1
-    interactive = sent_messages[0]["interactive"]
-    assert interactive["type"] == "list"
-    assert len(interactive["action"]["sections"][0]["rows"]) == 8
+    msg = sent_messages[0]
+    interactive = msg["interactive"]
+    assert interactive["type"] == "button"
+    assert len(interactive["action"]["buttons"]) == 3
+
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
+
+    body_text = interactive["body"]["text"]
+    assert "EcoPulse AI — Municipal Services" in body_text
+    assert "नमस्कार! 👋" in body_text or "Hello" in body_text
+    assert "EcoCoin Balance:" in body_text
+    assert "1. 🗑️ Report Waste" in body_text
+    assert "2. ⚠️ General Complaint" in body_text
+    assert "3. 🚛 Garbage Vehicle Tracking" in body_text
+    assert "4. 🗓️ Collection Schedule" in body_text
+    assert "5. 🪙 EcoWallet & Rewards" in body_text
+    assert "6. 📋 My Complaints" in body_text
+    assert "7. 🏆 Municipal Notices" in body_text
+    assert "8. ❓ Help & Language" in body_text
+    assert "Quick actions / झटपट सेवा" in body_text
 
 
 def test_invalid_selection_handled(db, auth_citizen):
@@ -1388,10 +1413,11 @@ def test_normalized_greetings_use_consistent_welcome_handler(db, auth_citizen, s
 
 
 
-def test_open_full_menu_sends_exactly_once_without_primary_buttons(db, auth_citizen, sent_messages):
+def test_open_full_menu_sends_immediate_full_menu_without_secondary_list_cta(db, auth_citizen, sent_messages):
     """
-    Selecting OPEN_FULL_MENU sends the 8-option interactive list menu exactly once.
-    It does not send or append primary buttons and terminates immediately.
+    Selecting OPEN_FULL_MENU sends the complete 8-option numbered menu in one message directly.
+    It does NOT send an intermediate list or a secondary 'Menu उघडा' CTA.
+    Accompanied by the 3 primary quick action reply buttons.
     """
     res = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
@@ -1400,11 +1426,112 @@ def test_open_full_menu_sends_exactly_once_without_primary_buttons(db, auth_citi
     # Exactly one message sent
     assert len(sent_messages) == 1
     interactive = sent_messages[0]["interactive"]
-    assert interactive["type"] == "list"
-    rows = interactive["action"]["sections"][0]["rows"]
-    assert len(rows) == 8
-    # Primary reply buttons are NOT sent
-    assert interactive["type"] != "button"
+    assert interactive["type"] == "button"
+    assert len(interactive["action"]["buttons"]) == 3
+
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
+
+    body_text = interactive["body"]["text"]
+    assert "EcoPulse AI — Municipal Services" in body_text
+    assert "1. 🗑️ Report Waste" in body_text
+    assert "2. ⚠️ General Complaint" in body_text
+    assert "3. 🚛 Garbage Vehicle Tracking" in body_text
+    assert "4. 🗓️ Collection Schedule" in body_text
+    assert "5. 🪙 EcoWallet & Rewards" in body_text
+    assert "6. 📋 My Complaints" in body_text
+    assert "7. 🏆 Municipal Notices" in body_text
+    assert "8. ❓ Help & Language" in body_text
+    assert "Quick actions / झटपट सेवा" in body_text
+    assert "मेनू उघडा" not in str(interactive)
+
+
+def test_repeated_open_full_menu_clicks_prevent_recursion_and_duplicates(db, auth_citizen, sent_messages):
+    """
+    Repeated clicks on OPEN_FULL_MENU send exactly one message per invocation.
+    Never produces recursive handlers or duplicate messages.
+    """
+    # First click
+    res1 = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
+    )
+    assert res1["status"] == "full_menu_presented"
+    assert len(sent_messages) == 1
+
+    # Second click
+    sent_messages.clear()
+    res2 = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
+    )
+    assert res2["status"] == "full_menu_presented"
+    assert len(sent_messages) == 1
+    assert sent_messages[0]["interactive"]["type"] == "button"
+
+
+@pytest.mark.parametrize("option_num,expected_status", [
+    ("1", "awaiting_photo"),
+    ("2", "awaiting_general_complaint"),
+    ("3", "truck_unavailable"),
+    ("4", "schedule_unavailable"),
+    ("5", "wallet_info"),
+    ("6", "track_complaints"),
+    ("7", "notices_unavailable"),
+    ("8", "help"),
+])
+def test_all_eight_numbered_replies_route_to_intended_workflows(db, auth_citizen, sent_messages, option_num, expected_status):
+    """
+    All eight numbered options (1 through 8) are directly selectable via their numbered text replies
+    and correctly route to their designated workflows.
+    """
+    auth_citizen.conversation_state = "IDLE"
+    db.commit()
+
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body=option_num
+    )
+    assert res["status"] == expected_status
+    assert len(sent_messages) == 1
+
+
+def test_marathi_full_menu_localization_and_quick_action_buttons(db, auth_citizen, sent_messages):
+    """
+    When Marathi preferred language is set, OPEN_FULL_MENU delivers bilingual Marathi-first
+    heading, greeting, all 8 numbered services, and localized Marathi button titles.
+    """
+    auth_citizen.preferred_language = "mr"
+    auth_citizen.conversation_state = "IDLE"
+    db.commit()
+
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
+    )
+    assert res["status"] == "full_menu_presented"
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "button"
+
+    # Button titles in Marathi ≤ 20 chars
+    button_titles = [b["reply"]["title"] for b in interactive["action"]["buttons"]]
+    assert any("कचरा" in t for t in button_titles)
+    assert any("तक्रार" in t for t in button_titles)
+    assert any("मेनू" in t for t in button_titles)
+    for t in button_titles:
+        assert len(t) <= 20
+
+    body_text = interactive["body"]["text"]
+    assert "EcoPulse AI — नागरी सेवा" in body_text
+    assert "नमस्कार" in body_text
+    assert "1. 🗑️ कचरा नोंदवा / Report Waste" in body_text
+    assert "2. ⚠️ सामान्य तक्रार / General Complaint" in body_text
+    assert "3. 🚛 घंटागाडी ट्रॅकिंग / Garbage Vehicle Tracking" in body_text
+    assert "4. 🗓️ संकलन वेळापत्रक / Collection Schedule" in body_text
+    assert "5. 🪙 इको-वॉलेट आणि रिवॉर्ड्स / EcoWallet & Rewards" in body_text
+    assert "6. 📋 माझ्या तक्रारी / My Complaints" in body_text
+    assert "7. 🏆 महापालिका सूचना / Municipal Notices" in body_text
+    assert "8. ❓ मदत आणि भाषा / Help & Language" in body_text
+    assert "Quick actions / झटपट सेवा" in body_text
 
 
 def test_greeting_does_not_send_full_menu(db, auth_citizen, sent_messages):

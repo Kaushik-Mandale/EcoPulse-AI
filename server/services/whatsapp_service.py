@@ -743,6 +743,107 @@ class WhatsAppService:
         }
 
     @staticmethod
+    def build_full_menu_text(citizen=None, db=None, lang: str = "mr") -> str:
+        """Construct the complete 8-option full menu text matching reference layout.
+
+        Visual structure:
+        - Municipal Heading: EcoPulse AI — Municipal Services
+        - Localized Greeting: नमस्कार! Hello! 👋
+        - Account Info & EcoCoin Balance (where applicable)
+        - Service Selection Prompt: Please select a service / कृपया सेवा निवडा:
+        - Numbered Services 1–8 with icons
+        - Quick actions section: ⚡ Quick actions / झटपट सेवा
+        """
+        is_mr = (lang or "mr").lower() == "mr"
+
+        # 1. Municipal Heading
+        heading = (
+            "🏛️ *EcoPulse AI — Municipal Services / नागरी सेवा*"
+            if not is_mr
+            else "🏛️ *EcoPulse AI — नागरी सेवा / Municipal Services*"
+        )
+
+        # 2. Localized Greeting & Account Info
+        c_name = ""
+        if citizen and db:
+            if getattr(citizen, "user_id", None):
+                u_obj = db.query(User).filter(User.id == citizen.user_id).first()
+                if u_obj and u_obj.full_name:
+                    c_name = u_obj.full_name
+            elif getattr(citizen, "full_name", None) and citizen.full_name != "Shirpur Resident":
+                c_name = citizen.full_name
+
+        coins = (getattr(citizen, "eco_coins", 0) or 0) if citizen else 0
+        rupees = coins // 2
+
+        if c_name:
+            greeting = f"नमस्कार {c_name}! Hello! 👋" if is_mr else f"Hello {c_name}! नमस्कार! 👋"
+            account_line = (
+                f"✅ आपले EcoPulse खाते सक्रिय आहे.\n🪙 *ईको-कॉइन्स शिल्लक: {coins} गुण (₹{rupees} कर सवलत)*"
+                if is_mr
+                else f"✅ Your EcoPulse account is active.\n🪙 *EcoCoin Balance: {coins} pts (₹{rupees} rebate)*"
+            )
+        elif coins > 0:
+            greeting = "नमस्कार! Hello! 👋"
+            account_line = (
+                f"🪙 *ईको-कॉइन्स शिल्लक: {coins} गुण (₹{rupees} कर सवलत)*"
+                if is_mr
+                else f"🪙 *EcoCoin Balance: {coins} pts (₹{rupees} rebate)*"
+            )
+        else:
+            greeting = "नमस्कार! Hello! 👋"
+            account_line = ""
+
+        # 3. Prompt
+        prompt = (
+            "कृपया खालीलपैकी सेवा निवडा / Please select a service:"
+            if is_mr
+            else "Please select a service / कृपया खालीलपैकी सेवा निवडा:"
+        )
+
+        # 4. Numbered 1-8 Services
+        if is_mr:
+            services = (
+                "1. 🗑️ कचरा नोंदवा / Report Waste\n"
+                "2. ⚠️ सामान्य तक्रार / General Complaint\n"
+                "3. 🚛 घंटागाडी ट्रॅकिंग / Garbage Vehicle Tracking\n"
+                "4. 🗓️ संकलन वेळापत्रक / Collection Schedule\n"
+                "5. 🪙 इको-वॉलेट आणि रिवॉर्ड्स / EcoWallet & Rewards\n"
+                "6. 📋 माझ्या तक्रारी / My Complaints\n"
+                "7. 🏆 महापालिका सूचना / Municipal Notices\n"
+                "8. ❓ मदत आणि भाषा / Help & Language"
+            )
+        else:
+            services = (
+                "1. 🗑️ Report Waste / कचरा नोंदवा\n"
+                "2. ⚠️ General Complaint / सामान्य तक्रार\n"
+                "3. 🚛 Garbage Vehicle Tracking / घंटागाडी ट्रॅकिंग\n"
+                "4. 🗓️ Collection Schedule / संकलन वेळापत्रक\n"
+                "5. 🪙 EcoWallet & Rewards / इको-वॉलेट आणि रिवॉर्ड्स\n"
+                "6. 📋 My Complaints / माझ्या तक्रारी\n"
+                "7. 🏆 Municipal Notices / महापालिका सूचना\n"
+                "8. ❓ Help & Language / मदत आणि भाषा"
+            )
+
+        # 5. Quick actions section
+        quick_actions = (
+            "⚡ *Quick actions / झटपट सेवा*\n"
+            "👉 *क्रमांक (1-8) पाठवा किंवा खालील बटण दाबा:*"
+            if is_mr
+            else "⚡ *Quick actions / झटपट सेवा*\n"
+            "👉 *Reply with a number (1-8) or select a quick action below:*"
+        )
+
+        parts = [heading, greeting]
+        if account_line:
+            parts.append(account_line)
+        parts.append(prompt)
+        parts.append(services)
+        parts.append(quick_actions)
+
+        return "\n\n".join(parts)
+
+    @staticmethod
     def build_location_request_interactive(prompt_text: str) -> dict:
         """Construct a Meta WhatsApp Cloud API location_request_message payload."""
         return {
@@ -1441,6 +1542,11 @@ class WhatsAppService:
         )
 
         def _present_main_menu(extra_note: str = ""):
+            if citizen.conversation_state != "IDLE":
+                citizen.conversation_state = "IDLE"
+                citizen.pending_complaint_data = None
+                db.commit()
+
             c_name = "Citizen"
             if citizen.user_id:
                 u_obj = db.query(User).filter(User.id == citizen.user_id).first()
@@ -1465,21 +1571,26 @@ class WhatsAppService:
             )
             return {"status": "menu_presented", "reply": welcome}
 
-        if is_full_menu_cmd:
-            interactive_menu = WhatsAppService.build_main_menu_interactive(
+        def _present_full_menu():
+            if citizen.conversation_state != "IDLE":
+                citizen.conversation_state = "IDLE"
+                citizen.pending_complaint_data = None
+                db.commit()
+
+            full_menu_text = WhatsAppService.build_full_menu_text(citizen, db, lang=lang)
+            interactive_btns = WhatsAppService.build_primary_buttons_interactive(
                 lang=lang,
-                greeting_text=(
-                    "सेवा निवडा / Select a service"
-                    if lang == "mr"
-                    else "Select a service / सेवा निवडा"
-                )
+                body_text=full_menu_text
             )
             WhatsAppService.send_meta_whatsapp(
                 citizen.phone_number,
-                message_text=strings["menu_options"],
-                interactive=interactive_menu
+                message_text=full_menu_text,
+                interactive=interactive_btns
             )
-            return {"status": "full_menu_presented", "reply": strings["menu_options"]}
+            return {"status": "full_menu_presented", "reply": full_menu_text}
+
+        if is_full_menu_cmd:
+            return _present_full_menu()
 
         if is_menu_cmd:
             return _present_main_menu()
@@ -2107,6 +2218,7 @@ class WhatsAppService:
             "MENU_HELP_LANG",
             "MENU_REPORT_EVENT", "EVENT", "EVENT_REPORT",
             "LANG_EN", "LANG_MR",
+            "MENU_FULL_MENU", "FULL_MENU", "OPEN_FULL_MENU",
         }
 
         # ----------------------------------------------------------------
@@ -2172,20 +2284,17 @@ class WhatsAppService:
                     return {"status": "track_complaints", "reply": reply, "ai_classified": True, "intent": "TRACK_COMPLAINT"}
 
                 if ai_res.intent == "OPEN_MENU":
-                    interactive_menu = WhatsAppService.build_main_menu_interactive(
+                    full_menu_text = WhatsAppService.build_full_menu_text(citizen, db, lang=lang)
+                    interactive_btns = WhatsAppService.build_primary_buttons_interactive(
                         lang=lang,
-                        greeting_text=(
-                            "सेवा निवडा / Select a service"
-                            if lang == "mr"
-                            else "Select a service / सेवा निवडा"
-                        )
+                        body_text=full_menu_text
                     )
                     WhatsAppService.send_meta_whatsapp(
                         citizen.phone_number,
-                        message_text=strings["menu_options"],
-                        interactive=interactive_menu
+                        message_text=full_menu_text,
+                        interactive=interactive_btns
                     )
-                    return {"status": "full_menu_presented", "reply": strings["menu_options"], "ai_classified": True, "intent": "OPEN_MENU"}
+                    return {"status": "full_menu_presented", "reply": full_menu_text, "ai_classified": True, "intent": "OPEN_MENU"}
 
                 if ai_res.intent == "CHANGE_LANGUAGE":
                     if ai_res.target_language in {"en", "mr"}:
