@@ -1,5 +1,7 @@
 import json
 import uuid
+from datetime import datetime, timezone
+from unittest.mock import patch
 import pytest
 from server.database.db import SessionLocal
 from server.models.whatsapp_session import WhatsAppCitizen
@@ -464,7 +466,7 @@ def test_complaint_creation_regression(db, auth_citizen):
         longitude=74.7749
     )
     assert loc_res["status"] == "complaint_created"
-    assert loc_res["ticket"].startswith("DHL-2026-")
+    assert loc_res["ticket"].startswith(f"DHL-{datetime.now(timezone.utc).year}-")
     assert "Ticket ID" in loc_res["reply"] or "तक्रार क्र" in loc_res["reply"]
 
 
@@ -521,15 +523,17 @@ def test_manual_address_fallback_for_waste_complaint(db, auth_citizen):
     )
 
     assert addr_res["status"] == "complaint_created"
-    assert addr_res["ticket"].startswith("DHL-2026-")
+    assert addr_res["ticket"].startswith(f"DHL-{datetime.now(timezone.utc).year}-")
     db.refresh(auth_citizen)
     assert auth_citizen.conversation_state == "IDLE"
 
-    # Verify complaint record in database has the provided address
+    # Verify complaint record in database has the provided address and NULL coordinates
     from server.models.complaint import Complaint
     c = db.query(Complaint).filter(Complaint.tracking_number == addr_res["ticket"]).first()
     assert c is not None
-    assert "14 Agra Road" in c.location_address
+    assert c.location_address == "14 Agra Road, Near Municipal Corporation, Dhule"
+    assert c.latitude is None
+    assert c.longitude is None
 
     # Step 3: Test Marathi prefix fallback
     WhatsAppService.handle_incoming_message(
@@ -545,9 +549,12 @@ def test_manual_address_fallback_for_waste_complaint(db, auth_citizen):
         text_body="पत्ता: देवपूर, धुळे 424002"
     )
     assert addr_mr_res["status"] == "complaint_created"
+    assert addr_mr_res["ticket"].startswith(f"DHL-{datetime.now(timezone.utc).year}-")
     c2 = db.query(Complaint).filter(Complaint.tracking_number == addr_mr_res["ticket"]).first()
     assert c2 is not None
-    assert "देवपूर, धुळे 424002" in c2.location_address
+    assert c2.location_address == "देवपूर, धुळे 424002"
+    assert c2.latitude is None
+    assert c2.longitude is None
 
 
 def test_event_reporting_full_flow_success(db, auth_citizen, sent_messages):
@@ -605,12 +612,12 @@ def test_event_reporting_full_flow_success(db, auth_citizen, sent_messages):
         db, auth_citizen.phone_number, "interactive", text_body="EVENT_CONFIRM"
     )
     assert confirm_res["status"] == "event_created"
-    assert confirm_res["reference_id"].startswith("EVT-2026-")
+    assert confirm_res["reference_id"].startswith(f"EVT-{datetime.now(timezone.utc).year}-")
     db.refresh(auth_citizen)
     assert auth_citizen.conversation_state == "IDLE"
     assert auth_citizen.pending_complaint_data is None
 
-    # Verify event report persistence in database
+    # Verify event report persistence in database with genuine location pin coordinates
     from datetime import date
     saved_event = db.query(EventReport).filter(
         EventReport.reference_id == confirm_res["reference_id"]
@@ -625,7 +632,7 @@ def test_event_reporting_full_flow_success(db, auth_citizen, sent_messages):
 
 
 def test_event_reporting_manual_address_fallback(db, auth_citizen):
-    """Event reporting supports manual address input as fallback when location pin unavailable."""
+    """Event reporting supports manual address input as fallback with NULL coordinates."""
     from server.models.event_report import EventReport
 
     # Fast forward citizen to AWAITING_EVENT_LOCATION
@@ -652,10 +659,13 @@ def test_event_reporting_manual_address_fallback(db, auth_citizen):
         db, auth_citizen.phone_number, "text", text_body="CONFIRM"
     )
     assert conf_res["status"] == "event_created"
+    assert conf_res["reference_id"].startswith(f"EVT-{datetime.now(timezone.utc).year}-")
 
     saved = db.query(EventReport).filter(EventReport.reference_id == conf_res["reference_id"]).first()
     assert saved is not None
-    assert "SSVPS Ground" in saved.location_address
+    assert saved.location_address == "SSVPS Ground, Vidyanagari, Deopur, Dhule"
+    assert saved.latitude is None
+    assert saved.longitude is None
 
 
 def test_event_reporting_date_validation(db, auth_citizen):
@@ -798,3 +808,151 @@ def test_conversation_recovery_after_restart(db, auth_citizen):
     assert data["event_category"] == "SCHOOL"
     assert data["event_date"] == "20/12/2026"
     assert data["event_time"] == "11:00 AM"
+
+
+def test_dynamic_utc_year_generation_mocked():
+    """Verify that both event reference IDs and WhatsApp tracking IDs dynamically use current UTC year."""
+    from server.services.whatsapp_service import _generate_event_reference_id, _generate_whatsapp_tracking_id
+
+    for test_year in (2026, 2027, 2030):
+        fake_now = datetime(test_year, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        with patch("server.services.whatsapp_service.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+
+            # Event Reference ID: EVT-<YEAR>-<8 chars>
+            evt_ref = _generate_event_reference_id()
+            assert evt_ref.startswith(f"EVT-{test_year}-")
+            parts = evt_ref.split("-")
+            assert len(parts) == 3
+            assert parts[0] == "EVT"
+            assert parts[1] == str(test_year)
+            assert len(parts[2]) == 8
+            assert len(evt_ref) <= 32
+
+            # Complaint Tracking ID: DHL-<YEAR>-W<ward>-<9 chars>
+            track_id = _generate_whatsapp_tracking_id("Ward 5")
+            assert track_id.startswith(f"DHL-{test_year}-W5-")
+            t_parts = track_id.split("-")
+            assert len(t_parts) == 4
+            assert t_parts[0] == "DHL"
+            assert t_parts[1] == str(test_year)
+            assert t_parts[2] == "W5"
+            assert len(t_parts[3]) == 9
+            assert len(track_id) <= 30
+
+
+def test_manual_waste_and_event_address_sets_null_coordinates(db, auth_citizen):
+    """Confirm manual text address submissions never receive synthetic GPS coordinates."""
+    from server.models.complaint import Complaint
+    from server.models.event_report import EventReport
+
+    # 1. Waste complaint with manual address
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/test_manual_null.jpg"
+    )
+    exact_waste_addr = "Near Old Bus Stand, Sakri Road, Dhule 424001"
+    res_waste = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body=f"ADDRESS: {exact_waste_addr}"
+    )
+    assert res_waste["status"] == "complaint_created"
+    comp = db.query(Complaint).filter(Complaint.tracking_number == res_waste["ticket"]).first()
+    assert comp is not None
+    assert comp.location_address == exact_waste_addr
+    assert comp.latitude is None
+    assert comp.longitude is None
+
+    # 2. Event report with manual address
+    auth_citizen.conversation_state = "AWAITING_EVENT_LOCATION"
+    auth_citizen.pending_complaint_data = json.dumps({
+        "event_category": "FESTIVAL",
+        "event_date": "15/12/2026",
+        "event_time": "05:00 PM"
+    })
+    db.commit()
+
+    exact_event_addr = "Shivaji Natyamandir, Station Road, Dhule"
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body=f"ADDRESS: {exact_event_addr}"
+    )
+    res_evt = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body="CONFIRM"
+    )
+    assert res_evt["status"] == "event_created"
+    evt = db.query(EventReport).filter(EventReport.reference_id == res_evt["reference_id"]).first()
+    assert evt is not None
+    assert evt.location_address == exact_event_addr
+    assert evt.latitude is None
+    assert evt.longitude is None
+
+
+def test_genuine_location_pin_preserves_actual_coordinates(db, auth_citizen):
+    """Confirm genuine WhatsApp location pins preserve exact submitted coordinates."""
+    from server.models.complaint import Complaint
+    from server.models.event_report import EventReport
+
+    test_lat = 20.9150
+    test_lng = 74.7820
+
+    # 1. Waste complaint with genuine location
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/test_genuine_pin.jpg"
+    )
+    res_waste = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "location",
+        latitude=test_lat,
+        longitude=test_lng
+    )
+    assert res_waste["status"] == "complaint_created"
+    comp = db.query(Complaint).filter(Complaint.tracking_number == res_waste["ticket"]).first()
+    assert comp is not None
+    assert abs(comp.latitude - test_lat) < 0.0001
+    assert abs(comp.longitude - test_lng) < 0.0001
+    assert "Geotagged via WhatsApp" in comp.location_address
+
+    # 2. Event report with genuine location
+    auth_citizen.conversation_state = "AWAITING_EVENT_LOCATION"
+    auth_citizen.pending_complaint_data = json.dumps({
+        "event_category": "CLEANUP",
+        "event_date": "22/12/2026",
+        "event_time": "07:00 AM"
+    })
+    db.commit()
+
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "location",
+        latitude=test_lat,
+        longitude=test_lng
+    )
+    res_evt = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "interactive",
+        text_body="EVENT_CONFIRM"
+    )
+    assert res_evt["status"] == "event_created"
+    evt = db.query(EventReport).filter(EventReport.reference_id == res_evt["reference_id"]).first()
+    assert evt is not None
+    assert abs(evt.latitude - test_lat) < 0.0001
+    assert abs(evt.longitude - test_lng) < 0.0001
+    assert "Geotagged via WhatsApp" in evt.location_address
+

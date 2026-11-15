@@ -1,5 +1,6 @@
 import pytest
 import logging
+from datetime import datetime, timezone
 import httpx
 from fastapi.testclient import TestClient
 from server.main import app
@@ -126,7 +127,7 @@ def test_photo_and_location_complaint_flow():
     assert res_loc.status_code == 200
     data = res_loc.json()
     assert data["status"] == "complaint_created"
-    assert "DHL-2026-W14" in data["ticket"]
+    assert f"DHL-{datetime.now(timezone.utc).year}-W14" in data["ticket"]
     assert "+20" in data["reply"]
 
 
@@ -2489,7 +2490,7 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
         assert complaint is not None, "Complaint was not created by WhatsApp webhook"
         created_complaint_id = complaint.id
         tracking_number = complaint.tracking_number
-        assert tracking_number.startswith("DHL-2026-W12-")
+        assert tracking_number.startswith(f"DHL-{datetime.now(timezone.utc).year}-W12-")
 
         # Step 3: Unauthenticated access to admin complaints API must be rejected
         unauth_res = client.get("/api/admin/complaints")

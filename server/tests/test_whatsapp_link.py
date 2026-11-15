@@ -326,7 +326,7 @@ class TestComplaintAssociationWithLinkedUser:
             assert res_loc.status_code == 200
             loc_data = res_loc.json()
             assert loc_data["status"] == "complaint_created"
-            assert "DHL-2026-" in loc_data["ticket"]
+            assert f"DHL-{datetime.now(timezone.utc).year}-" in loc_data["ticket"]
 
             # Query the complaint in DB: citizen_id must match linked User.id!
             complaint = db.query(Complaint).filter(Complaint.tracking_number == loc_data["ticket"]).first()

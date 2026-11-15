@@ -44,11 +44,12 @@ _EVENT_CATEGORIES = (
 def _generate_event_reference_id() -> str:
     """Generate a collision-resistant WhatsApp public event reference ID.
 
-    Format: EVT-2026-<8 uppercase alphanumeric chars>
+    Format: EVT-<YEAR>-<8 uppercase alphanumeric chars>
     Total length: 17 chars — fits String(32).
     """
+    year = datetime.now(timezone.utc).year
     suffix = "".join(secrets.choice(_ID_ALPHABET) for _ in range(8))
-    return f"EVT-2026-{suffix}"
+    return f"EVT-{year}-{suffix}"
 
 
 def _is_column_in_table(db: Session, table_name: str, column_name: str) -> bool:
@@ -65,14 +66,15 @@ def _is_column_in_table(db: Session, table_name: str, column_name: str) -> bool:
 def _generate_whatsapp_tracking_id(ward: str) -> str:
     """Generate a collision-resistant WhatsApp complaint tracking number.
 
-    Format: <PREFIX>2026-W<ward_number>-<9 uppercase alphanumeric chars>
+    Format: <PREFIX><YEAR>-W<ward_number>-<9 uppercase alphanumeric chars>
     Example: DHL-2026-W12-A7BZ3XKQR
     Total length: ≤ 28 chars — fits String(30).
     """
     prefix = getattr(config, "TRACKING_PREFIX", "DHL-").rstrip("-") + "-"
     ward_num = ward.replace("Ward ", "").strip() if ward else "0"
+    year = datetime.now(timezone.utc).year
     suffix = "".join(secrets.choice(_ID_ALPHABET) for _ in range(_ID_SUFFIX_LEN))
-    return f"{prefix}2026-W{ward_num}-{suffix}"
+    return f"{prefix}{year}-W{ward_num}-{suffix}"
 
 
 class MediaValidationError(Exception):
@@ -1455,13 +1457,13 @@ class WhatsAppService:
                 manual_address = clean_text.split(":", 1)[1].strip()
                 if manual_address:
                     loc_addr = manual_address
-                    lat_val = 20.9042
-                    lng_val = 74.7749
+                    lat_val = None
+                    lng_val = None
                     loc_captured = True
             elif len(clean_text) > 3 and not clean_text.isdigit():
                 loc_addr = clean_text
-                lat_val = 20.9042
-                lng_val = 74.7749
+                lat_val = None
+                lng_val = None
                 loc_captured = True
 
             if not loc_captured:
@@ -1744,9 +1746,9 @@ class WhatsAppService:
                 driver_display = "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
 
             if manual_waste_address:
-                location_address = f"{manual_waste_address}, Dhule"
-                lat_val = 20.9042
-                lng_val = 74.7749
+                location_address = manual_waste_address
+                lat_val = None
+                lng_val = None
             else:
                 location_address = f"Geotagged via WhatsApp ({lat_val:.4f}, {lng_val:.4f}), Dhule"
                 if citizen.ward:
