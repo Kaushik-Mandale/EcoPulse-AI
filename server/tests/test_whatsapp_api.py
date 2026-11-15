@@ -2536,3 +2536,106 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
         db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
         db.commit()
         db.close()
+
+
+def test_meta_webhook_location_with_name_and_address_persists_coordinates():
+    """Verify Meta webhook extracts latitude, longitude, and optional name/address into DB."""
+    import hmac
+    import hashlib
+    import uuid
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+
+    sender = f"9198{uuid.uuid4().int % 1000000000:09d}"
+    orig_secret = config.META_APP_SECRET
+    test_secret = "test_meta_secret_location_btn_123"
+    config.META_APP_SECRET = test_secret
+
+    db = SessionLocal()
+    created_complaint_id = None
+    msg_id = f"wamid.{uuid.uuid4().hex}"
+    try:
+        # Pre-seed citizen with household and AWAITING_LOCATION state
+        citizen = WhatsAppCitizen(
+            phone_number=sender,
+            household_id="SHP-W10-HLOC1",
+            ward="Ward 10",
+            is_authorized=True,
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({
+                "flow": "waste",
+                "image_url": "/uploads/whatsapp/test_loc_photo.jpg",
+                "media_id": "test_media_123",
+                "waste_type": "Mixed Municipal Waste"
+            })
+        )
+        db.add(citizen)
+        db.commit()
+
+        loc_payload = {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "100000001",
+                    "changes": [
+                        {
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {"display_phone_number": "15550000001", "phone_number_id": "100000001"},
+                                "messages": [
+                                    {
+                                        "from": sender,
+                                        "id": msg_id,
+                                        "timestamp": "1710000050",
+                                        "type": "location",
+                                        "location": {
+                                            "latitude": 20.9042,
+                                            "longitude": 74.7749,
+                                            "name": "Dhule Central Park",
+                                            "address": "Civil Lines, Dhule"
+                                        }
+                                    }
+                                ]
+                            },
+                            "field": "messages"
+                        }
+                    ]
+                }
+            ]
+        }
+        raw_body = json.dumps(loc_payload).encode("utf-8")
+        sig = "sha256=" + hmac.new(test_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+
+        res = client.post(
+            "/api/whatsapp/webhook",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig}
+        )
+        assert res.status_code == 200
+
+        # Verify DB Complaint
+        db.expire_all()
+        complaint = db.query(Complaint).filter(Complaint.whatsapp_citizen_id == citizen.id).first()
+        assert complaint is not None
+        created_complaint_id = complaint.id
+        assert abs(complaint.latitude - 20.9042) < 0.0001
+        assert abs(complaint.longitude - 74.7749) < 0.0001
+        assert "Dhule Central Park" in complaint.location_address
+        assert "Civil Lines, Dhule" in complaint.location_address
+
+        # Verify DriverTask association
+        task = db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).first()
+        assert task is not None
+        assert task.location_name == complaint.location_address
+
+    finally:
+        config.META_APP_SECRET = orig_secret
+        if created_complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).delete()
+            db.query(Complaint).filter(Complaint.id == created_complaint_id).delete()
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).delete()
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete()
+        db.commit()
+        db.close()
+

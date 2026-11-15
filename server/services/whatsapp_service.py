@@ -227,15 +227,19 @@ def _build_texts() -> dict:
                 "कृपया कचऱ्याचा, घाणीचा किंवा ओव्हरफ्लो झालेल्या कुंडीचा *फोटो पाठवा*."
             ),
             "photo_received_ack": (
-                "📸 *फोटो प्राप्त झाला! / Photo received!* ✅\n\n"
-                "कचऱ्याचे स्थान निश्चित करण्यासाठी कृपया खालील बटण दाबून आपले Live Location पाठवा किंवा पत्ता टाईप करा."
+                "📸 *फोटो प्राप्त झाला! / Photo received!* ✅"
             ),
             "ask_location": (
-                "📍 *कचऱ्याचे स्थान पाठवा / Send Location*\n\n"
-                "कृपया खालील 'Send Location' बटण दाबून आपले अचूक GPS लोकेशन पाठवा. आपण पत्ता लिहूनही पाठवू शकता (उदा. 'पत्ता: स्टेशन रोड, धुळे')."
+                "📍 Location Required / स्थान आवश्यक\n\n"
+                "कृपया खालील बटण दाबून कचऱ्याचे ठिकाण शेअर करा.\n"
+                "Please tap below to share the waste location.\n\n"
+                "💡 आपण पत्ता टाईप करूनही पाठवू शकता (उदा. 'पत्ता: स्टेशन रोड, धुळे') / "
+                "Or reply with an address (e.g. 'Address: Station Road, Dhule')."
             ),
             "invalid_location": (
-                "⚠️ वैध स्थान मिळाले नाही. कृपया अटॅचमेंट (+) मधून आपले सध्याचे WhatsApp Location पुन्हा पाठवा किंवा 'पत्ता: ...' लिहून पाठवा."
+                "⚠️ वैध स्थान मिळाले नाही / Valid location not received.\n\n"
+                "कृपया खालील बटण दाबून अचूक GPS लोकेशन पाठवा किंवा 'पत्ता: ...' लिहून पाठवा.\n"
+                "Please tap the button below to share GPS location, or reply with 'Address: ...'."
             ),
             "report_success": (
                 "✅ *तक्रार यशस्वीरित्या नोंदवली गेली!*\n\n"
@@ -389,15 +393,19 @@ def _build_texts() -> dict:
                 "Please send a clear *photo* of the garbage, debris, or overflowing bin."
             ),
             "photo_received_ack": (
-                "📸 *Photo received! / फोटो प्राप्त झाला!* ✅\n\n"
-                "Please share your location to pinpoint the waste spot."
+                "📸 *Photo received! / फोटो प्राप्त झाला!* ✅"
             ),
             "ask_location": (
-                "📍 *Send Location / कचऱ्याचे स्थान पाठवा*\n\n"
-                "Please tap 'Send Location' below to share your GPS location, or type an address (e.g. 'Address: Station Road, Dhule')."
+                "📍 Location Required / स्थान आवश्यक\n\n"
+                "कृपया खालील बटण दाबून कचऱ्याचे ठिकाण शेअर करा.\n"
+                "Please tap below to share the waste location.\n\n"
+                "💡 You can also reply with an address (e.g. 'Address: Station Road, Dhule') / "
+                "किंवा पत्ता टाईप करा (उदा. 'पत्ता: स्टेशन रोड, धुळे')."
             ),
             "invalid_location": (
-                "⚠️ Valid location not received. Please resend your current WhatsApp Location via attachment (+) or reply with 'ADDRESS: ...'."
+                "⚠️ Valid location not received / वैध स्थान मिळाले नाही.\n\n"
+                "Please tap the button below to share GPS location, or reply with 'Address: ...'.\n"
+                "कृपया खालील बटण दाबून अचूक GPS लोकेशन पाठवा किंवा 'पत्ता: ...' लिहून पाठवा."
             ),
             "report_success": (
                 "✅ *Complaint Registered Successfully!*\n\n"
@@ -544,9 +552,9 @@ class WhatsAppService:
                 full_name="Dhule Citizen",
                 ward="Dhule Ward 1",
                 is_authorized=False,
-                preferred_language="mr",
+                preferred_language=None,          # triggers AWAITING_LANGUAGE flow
                 eco_coins=100,
-                conversation_state="IDLE"
+                conversation_state="AWAITING_LANGUAGE"
             )
             db.add(citizen)
             db.commit()
@@ -905,6 +913,59 @@ class WhatsAppService:
         return interactive
 
     @staticmethod
+    def build_language_selection_interactive() -> dict:
+        """Construct a Meta WhatsApp Cloud API reply button payload for language selection.
+
+        Presents two buttons: English (LANG_EN) and मराठी (LANG_MR).
+        Sent to first-time citizens whose conversation_state == 'AWAITING_LANGUAGE'.
+        """
+        return WhatsAppService.build_quick_buttons_interactive(
+            body_text=(
+                "Welcome to EcoPulse AI 🏛️\n\n"
+                "Choose your preferred language / कृपया भाषा निवडा"
+            ),
+            buttons=[
+                ("LANG_EN", "English"),
+                ("LANG_MR", "मराठी"),
+            ],
+            header_text="EcoPulse AI",
+            footer_text="Dhule Municipal Corporation"
+        )
+
+    @staticmethod
+    def build_primary_buttons_interactive(lang: str = "mr") -> dict:
+        """Construct a Meta WhatsApp Cloud API reply button payload for the 3 primary service buttons.
+
+        Titles are kept ≤ 20 characters to comply with Meta Cloud API limits.
+        Sent after language selection and to returning users on the main menu.
+        """
+        is_mr = (lang or "mr").lower() == "mr"
+        body_text = (
+            "EcoPulse AI — नागरी सेवा\n\nआज आम्ही आपली कशी मदत करू शकतो?"
+            if is_mr
+            else "EcoPulse AI — Citizen Services\n\nHow can we assist you today?"
+        )
+        buttons = (
+            [
+                ("REPORT_WASTE",        "🗑️ कचरा नोंदवा"),
+                ("GENERAL_COMPLAINT",   "💬 सामान्य तक्रार"),
+                ("OPEN_FULL_MENU",      "📋 पूर्ण मेनू"),
+            ]
+            if is_mr
+            else [
+                ("REPORT_WASTE",        "🗑️ Report Waste"),
+                ("GENERAL_COMPLAINT",   "💬 General Complaint"),
+                ("OPEN_FULL_MENU",      "📋 Open Full Menu"),
+            ]
+        )
+        footer = "धुळे महानगरपालिका" if is_mr else "Dhule Municipal Corporation"
+        return WhatsAppService.build_quick_buttons_interactive(
+            body_text=body_text,
+            buttons=buttons,
+            footer_text=footer
+        )
+
+    @staticmethod
     def send_meta_interactive_list(
         to_phone: str,
         body_text: str,
@@ -1148,6 +1209,8 @@ class WhatsAppService:
         media_id: str = "",
         latitude: float = None,
         longitude: float = None,
+        location_name: Optional[str] = None,
+        location_address: Optional[str] = None,
         message_id: str = None
     ) -> dict:
         """
@@ -1277,8 +1340,73 @@ class WhatsAppService:
             return {"status": "not_linked", "reply": reply}
 
         lowered = clean_text.lower()
+
+        # ----------------------------------------------------------------
+        # STEP 1b: Language Selection — first-time citizens or explicit trigger
+        # ----------------------------------------------------------------
+        _lang_selection_cmds = {"START", "LANGUAGE", "LANG"}
+        _in_lang_state = citizen.conversation_state == "AWAITING_LANGUAGE"
+        _explicit_lang_cmd = clean_text.upper() in _lang_selection_cmds
+
+        if _in_lang_state or _explicit_lang_cmd:
+            # Determine whether this message is a valid language choice
+            _chose_en = (
+                clean_text == "LANG_EN"
+                or lowered in {"english", "1"}
+            )
+            _chose_mr = (
+                clean_text == "LANG_MR"
+                or lowered in {"marathi", "मराठी", "2"}
+            )
+
+            if _chose_en:
+                citizen.preferred_language = "en"
+                citizen.conversation_state = "IDLE"
+                db.commit()
+                lang = "en"
+                all_texts = _build_texts()
+                strings = all_texts["en"]
+                welcome_txt = (
+                    "🇬🇧 Language set to *English*!\n\n"
+                    "Welcome to EcoPulse AI — Citizen Services.\n"
+                    "How can we assist you today?"
+                )
+                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="en")
+                WhatsAppService.send_meta_whatsapp(
+                    citizen.phone_number, welcome_txt, interactive=primary_btns
+                )
+                return {"status": "language_selected", "language": "en", "reply": welcome_txt}
+
+            if _chose_mr:
+                citizen.preferred_language = "mr"
+                citizen.conversation_state = "IDLE"
+                db.commit()
+                lang = "mr"
+                all_texts = _build_texts()
+                strings = all_texts["mr"]
+                welcome_txt = (
+                    "🇮🇳 भाषा *मराठी* म्हणून सेट केली!\n\n"
+                    "EcoPulse AI — नागरी सेवांमध्ये आपले स्वागत आहे.\n"
+                    "आज आम्ही आपली कशी मदत करू शकतो?"
+                )
+                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="mr")
+                WhatsAppService.send_meta_whatsapp(
+                    citizen.phone_number, welcome_txt, interactive=primary_btns
+                )
+                return {"status": "language_selected", "language": "mr", "reply": welcome_txt}
+
+            # Not a language answer — re-prompt if awaiting language or explicit trigger
+            if _in_lang_state or _explicit_lang_cmd:
+                lang_sel = WhatsAppService.build_language_selection_interactive()
+                WhatsAppService.send_meta_whatsapp(
+                    citizen.phone_number,
+                    "Welcome to EcoPulse AI\n\nChoose your preferred language / कृपया भाषा निवडा",
+                    interactive=lang_sel
+                )
+                return {"status": "awaiting_language", "reply": "language_selection_prompt"}
+
         is_full_menu_cmd = (
-            clean_text in {"MENU_FULL_MENU", "FULL_MENU"}
+            clean_text in {"MENU_FULL_MENU", "FULL_MENU", "OPEN_FULL_MENU"}
             or lowered == "full menu"
         )
         is_menu_cmd = (
@@ -1312,18 +1440,16 @@ class WhatsAppService:
                 citizen.phone_number,
                 message_text=full_text_menu
             )
-            quick_actions = WhatsAppService.build_quick_buttons_interactive(
-                body_text="⚡ झटपट सेवा / Quick Actions",
-                buttons=[
-                    ("MENU_REPORT_WASTE", "🗑️ कचरा / Waste"),
-                    ("MENU_GENERAL_COMPLAINT", "⚠️ तक्रार / Report"),
-                    ("MENU_FULL_MENU", "📋 पूर्ण मेनू / Menu")
-                ]
-            )
+            # Send the 3 primary action buttons (new UX)
+            primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang)
             WhatsAppService.send_meta_whatsapp(
                 citizen.phone_number,
-                message_text="⚡ Quick actions / झटपट सेवा",
-                interactive=quick_actions
+                message_text=(
+                    "कचरा नोंदवा, तक्रार करा किंवा पूर्ण मेनू उघडा."
+                    if lang == "mr"
+                    else "Report waste, raise a complaint, or open the full menu."
+                ),
+                interactive=primary_btns
             )
             return {"status": "menu_presented", "reply": full_text_menu}
 
@@ -1351,12 +1477,21 @@ class WhatsAppService:
         # ----------------------------------------------------------------
         is_cancel = clean_text in {"CANCEL", "EVENT_CANCEL"} or lowered in {"cancel", "रद्द", "थांबा", "stop"}
         if is_cancel and citizen.conversation_state != "IDLE":
+            was_event = (citizen.conversation_state or "").startswith("AWAITING_EVENT")
             citizen.conversation_state = "IDLE"
             citizen.pending_complaint_data = None
             db.commit()
-            reply = strings["event_cancelled"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "event_cancelled", "reply": reply}
+            if was_event:
+                reply = strings["event_cancelled"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {"status": "event_cancelled", "reply": reply}
+            else:
+                cancel_reply = (
+                    "❌ तक्रार नोंदणी रद्द केली आहे. / Complaint registration cancelled.\n\n"
+                    + strings["menu_options"]
+                )
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, cancel_reply)
+                return {"status": "cancelled", "reply": cancel_reply}
 
         # ----------------------------------------------------------------
         # PUBLIC EVENT REPORTING STATE MACHINE
@@ -1448,7 +1583,14 @@ class WhatsAppService:
                     lat_val = float(latitude)
                     lng_val = float(longitude)
                     if math.isfinite(lat_val) and math.isfinite(lng_val) and -90 <= lat_val <= 90 and -180 <= lng_val <= 180:
-                        loc_addr = f"Geotagged via WhatsApp ({lat_val:.6f}, {lng_val:.6f})"
+                        explicit_parts = [
+                            str(p).strip() for p in (location_name, location_address)
+                            if p and str(p).strip()
+                        ]
+                        if explicit_parts:
+                            loc_addr = f"{', '.join(explicit_parts)} ({lat_val:.6f}, {lng_val:.6f})"
+                        else:
+                            loc_addr = f"Geotagged via WhatsApp ({lat_val:.6f}, {lng_val:.6f})"
                         loc_captured = True
                 except (TypeError, ValueError):
                     pass
@@ -1576,6 +1718,16 @@ class WhatsAppService:
                     return {"status": "awaiting_location", "reply": reply}
             elif clean_text in {"1", "2", "3", "4", "5", "6", "7", "8", "9"} or is_menu_cmd:
                 return _present_main_menu()
+            elif clean_text.upper() in {"CANCEL", "रद्द", "थांबा", "STOP", "EXIT"}:
+                citizen.conversation_state = "IDLE"
+                citizen.pending_complaint_data = None
+                db.commit()
+                cancel_reply = (
+                    "❌ तक्रार नोंदणी रद्द केली आहे. / Complaint registration cancelled.\n\n"
+                    + strings["menu_options"]
+                )
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, cancel_reply)
+                return {"status": "cancelled", "reply": cancel_reply}
             else:
                 # Text followup while waiting for location repeats prompt
                 reply = strings["ask_location"]
@@ -1746,13 +1898,21 @@ class WhatsAppService:
                 driver_display = "लवकरच नियुक्त केला जाईल" if lang == "mr" else "Pending Assignment"
 
             if manual_waste_address:
-                location_address = manual_waste_address
+                resolved_location_address = manual_waste_address
                 lat_val = None
                 lng_val = None
             else:
-                location_address = f"Geotagged via WhatsApp ({lat_val:.4f}, {lng_val:.4f}), Dhule"
-                if citizen.ward:
-                    location_address = f"{citizen.ward}, {location_address}"
+                explicit_parts = [
+                    str(p).strip() for p in (location_name, location_address)
+                    if p and str(p).strip()
+                ]
+                if explicit_parts:
+                    loc_desc = ", ".join(explicit_parts)
+                    resolved_location_address = f"{loc_desc} ({lat_val:.4f}, {lng_val:.4f})"
+                else:
+                    resolved_location_address = f"Geotagged via WhatsApp ({lat_val:.4f}, {lng_val:.4f}), Dhule"
+                if citizen.ward and citizen.ward not in resolved_location_address:
+                    resolved_location_address = f"{citizen.ward}, {resolved_location_address}"
 
             new_complaint = None
             ticket_num = None
@@ -1769,7 +1929,7 @@ class WhatsAppService:
                         citizen_id=citizen_user_id,
                         whatsapp_citizen_id=citizen.id,
                         ward=citizen.ward or "Dhule Ward 1",
-                        location_address=location_address,
+                        location_address=resolved_location_address,
                         latitude=lat_val,
                         longitude=lng_val,
                         waste_type=waste_type,
@@ -1819,7 +1979,7 @@ class WhatsAppService:
                     if _is_tracking_number_collision(exc):
                         if _attempt < _WA_MAX_RETRIES - 1:
                             continue
-                        raise RuntimeError("Could not generate unique tracking number.") from exc
+                        raise RuntimeError("Could not generate a unique WhatsApp tracking number.") from exc
                     raise
 
             reply = strings["complaint_created"].format(
@@ -1896,7 +2056,7 @@ class WhatsAppService:
                     if _is_tracking_number_collision(exc):
                         if _attempt < _WA_MAX_RETRIES - 1:
                             continue
-                        raise RuntimeError("Could not generate unique tracking number.") from exc
+                        raise RuntimeError("Could not generate a unique WhatsApp tracking number.") from exc
                     raise
 
             reply = strings["general_complaint_received"].format(
@@ -1916,7 +2076,7 @@ class WhatsAppService:
         # 8-OPTION MAIN MENU DISPATCH
         # ----------------------------------------------------------------
         # Option 1: Waste Complaint
-        if clean_text in {"MENU_REPORT_WASTE", "1"} or "कचरा" in lowered or "waste" in lowered or "report" in lowered or "तक्रार नोंद" in lowered:
+        if clean_text in {"MENU_REPORT_WASTE", "REPORT_WASTE", "1"} or "कचरा" in lowered or "waste" in lowered or "report" in lowered or "तक्रार नोंद" in lowered:
             citizen.conversation_state = "AWAITING_PHOTO"
             db.commit()
             reply = strings["ask_photo"]
@@ -1926,7 +2086,7 @@ class WhatsAppService:
             return {"status": "awaiting_photo", "reply": reply}
 
         # Option 2: General Complaint
-        if clean_text in {"MENU_GENERAL_COMPLAINT", "2"} or "सामान्य" in lowered or "general" in lowered:
+        if clean_text in {"MENU_GENERAL_COMPLAINT", "GENERAL_COMPLAINT", "2"} or "सामान्य" in lowered or "general" in lowered:
             citizen.conversation_state = "AWAITING_GENERAL_COMPLAINT"
             db.commit()
             reply = strings["general_complaint_prompt"]

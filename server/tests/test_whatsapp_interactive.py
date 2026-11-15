@@ -253,11 +253,11 @@ def test_greeting_sends_chat_menu_and_quick_actions(db, auth_citizen, sent_messa
     interactive = shortcut_message["interactive"]
     assert interactive["type"] == "button"
     assert len(interactive["action"]["buttons"]) == 3
-    assert [button["reply"]["id"] for button in interactive["action"]["buttons"]] == [
-        "MENU_REPORT_WASTE",
-        "MENU_GENERAL_COMPLAINT",
-        "MENU_FULL_MENU",
-    ]
+    # New primary button IDs from build_primary_buttons_interactive
+    button_ids = [button["reply"]["id"] for button in interactive["action"]["buttons"]]
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
 
 
 def test_full_menu_button_opens_existing_interactive_list(db, auth_citizen, sent_messages):
@@ -956,3 +956,392 @@ def test_genuine_location_pin_preserves_actual_coordinates(db, auth_citizen):
     assert abs(evt.longitude - test_lng) < 0.0001
     assert "Geotagged via WhatsApp" in evt.location_address
 
+
+def test_bilingual_location_request_instructions_and_button_action():
+    """Verify bilingual instructions and native action.name = 'send_location'."""
+    from server.services.whatsapp_service import _build_texts
+
+    texts = _build_texts()
+    for lang in ("mr", "en"):
+        prompt = texts[lang]["ask_location"]
+        assert "📍 Location Required / स्थान आवश्यक" in prompt
+        assert "कृपया खालील बटण दाबून कचऱ्याचे ठिकाण शेअर करा." in prompt
+        assert "Please tap below to share the waste location." in prompt
+
+        payload = WhatsAppService.build_location_request_interactive(prompt)
+        assert payload["type"] == "location_request_message"
+        assert payload["action"] == {"name": "send_location"}
+        assert payload["body"]["text"] == prompt[:1024]
+
+
+def test_waste_photo_triggers_bilingual_location_request_button(db, auth_citizen, sent_messages):
+    """Submitting a waste photo triggers photo ack and native location_request_message button."""
+    res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/sample_waste_bilingual.jpg"
+    )
+
+    assert res["status"] == "awaiting_location"
+    assert len(sent_messages) == 2
+
+    # Message 0: Photo ack
+    ack_msg = sent_messages[0]
+    assert "Photo received" in ack_msg["message_text"] or "फोटो प्राप्त झाला" in ack_msg["message_text"]
+
+    # Message 1: Native location request interactive message
+    loc_msg = sent_messages[1]
+    assert loc_msg["interactive"] is not None
+    assert loc_msg["interactive"]["type"] == "location_request_message"
+    assert loc_msg["interactive"]["action"]["name"] == "send_location"
+    body_text = loc_msg["interactive"]["body"]["text"]
+    assert "📍 Location Required / स्थान आवश्यक" in body_text
+    assert "कृपया खालील बटण दाबून कचऱ्याचे ठिकाण शेअर करा." in body_text
+    assert "Please tap below to share the waste location." in body_text
+
+
+def test_incoming_location_persists_coordinates_and_optional_name_address(db, auth_citizen):
+    """Webhook location payload extracts lat/lng and optional name/address into DB."""
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+
+    # Step 1: Submit photo
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/waste_with_meta_loc.jpg"
+    )
+
+    # Step 2: Inbound location with coordinates and optional name/address
+    test_lat = 20.9042
+    test_lng = 74.7749
+    loc_name = "Dhule Municipal Plaza"
+    loc_address = "Station Road, Dhule"
+
+    res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "location",
+        latitude=test_lat,
+        longitude=test_lng,
+        location_name=loc_name,
+        location_address=loc_address
+    )
+
+    assert res["status"] == "complaint_created"
+    comp = db.query(Complaint).filter(Complaint.tracking_number == res["ticket"]).first()
+    assert comp is not None
+    assert abs(comp.latitude - test_lat) < 0.0001
+    assert abs(comp.longitude - test_lng) < 0.0001
+    assert loc_name in comp.location_address
+    assert loc_address in comp.location_address
+
+    # Verify DriverTask association
+    task = db.query(DriverTask).filter(DriverTask.complaint_id == comp.id).first()
+    assert task is not None
+    assert task.location_name == comp.location_address
+
+    # Verify session is reset to IDLE
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "IDLE"
+    assert auth_citizen.pending_complaint_data is None
+
+
+def test_location_cancellation_gracefully_resets_session(db, auth_citizen):
+    """Citizen sending CANCEL while awaiting location cancels gracefully."""
+    # Step 1: Submit photo
+    WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "image",
+        media_url="https://lookaside.fbsbx.com/waste_cancel.jpg"
+    )
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_LOCATION"
+
+    # Step 2: Citizen types CANCEL
+    res = WhatsAppService.handle_incoming_message(
+        db,
+        auth_citizen.phone_number,
+        "text",
+        text_body="CANCEL"
+    )
+    assert res["status"] == "cancelled"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "IDLE"
+    assert auth_citizen.pending_complaint_data is None
+    assert "रद्द" in res["reply"] or "cancelled" in res["reply"].lower()
+
+
+
+# ============================================================
+# Language Selection & Primary Button Regression Tests
+# ============================================================
+
+@pytest.fixture
+def lang_citizen(db):
+    """
+    A linked/authorized citizen in AWAITING_LANGUAGE state with no preferred_language.
+    Simulates a brand-new citizen who has just been linked but has not yet selected a language.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    test_phone = f"9199{uuid.uuid4().int % 100000000:08d}"
+    user = User(
+        full_name="Nandini Kulkarni",
+        email=f"nandini_{suffix}@cityswap.io",
+        phone=test_phone,
+        role="citizen",
+        is_active=True
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    citizen = WhatsAppCitizen(
+        phone_number=test_phone,
+        full_name="Nandini Kulkarni",
+        ward="Ward 5",
+        is_authorized=True,
+        user_id=user.id,
+        preferred_language=None,
+        eco_coins=100,
+        conversation_state="AWAITING_LANGUAGE"
+    )
+    db.add(citizen)
+    db.commit()
+    db.refresh(citizen)
+
+    yield citizen
+
+    try:
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.id == citizen.id).delete()
+        db.query(User).filter(User.id == user.id).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def test_first_time_language_selection_prompt(db, lang_citizen, sent_messages):
+    """
+    A citizen in AWAITING_LANGUAGE state sending random text receives the
+    language selection interactive button message (English / मराठी).
+    """
+    res = WhatsAppService.handle_incoming_message(
+        db, lang_citizen.phone_number, "text", text_body="hello"
+    )
+    assert res["status"] == "awaiting_language"
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "button"
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    assert "LANG_EN" in button_ids
+    assert "LANG_MR" in button_ids
+    # Citizen state should still be AWAITING_LANGUAGE
+    db.refresh(lang_citizen)
+    assert lang_citizen.conversation_state == "AWAITING_LANGUAGE"
+
+
+def test_language_selection_persists_english_and_sends_primary_buttons(db, lang_citizen, sent_messages):
+    """
+    Selecting English (LANG_EN) persists preferred_language='en', resets state to IDLE,
+    and returns a localized welcome with 3 primary buttons.
+    """
+    res = WhatsAppService.handle_incoming_message(
+        db, lang_citizen.phone_number, "interactive", text_body="LANG_EN"
+    )
+    assert res["status"] == "language_selected"
+    assert res["language"] == "en"
+
+    db.refresh(lang_citizen)
+    assert lang_citizen.preferred_language == "en"
+    assert lang_citizen.conversation_state == "IDLE"
+
+    # Should have sent exactly 1 message: welcome + 3 primary buttons
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "button"
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
+    # Verify English button titles
+    button_titles = [b["reply"]["title"] for b in interactive["action"]["buttons"]]
+    assert any("Report Waste" in t for t in button_titles)
+    assert any("General Complaint" in t for t in button_titles)
+    assert any("Full Menu" in t or "Open" in t for t in button_titles)
+    # All button titles must be ≤ 20 chars (Meta API limit)
+    for t in button_titles:
+        assert len(t) <= 20, f"Button title too long ({len(t)}): {t!r}"
+
+
+def test_language_selection_persists_marathi_and_sends_primary_buttons(db, lang_citizen, sent_messages):
+    """
+    Selecting मराठी (LANG_MR) persists preferred_language='mr', resets state to IDLE,
+    and returns a localized Marathi welcome with 3 primary buttons in Marathi.
+    """
+    res = WhatsAppService.handle_incoming_message(
+        db, lang_citizen.phone_number, "interactive", text_body="LANG_MR"
+    )
+    assert res["status"] == "language_selected"
+    assert res["language"] == "mr"
+
+    db.refresh(lang_citizen)
+    assert lang_citizen.preferred_language == "mr"
+    assert lang_citizen.conversation_state == "IDLE"
+
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "button"
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
+    # All button titles must be ≤ 20 chars
+    for b in interactive["action"]["buttons"]:
+        title = b["reply"]["title"]
+        assert len(title) <= 20, f"Button title too long ({len(title)}): {title!r}"
+
+
+def test_returning_user_retains_language_and_skips_selection(db, auth_citizen, sent_messages):
+    """
+    A returning citizen with preferred_language='en' (IDLE state) sending 'hey' receives
+    the localized welcome and 3 primary buttons — WITHOUT language selection prompt.
+    """
+    # auth_citizen has preferred_language="en", conversation_state="IDLE"
+    assert auth_citizen.preferred_language == "en"
+    assert auth_citizen.conversation_state == "IDLE"
+
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="hey"
+    )
+    assert res["status"] == "menu_presented"
+    # Must send 2 messages: full text menu + primary buttons interactive
+    assert len(sent_messages) == 2
+    interactive = sent_messages[1]["interactive"]
+    assert interactive["type"] == "button"
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    # Should NOT receive language selection buttons
+    assert "LANG_EN" not in button_ids
+    assert "LANG_MR" not in button_ids
+    # Should receive primary service buttons
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
+    # Language preference unchanged
+    db.refresh(auth_citizen)
+    assert auth_citizen.preferred_language == "en"
+
+
+def test_primary_buttons_invoke_correct_workflows(db, auth_citizen):
+    """
+    Tapping each primary button ID routes to the correct conversation workflow.
+    - REPORT_WASTE      → AWAITING_PHOTO
+    - GENERAL_COMPLAINT → AWAITING_GENERAL_COMPLAINT
+    - OPEN_FULL_MENU    → full_menu_presented (8-option interactive list)
+    """
+    # REPORT_WASTE
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="REPORT_WASTE"
+    )
+    assert res["status"] == "awaiting_photo"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_PHOTO"
+
+    # Reset state
+    auth_citizen.conversation_state = "IDLE"
+    db.commit()
+
+    # GENERAL_COMPLAINT
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="GENERAL_COMPLAINT"
+    )
+    assert res["status"] == "awaiting_general_complaint"
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_GENERAL_COMPLAINT"
+
+    # Reset state
+    auth_citizen.conversation_state = "IDLE"
+    db.commit()
+
+    # OPEN_FULL_MENU
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
+    )
+    assert res["status"] == "full_menu_presented"
+
+
+def test_help_language_switch_updates_preference_and_sends_primary_buttons(db, auth_citizen, sent_messages):
+    """
+    Switching language via MENU_HELP_LANG → LANG_MR updates preferred_language to 'mr'
+    and sends a localized response. Subsequent greeting returns Marathi primary buttons.
+    """
+    # Step 1: Open help
+    res_help = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="MENU_HELP_LANG"
+    )
+    assert res_help["status"] == "help"
+    # Help message should include LANG_EN and LANG_MR buttons
+    help_interactive = sent_messages[-1]["interactive"]
+    help_btn_ids = [b["reply"]["id"] for b in help_interactive["action"]["buttons"]]
+    assert "LANG_EN" in help_btn_ids
+    assert "LANG_MR" in help_btn_ids
+
+    # Step 2: Switch to Marathi
+    sent_messages.clear()
+    res_switch = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="LANG_MR"
+    )
+    assert res_switch["status"] == "help"  # existing language switch path keeps status="help"
+    db.refresh(auth_citizen)
+    assert auth_citizen.preferred_language == "mr"
+
+    # Step 3: Send greeting — should now receive Marathi primary buttons
+    sent_messages.clear()
+    res_menu = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="hello"
+    )
+    assert res_menu["status"] == "menu_presented"
+    primary_interactive = sent_messages[1]["interactive"]
+    button_titles = [b["reply"]["title"] for b in primary_interactive["action"]["buttons"]]
+    # Marathi buttons should contain Marathi text characters
+    combined = " ".join(button_titles)
+    assert "कचरा" in combined or "तक्रार" in combined or "मेनू" in combined
+
+
+def test_build_language_selection_interactive_spec_compliance():
+    """
+    build_language_selection_interactive() returns a well-formed Meta button payload
+    with exactly 2 buttons (English, मराठी) and all titles within the 20-char limit.
+    """
+    payload = WhatsAppService.build_language_selection_interactive()
+    assert payload["type"] == "button"
+    buttons = payload["action"]["buttons"]
+    assert len(buttons) == 2
+    ids = [b["reply"]["id"] for b in buttons]
+    assert "LANG_EN" in ids
+    assert "LANG_MR" in ids
+    for b in buttons:
+        assert len(b["reply"]["title"]) <= 20
+
+
+def test_build_primary_buttons_interactive_spec_compliance():
+    """
+    build_primary_buttons_interactive() returns a well-formed Meta button payload
+    with exactly 3 buttons and all titles within the 20-char Meta API limit.
+    """
+    for lang in ["en", "mr"]:
+        payload = WhatsAppService.build_primary_buttons_interactive(lang=lang)
+        assert payload["type"] == "button"
+        buttons = payload["action"]["buttons"]
+        assert len(buttons) == 3
+        ids = [b["reply"]["id"] for b in buttons]
+        assert "REPORT_WASTE" in ids
+        assert "GENERAL_COMPLAINT" in ids
+        assert "OPEN_FULL_MENU" in ids
+        for b in buttons:
+            title = b["reply"]["title"]
+            assert len(title) <= 20, (
+                f"[lang={lang}] Button title exceeds 20 chars ({len(title)}): {title!r}"
+            )

@@ -139,6 +139,8 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                 media_url = ""
                 latitude = None
                 longitude = None
+                location_name = None
+                location_address = None
 
                 # Idempotency and atomic message-claim engine
                 if msg_id:
@@ -216,6 +218,8 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                     loc = msg.get("location", {})
                     latitude = loc.get("latitude")
                     longitude = loc.get("longitude")
+                    location_name = loc.get("name")
+                    location_address = loc.get("address")
 
                 try:
                     await run_in_threadpool(
@@ -228,6 +232,8 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                         media_id=media_id,
                         latitude=latitude,
                         longitude=longitude,
+                        location_name=location_name,
+                        location_address=location_address,
                         message_id=msg_id
                     )
 
@@ -394,6 +400,7 @@ async def receive_twilio_webhook(request: Request, db: Session = Depends(get_db)
     media_url = form_data.get("MediaUrl0", "")
     latitude = form_data.get("Latitude")
     longitude = form_data.get("Longitude")
+    loc_label = form_data.get("Label") or form_data.get("Address")
 
     sender_phone = from_raw.replace("whatsapp:", "").replace("+", "").strip()
     msg_type = "image" if media_url else ("location" if latitude else "text")
@@ -405,7 +412,8 @@ async def receive_twilio_webhook(request: Request, db: Session = Depends(get_db)
         text_body=body_text,
         media_url=media_url,
         latitude=float(latitude) if latitude else None,
-        longitude=float(longitude) if longitude else None
+        longitude=float(longitude) if longitude else None,
+        location_name=loc_label
     )
 
     reply_text = res.get("reply", "OK")
@@ -539,6 +547,8 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
     media_id = payload.get("media_id", "")
     lat = payload.get("latitude")
     lng = payload.get("longitude")
+    loc_name = payload.get("location_name") or payload.get("name")
+    loc_addr = payload.get("location_address") or payload.get("address")
 
     res = WhatsAppService.handle_incoming_message(
         db=db,
@@ -548,6 +558,8 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
         media_url=media_url,
         media_id=media_id,
         latitude=lat,
-        longitude=lng
+        longitude=lng,
+        location_name=loc_name,
+        location_address=loc_addr
     )
     return res

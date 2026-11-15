@@ -495,6 +495,8 @@ def test_complaints_and_whatsapp_menu_regression(db_session):
     citizen = WhatsAppService.get_or_create_citizen(db_session, f"91{phone}")
     citizen.user_id = user.id
     citizen.is_authorized = True
+    citizen.preferred_language = "mr"
+    citizen.conversation_state = "IDLE"
     db_session.commit()
 
     # Linked citizen sends menu option 1 (Report Waste) -> asks for photo

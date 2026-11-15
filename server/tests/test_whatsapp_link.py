@@ -23,7 +23,11 @@ def _create_test_user(db, email, role="citizen", phone=None):
     if phone is None:
         import uuid
         phone = f"9{uuid.uuid4().int % 1000000000:09d}"
-    user = db.query(User).filter(User.email == email).first()
+    if phone:
+        db.query(User).filter(User.phone == phone).delete()
+    db.query(User).filter(User.email == email).delete()
+    db.commit()
+    user = None
     if not user:
         kwargs = dict(
             email=email,
