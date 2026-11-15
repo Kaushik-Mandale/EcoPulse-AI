@@ -229,31 +229,24 @@ def test_interactive_back_to_menu(db, auth_citizen):
 
 @pytest.mark.parametrize("greeting", ["HI", "HELLO", "MENU"])
 def test_greeting_sends_chat_menu_and_quick_actions(db, auth_citizen, sent_messages, greeting):
-    """Greetings send the bilingual text menu in chat and a separate compliant shortcut message."""
+    """Greetings send a single combined welcome + 3 primary quick-action buttons."""
     res = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "text", text_body=greeting
     )
 
     assert res["status"] == "menu_presented"
-    assert len(sent_messages) == 2
-    text_menu = sent_messages[0]["message_text"]
-    assert sent_messages[0]["interactive"] is None
-    assert "नमस्कार! Hello!" in text_menu
-    assert "EcoPulse AI" in text_menu
-    assert "Reply with a number (1-8) or keyword" in text_menu
-    for label in (
-        "Report Waste", "General Complaint", "Garbage Vehicle Tracking",
-        "Collection Schedule", "EcoWallet & Rewards", "My Complaints",
-        "Municipal Notices", "Help & Change Language",
-    ):
-        assert label in text_menu
-    assert "Leaderboard" not in text_menu
+    # New behaviour: exactly 1 message (welcome text + 3 primary buttons combined)
+    assert len(sent_messages) == 1
+    msg = sent_messages[0]
+    assert "EcoPulse AI" in msg["message_text"]
+    # Must NOT include the full numbered text menu (that is only sent via OPEN_FULL_MENU)
+    assert "Reply with a number (1-8) or keyword" not in msg["message_text"]
+    assert "1." not in msg["message_text"] or "8." not in msg["message_text"]
 
-    shortcut_message = sent_messages[1]
-    interactive = shortcut_message["interactive"]
+    interactive = msg["interactive"]
     assert interactive["type"] == "button"
     assert len(interactive["action"]["buttons"]) == 3
-    # New primary button IDs from build_primary_buttons_interactive
+    # Primary button IDs from build_primary_buttons_interactive
     button_ids = [button["reply"]["id"] for button in interactive["action"]["buttons"]]
     assert "REPORT_WASTE" in button_ids
     assert "GENERAL_COMPLAINT" in button_ids
@@ -1217,9 +1210,9 @@ def test_returning_user_retains_language_and_skips_selection(db, auth_citizen, s
         db, auth_citizen.phone_number, "text", text_body="hey"
     )
     assert res["status"] == "menu_presented"
-    # Must send 2 messages: full text menu + primary buttons interactive
-    assert len(sent_messages) == 2
-    interactive = sent_messages[1]["interactive"]
+    # Must send 1 message: welcome + 3 primary buttons combined
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
     assert interactive["type"] == "button"
     button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
     # Should NOT receive language selection buttons
@@ -1303,7 +1296,7 @@ def test_help_language_switch_updates_preference_and_sends_primary_buttons(db, a
         db, auth_citizen.phone_number, "text", text_body="hello"
     )
     assert res_menu["status"] == "menu_presented"
-    primary_interactive = sent_messages[1]["interactive"]
+    primary_interactive = sent_messages[0]["interactive"]
     button_titles = [b["reply"]["title"] for b in primary_interactive["action"]["buttons"]]
     # Marathi buttons should contain Marathi text characters
     combined = " ".join(button_titles)
@@ -1345,3 +1338,67 @@ def test_build_primary_buttons_interactive_spec_compliance():
             assert len(title) <= 20, (
                 f"[lang={lang}] Button title exceeds 20 chars ({len(title)}): {title!r}"
             )
+
+
+@pytest.mark.parametrize("cmd", ["START", "LANG", "LANGUAGE", "start", "lang", "language"])
+def test_explicit_commands_reopen_language_selection(db, auth_citizen, sent_messages, cmd):
+    """
+    Explicit START, LANG, and LANGUAGE commands reopen language selection,
+    even for existing citizens who already have a preferred_language set and are in IDLE state.
+    """
+    assert auth_citizen.preferred_language == "en"
+    assert auth_citizen.conversation_state == "IDLE"
+
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body=cmd
+    )
+    assert res["status"] == "awaiting_language"
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "button"
+    button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+    assert "LANG_EN" in button_ids
+    assert "LANG_MR" in button_ids
+
+    # Citizen state is updated to AWAITING_LANGUAGE
+    db.refresh(auth_citizen)
+    assert auth_citizen.conversation_state == "AWAITING_LANGUAGE"
+
+
+def test_open_full_menu_sends_exactly_once_without_primary_buttons(db, auth_citizen, sent_messages):
+    """
+    Selecting OPEN_FULL_MENU sends the 8-option interactive list menu exactly once.
+    It does not send or append primary buttons and terminates immediately.
+    """
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
+    )
+    assert res["status"] == "full_menu_presented"
+    # Exactly one message sent
+    assert len(sent_messages) == 1
+    interactive = sent_messages[0]["interactive"]
+    assert interactive["type"] == "list"
+    rows = interactive["action"]["sections"][0]["rows"]
+    assert len(rows) == 8
+    # Primary reply buttons are NOT sent
+    assert interactive["type"] != "button"
+
+
+def test_greeting_does_not_send_full_menu(db, auth_citizen, sent_messages):
+    """
+    Normal greeting must display only the welcome message and three primary buttons.
+    It does not automatically send the 8-option full menu.
+    """
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="hello"
+    )
+    assert res["status"] == "menu_presented"
+    assert len(sent_messages) == 1
+    msg = sent_messages[0]
+    assert msg["interactive"] is not None
+    assert msg["interactive"]["type"] == "button"
+    assert len(msg["interactive"]["action"]["buttons"]) == 3
+    # Numbered options 1 through 8 must NOT be in the reply text
+    for i in range(1, 9):
+        assert f"{i}." not in msg["message_text"]
+

@@ -32,7 +32,7 @@ class WhatsAppCitizen(Base):
     ward = Column(String(50), nullable=True)
     household_id = Column(String(50), index=True, nullable=True)  # kept for legacy records
     is_authorized = Column(Boolean, default=False)  # True when user_id is set (linked)
-    preferred_language = Column(String(10), default='mr')   # 'mr' or 'en'
+    preferred_language = Column(String(10), nullable=True)   # 'mr' or 'en' (None until selected)
     eco_coins = Column(Integer, default=0)
     conversation_state = Column(String(50), default='IDLE')  # IDLE, AWAITING_PHOTO, AWAITING_LOCATION
     pending_complaint_data = Column(Text, nullable=True)     # JSON for multi-step report flow

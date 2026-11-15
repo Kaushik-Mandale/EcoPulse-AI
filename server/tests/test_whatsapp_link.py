@@ -303,6 +303,14 @@ class TestComplaintAssociationWithLinkedUser:
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
 
+            # New citizen starts in AWAITING_LANGUAGE — select English first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_EN", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
+
             # Send photo
             res_photo = client.post(
                 "/api/whatsapp/simulate-incoming",
@@ -399,6 +407,15 @@ class TestWhatsAppWebhookRegression:
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
 
+            # New citizen has AWAITING_LANGUAGE state — select language first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_EN", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
+
+            # Now send greeting
             res = client.post(
                 "/api/whatsapp/simulate-incoming",
                 json={"phone": wa_phone, "message": "hey", "type": "text"}
@@ -406,10 +423,9 @@ class TestWhatsAppWebhookRegression:
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "menu_presented"
-            assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
-            # 8-option menu present
-            assert "1." in data["reply"] or "1️⃣" in data["reply"]
-            assert "8." in data["reply"] or "8️⃣" in data["reply"]
+            assert "EcoPulse AI" in data["reply"] or "धुळे" in data["reply"]
+            # Full numbered menu is NOT in the greeting reply (only via OPEN_FULL_MENU)
+            assert "1." not in data["reply"] or "8." not in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -423,6 +439,15 @@ class TestWhatsAppWebhookRegression:
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
 
+            # New citizen has AWAITING_LANGUAGE state — select language first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_MR", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
+
+            # Now send greeting
             res = client.post(
                 "/api/whatsapp/simulate-incoming",
                 json={"phone": wa_phone, "message": "hello", "type": "text"}
@@ -430,8 +455,8 @@ class TestWhatsAppWebhookRegression:
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "menu_presented"
-            assert "1." in data["reply"] or "1️⃣" in data["reply"]
-            assert "8." in data["reply"] or "8️⃣" in data["reply"]
+            # Full numbered menu is NOT in the greeting reply (only via OPEN_FULL_MENU)
+            assert "1." not in data["reply"] or "8." not in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -523,6 +548,14 @@ class TestWhatsAppWebhookRegression:
             code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
+
+            # New citizen starts in AWAITING_LANGUAGE — select English first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_EN", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
 
             # Send photo
             res_photo = client.post(

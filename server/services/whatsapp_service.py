@@ -933,18 +933,19 @@ class WhatsAppService:
         )
 
     @staticmethod
-    def build_primary_buttons_interactive(lang: str = "mr") -> dict:
+    def build_primary_buttons_interactive(lang: str = "mr", body_text: Optional[str] = None) -> dict:
         """Construct a Meta WhatsApp Cloud API reply button payload for the 3 primary service buttons.
 
         Titles are kept ≤ 20 characters to comply with Meta Cloud API limits.
         Sent after language selection and to returning users on the main menu.
         """
         is_mr = (lang or "mr").lower() == "mr"
-        body_text = (
-            "EcoPulse AI — नागरी सेवा\n\nआज आम्ही आपली कशी मदत करू शकतो?"
-            if is_mr
-            else "EcoPulse AI — Citizen Services\n\nHow can we assist you today?"
-        )
+        if not body_text:
+            body_text = (
+                "EcoPulse AI — नागरी सेवा\n\nआज आम्ही आपली कशी मदत करू शकतो?"
+                if is_mr
+                else "EcoPulse AI — Citizen Services\n\nHow can we assist you today?"
+            )
         buttons = (
             [
                 ("REPORT_WASTE",        "🗑️ कचरा नोंदवा"),
@@ -1345,17 +1346,18 @@ class WhatsAppService:
         # STEP 1b: Language Selection — first-time citizens or explicit trigger
         # ----------------------------------------------------------------
         _lang_selection_cmds = {"START", "LANGUAGE", "LANG"}
+        _has_saved_lang = bool(citizen.preferred_language and str(citizen.preferred_language).strip().lower() in {"en", "mr"})
         _in_lang_state = citizen.conversation_state == "AWAITING_LANGUAGE"
         _explicit_lang_cmd = clean_text.upper() in _lang_selection_cmds
 
         if _in_lang_state or _explicit_lang_cmd:
             # Determine whether this message is a valid language choice
             _chose_en = (
-                clean_text == "LANG_EN"
+                clean_text in {"LANG_EN", "1"}
                 or lowered in {"english", "1"}
             )
             _chose_mr = (
-                clean_text == "LANG_MR"
+                clean_text in {"LANG_MR", "2"}
                 or lowered in {"marathi", "मराठी", "2"}
             )
 
@@ -1366,12 +1368,23 @@ class WhatsAppService:
                 lang = "en"
                 all_texts = _build_texts()
                 strings = all_texts["en"]
+                c_name = "Citizen"
+                if citizen.user_id:
+                    u_obj = db.query(User).filter(User.id == citizen.user_id).first()
+                    if u_obj and u_obj.full_name:
+                        c_name = u_obj.full_name
+                elif citizen.full_name and citizen.full_name != "Shirpur Resident":
+                    c_name = citizen.full_name
+
                 welcome_txt = (
                     "🇬🇧 Language set to *English*!\n\n"
-                    "Welcome to EcoPulse AI — Citizen Services.\n"
-                    "How can we assist you today?"
+                    + strings["authorized_welcome"].format(
+                        name=c_name,
+                        coins=citizen.eco_coins,
+                        rupees=citizen.eco_coins // 2
+                    )
                 )
-                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="en")
+                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="en", body_text=welcome_txt)
                 WhatsAppService.send_meta_whatsapp(
                     citizen.phone_number, welcome_txt, interactive=primary_btns
                 )
@@ -1384,33 +1397,46 @@ class WhatsAppService:
                 lang = "mr"
                 all_texts = _build_texts()
                 strings = all_texts["mr"]
+                c_name = "Citizen"
+                if citizen.user_id:
+                    u_obj = db.query(User).filter(User.id == citizen.user_id).first()
+                    if u_obj and u_obj.full_name:
+                        c_name = u_obj.full_name
+                elif citizen.full_name and citizen.full_name != "Shirpur Resident":
+                    c_name = citizen.full_name
+
                 welcome_txt = (
                     "🇮🇳 भाषा *मराठी* म्हणून सेट केली!\n\n"
-                    "EcoPulse AI — नागरी सेवांमध्ये आपले स्वागत आहे.\n"
-                    "आज आम्ही आपली कशी मदत करू शकतो?"
+                    + strings["authorized_welcome"].format(
+                        name=c_name,
+                        coins=citizen.eco_coins,
+                        rupees=citizen.eco_coins // 2
+                    )
                 )
-                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="mr")
+                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="mr", body_text=welcome_txt)
                 WhatsAppService.send_meta_whatsapp(
                     citizen.phone_number, welcome_txt, interactive=primary_btns
                 )
                 return {"status": "language_selected", "language": "mr", "reply": welcome_txt}
 
-            # Not a language answer — re-prompt if awaiting language or explicit trigger
-            if _in_lang_state or _explicit_lang_cmd:
-                lang_sel = WhatsAppService.build_language_selection_interactive()
-                WhatsAppService.send_meta_whatsapp(
-                    citizen.phone_number,
-                    "Welcome to EcoPulse AI\n\nChoose your preferred language / कृपया भाषा निवडा",
-                    interactive=lang_sel
-                )
-                return {"status": "awaiting_language", "reply": "language_selection_prompt"}
+            # Not a language choice — prompt language selection and persist state
+            citizen.conversation_state = "AWAITING_LANGUAGE"
+            db.commit()
+            lang_sel = WhatsAppService.build_language_selection_interactive()
+            prompt_text = "Welcome to EcoPulse AI\n\nChoose your preferred language / कृपया भाषा निवडा"
+            WhatsAppService.send_meta_whatsapp(
+                citizen.phone_number,
+                prompt_text,
+                interactive=lang_sel
+            )
+            return {"status": "awaiting_language", "reply": prompt_text}
 
         is_full_menu_cmd = (
             clean_text in {"MENU_FULL_MENU", "FULL_MENU", "OPEN_FULL_MENU"}
-            or lowered == "full menu"
+            or lowered in {"full menu", "open full menu", "open menu", "पूर्ण मेनू"}
         )
         is_menu_cmd = (
-            lowered in {"hey", "hello", "hi", "namaskar", "namaste", "नमस्कार", "start", "menu"}
+            lowered in {"hey", "hello", "hi", "namaskar", "namaste", "नमस्कार", "menu"}
             or clean_text in {"MENU_MAIN", "MAIN_MENU", "MENU_BACK", "BACK_TO_MENU"}
         )
 
@@ -1431,27 +1457,13 @@ class WhatsAppService:
             if extra_note:
                 welcome = extra_note + "\n\n" + welcome
 
-            full_text_menu = (
-                "🏛️ *EcoPulse AI — Municipal Services / महानगरपालिका नागरी सेवा*\n\n"
-                "नमस्कार! Hello! 👋\n\n"
-                f"{welcome}\n\n{strings['menu_options']}"
-            )
+            primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang, body_text=welcome)
             WhatsAppService.send_meta_whatsapp(
                 citizen.phone_number,
-                message_text=full_text_menu
-            )
-            # Send the 3 primary action buttons (new UX)
-            primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang)
-            WhatsAppService.send_meta_whatsapp(
-                citizen.phone_number,
-                message_text=(
-                    "कचरा नोंदवा, तक्रार करा किंवा पूर्ण मेनू उघडा."
-                    if lang == "mr"
-                    else "Report waste, raise a complaint, or open the full menu."
-                ),
+                message_text=welcome,
                 interactive=primary_btns
             )
-            return {"status": "menu_presented", "reply": full_text_menu}
+            return {"status": "menu_presented", "reply": welcome}
 
         if is_full_menu_cmd:
             interactive_menu = WhatsAppService.build_main_menu_interactive(

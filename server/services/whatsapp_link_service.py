@@ -285,9 +285,9 @@ class WhatsAppLinkService:
                 full_name=user.full_name,
                 ward=user.ward,
                 is_authorized=True,
-                preferred_language="mr",
+                preferred_language=None,
                 eco_coins=0,
-                conversation_state="IDLE",
+                conversation_state="AWAITING_LANGUAGE",
             )
             db.add(citizen)
 
