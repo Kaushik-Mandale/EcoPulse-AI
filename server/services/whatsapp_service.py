@@ -1421,6 +1421,8 @@ class WhatsAppService:
             citizen.ward = f'Ward {ward_num}'
             citizen.is_authorized = True
             citizen.conversation_state = 'IDLE'
+            if not citizen.preferred_language:
+                citizen.preferred_language = 'mr'
             db.commit()
 
             reply = strings['authorized_welcome'].format(
@@ -1446,21 +1448,34 @@ class WhatsAppService:
         # ----------------------------------------------------------------
         # STEP 1b: Language Selection — first-time citizens or explicit trigger
         # ----------------------------------------------------------------
-        _lang_selection_cmds = {"LANGUAGE", "LANG"}
-        _has_saved_lang = bool(citizen.preferred_language and str(citizen.preferred_language).strip().lower() in {"en", "mr"})
+        _lang_selection_cmds = {"START", "LANGUAGE", "LANG"}
+        if not citizen.preferred_language and citizen.household_id:
+            citizen.preferred_language = "mr"
+            db.commit()
+
+        _has_saved_lang = bool(
+            citizen.preferred_language
+            and str(citizen.preferred_language).strip().lower() in {"en", "mr"}
+        )
         _in_lang_state = citizen.conversation_state == "AWAITING_LANGUAGE"
         _explicit_lang_cmd = clean_text.upper() in _lang_selection_cmds
+        _is_conversational_msg = message_type in {"text", "interactive"}
+        _in_active_workflow = citizen.conversation_state in {
+            "AWAITING_PHOTO", "AWAITING_LOCATION", "AWAITING_GENERAL_COMPLAINT",
+            "AWAITING_EVENT_CATEGORY", "AWAITING_EVENT_LOCATION", "AWAITING_EVENT_ATTENDEES",
+            "AWAITING_EVENT_DESCRIPTION", "AWAITING_EVENT_CONFIRM"
+        }
 
-        if _in_lang_state or _explicit_lang_cmd:
+        if _is_conversational_msg and not _in_active_workflow and (_in_lang_state or _explicit_lang_cmd or not _has_saved_lang):
             # Determine whether this message is a valid language choice
             _chose_en = (
                 clean_text in {"LANG_EN", "1"}
                 or lowered in {"english", "1"}
-            )
+            ) and not _explicit_lang_cmd
             _chose_mr = (
                 clean_text in {"LANG_MR", "2"}
                 or lowered in {"marathi", "मराठी", "2"}
-            )
+            ) and not _explicit_lang_cmd
 
             if _chose_en:
                 citizen.preferred_language = "en"
@@ -1469,22 +1484,7 @@ class WhatsAppService:
                 lang = "en"
                 all_texts = _build_texts()
                 strings = all_texts["en"]
-                c_name = "Citizen"
-                if citizen.user_id:
-                    u_obj = db.query(User).filter(User.id == citizen.user_id).first()
-                    if u_obj and u_obj.full_name:
-                        c_name = u_obj.full_name
-                elif citizen.full_name and citizen.full_name != "Shirpur Resident":
-                    c_name = citizen.full_name
-
-                welcome_txt = (
-                    "🇬🇧 Language set to *English*!\n\n"
-                    + strings["authorized_welcome"].format(
-                        name=c_name,
-                        coins=citizen.eco_coins,
-                        rupees=citizen.eco_coins // 2
-                    )
-                )
+                welcome_txt = WhatsAppService.build_full_menu_text(citizen, db, lang="en")
                 primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="en", body_text=welcome_txt)
                 WhatsAppService.send_meta_whatsapp(
                     citizen.phone_number, welcome_txt, interactive=primary_btns
@@ -1498,29 +1498,14 @@ class WhatsAppService:
                 lang = "mr"
                 all_texts = _build_texts()
                 strings = all_texts["mr"]
-                c_name = "Citizen"
-                if citizen.user_id:
-                    u_obj = db.query(User).filter(User.id == citizen.user_id).first()
-                    if u_obj and u_obj.full_name:
-                        c_name = u_obj.full_name
-                elif citizen.full_name and citizen.full_name != "Shirpur Resident":
-                    c_name = citizen.full_name
-
-                welcome_txt = (
-                    "🇮🇳 भाषा *मराठी* म्हणून सेट केली!\n\n"
-                    + strings["authorized_welcome"].format(
-                        name=c_name,
-                        coins=citizen.eco_coins,
-                        rupees=citizen.eco_coins // 2
-                    )
-                )
+                welcome_txt = WhatsAppService.build_full_menu_text(citizen, db, lang="mr")
                 primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="mr", body_text=welcome_txt)
                 WhatsAppService.send_meta_whatsapp(
                     citizen.phone_number, welcome_txt, interactive=primary_btns
                 )
                 return {"status": "language_selected", "language": "mr", "reply": welcome_txt}
 
-            # Not a language choice — prompt language selection and persist state
+            # Not a language choice (or explicit command) — prompt language selection and persist state
             citizen.conversation_state = "AWAITING_LANGUAGE"
             db.commit()
             lang_sel = WhatsAppService.build_language_selection_interactive()
@@ -1536,8 +1521,15 @@ class WhatsAppService:
             clean_text in {"MENU_FULL_MENU", "FULL_MENU", "OPEN_FULL_MENU"}
             or lowered in {"full menu", "open full menu", "open menu", "पूर्ण मेनू"}
         )
+        GREETING_WORDS = {
+            "hey", "hello", "hi", "yoo", "yo", "namaskar", "namaste",
+            "नमस्कार", "नमस्ते", "menu", "start"
+        }
+        _clean_letters = re.sub(r'[^a-zA-Z\u0900-\u097F]', '', lowered)
         is_menu_cmd = (
-            lowered in {"hey", "hello", "hi", "namaskar", "namaste", "नमस्कार", "menu"}
+            lowered in GREETING_WORDS
+            or _clean_letters in GREETING_WORDS
+            or any(lowered.startswith(w) for w in ["hey", "hello", "hi", "yoo", "yo", "namaskar", "namaste", "नमस्कार", "नमस्ते"])
             or clean_text in {"MENU_MAIN", "MAIN_MENU", "MENU_BACK", "BACK_TO_MENU"}
         )
 
@@ -1547,29 +1539,17 @@ class WhatsAppService:
                 citizen.pending_complaint_data = None
                 db.commit()
 
-            c_name = "Citizen"
-            if citizen.user_id:
-                u_obj = db.query(User).filter(User.id == citizen.user_id).first()
-                if u_obj and u_obj.full_name:
-                    c_name = u_obj.full_name
-            elif citizen.full_name and citizen.full_name != "Shirpur Resident":
-                c_name = citizen.full_name
-
-            welcome = strings["authorized_welcome"].format(
-                name=c_name,
-                coins=citizen.eco_coins,
-                rupees=citizen.eco_coins // 2
-            )
+            menu_txt = WhatsAppService.build_full_menu_text(citizen, db, lang=lang)
             if extra_note:
-                welcome = extra_note + "\n\n" + welcome
+                menu_txt = extra_note + "\n\n" + menu_txt
 
-            primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang, body_text=welcome)
+            primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang, body_text=menu_txt)
             WhatsAppService.send_meta_whatsapp(
                 citizen.phone_number,
-                message_text=welcome,
+                message_text=menu_txt,
                 interactive=primary_btns
             )
-            return {"status": "menu_presented", "reply": welcome}
+            return {"status": "menu_presented", "reply": menu_txt}
 
         def _present_full_menu():
             if citizen.conversation_state != "IDLE":

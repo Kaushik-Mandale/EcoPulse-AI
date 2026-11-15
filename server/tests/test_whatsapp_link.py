@@ -424,8 +424,8 @@ class TestWhatsAppWebhookRegression:
             data = res.json()
             assert data["status"] == "menu_presented"
             assert "EcoPulse AI" in data["reply"] or "धुळे" in data["reply"]
-            # Full numbered menu is NOT in the greeting reply (only via OPEN_FULL_MENU)
-            assert "1." not in data["reply"] or "8." not in data["reply"]
+            # Approved municipal template includes all 8 numbered options and municipal branding
+            assert "1. 🗑️" in data["reply"] and "8. ❓" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -455,8 +455,8 @@ class TestWhatsAppWebhookRegression:
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "menu_presented"
-            # Full numbered menu is NOT in the greeting reply (only via OPEN_FULL_MENU)
-            assert "1." not in data["reply"] or "8." not in data["reply"]
+            # Approved municipal template includes all 8 numbered options and municipal branding
+            assert "1. 🗑️" in data["reply"] and "8. ❓" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:

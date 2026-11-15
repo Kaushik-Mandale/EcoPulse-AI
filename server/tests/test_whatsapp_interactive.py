@@ -227,21 +227,21 @@ def test_interactive_back_to_menu(db, auth_citizen):
     assert res["status"] == "menu_presented"
 
 
-@pytest.mark.parametrize("greeting", ["HI", "HELLO", "MENU"])
+@pytest.mark.parametrize("greeting", ["HI", "HELLO", "MENU", "yoo", "yo", "hey"])
 def test_greeting_sends_chat_menu_and_quick_actions(db, auth_citizen, sent_messages, greeting):
-    """Greetings send a single combined welcome + 3 primary quick-action buttons."""
+    """Greetings send the approved bilingual municipal template with all eight services and 3 primary quick-action buttons."""
     res = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "text", text_body=greeting
     )
 
     assert res["status"] == "menu_presented"
-    # New behaviour: exactly 1 message (welcome text + 3 primary buttons combined)
+    # Exactly 1 message (approved municipal template + 3 primary buttons combined)
     assert len(sent_messages) == 1
     msg = sent_messages[0]
     assert "EcoPulse AI" in msg["message_text"]
-    # Must NOT include the full numbered text menu (that is only sent via OPEN_FULL_MENU)
-    assert "Reply with a number (1-8) or keyword" not in msg["message_text"]
-    assert "1." not in msg["message_text"] or "8." not in msg["message_text"]
+    assert "Unrecognized option" not in msg["message_text"]
+    assert "1. 🗑️ Report Waste" in msg["message_text"]
+    assert "8. ❓ Help & Language" in msg["message_text"]
 
     interactive = msg["interactive"]
     assert interactive["type"] == "button"
@@ -1365,10 +1365,10 @@ def test_build_primary_buttons_interactive_spec_compliance():
             )
 
 
-@pytest.mark.parametrize("cmd", ["LANG", "LANGUAGE", "lang", "language"])
+@pytest.mark.parametrize("cmd", ["START", "start", "LANG", "LANGUAGE", "lang", "language"])
 def test_explicit_commands_reopen_language_selection(db, auth_citizen, sent_messages, cmd):
     """
-    Explicit LANG and LANGUAGE commands reopen language selection,
+    Explicit START, LANG, and LANGUAGE commands reopen language selection,
     even for existing citizens who already have a preferred_language set and are in IDLE state.
     """
     assert auth_citizen.preferred_language == "en"
@@ -1390,11 +1390,12 @@ def test_explicit_commands_reopen_language_selection(db, auth_citizen, sent_mess
     assert auth_citizen.conversation_state == "AWAITING_LANGUAGE"
 
 
-@pytest.mark.parametrize("greeting_cmd", ["hey", "hello", "hi", "start", "START", "namaskar", "namaste", "नमस्कार"])
+@pytest.mark.parametrize("greeting_cmd", ["hey", "hello", "hi", "yoo", "yo", "namaskar", "namaste", "नमस्कार", "hello!", "yoo!"])
 def test_normalized_greetings_use_consistent_welcome_handler(db, auth_citizen, sent_messages, greeting_cmd):
     """
-    Normalized greetings (hey, hello, hi, start, namaskar) all invoke one consistent
+    Normalized greetings (hey, hello, hi, yoo, yo, namaskar) all invoke one consistent
     welcome handler, delivering localized welcome text and the 3 primary buttons.
+    Never produces 'Unrecognized option'.
     """
     assert auth_citizen.preferred_language == "en"
     assert auth_citizen.conversation_state == "IDLE"
@@ -1405,6 +1406,7 @@ def test_normalized_greetings_use_consistent_welcome_handler(db, auth_citizen, s
     assert res["status"] == "menu_presented"
     assert len(sent_messages) == 1
     msg = sent_messages[0]
+    assert "Unrecognized option" not in msg["message_text"]
     assert msg["interactive"]["type"] == "button"
     button_ids = [b["reply"]["id"] for b in msg["interactive"]["action"]["buttons"]]
     assert "REPORT_WASTE" in button_ids
@@ -1534,10 +1536,10 @@ def test_marathi_full_menu_localization_and_quick_action_buttons(db, auth_citize
     assert "Quick actions / झटपट सेवा" in body_text
 
 
-def test_greeting_does_not_send_full_menu(db, auth_citizen, sent_messages):
+def test_greeting_sends_approved_municipal_template_with_all_services(db, auth_citizen, sent_messages):
     """
-    Normal greeting must display only the welcome message and three primary buttons.
-    It does not automatically send the 8-option full menu.
+    Normal greeting displays the approved EcoPulse municipal template with
+    municipal heading, localized greeting, all eight numbered services, and three primary buttons.
     """
     res = WhatsAppService.handle_incoming_message(
         db, auth_citizen.phone_number, "text", text_body="hello"
@@ -1548,7 +1550,102 @@ def test_greeting_does_not_send_full_menu(db, auth_citizen, sent_messages):
     assert msg["interactive"] is not None
     assert msg["interactive"]["type"] == "button"
     assert len(msg["interactive"]["action"]["buttons"]) == 3
-    # Numbered options 1 through 8 must NOT be in the reply text
+    # Numbered options 1 through 8 must be present in the approved municipal template
     for i in range(1, 9):
-        assert f"{i}." not in msg["message_text"]
+        assert f"{i}." in msg["message_text"]
+
+
+def test_first_time_citizen_prompted_for_language_selection_first(db, auth_citizen, sent_messages):
+    """
+    First-time citizens without a saved preferred_language must receive the language-selection
+    message first. The main menu must NOT be sent before language selection.
+    """
+    auth_citizen.preferred_language = None
+    auth_citizen.conversation_state = "IDLE"
+    db.commit()
+
+    for trigger in ["hi", "hello", "yoo", "yo", "start"]:
+        sent_messages.clear()
+        res = WhatsAppService.handle_incoming_message(
+            db, auth_citizen.phone_number, "text", text_body=trigger
+        )
+        assert res["status"] == "awaiting_language"
+        assert len(sent_messages) == 1
+        interactive = sent_messages[0]["interactive"]
+        assert interactive["type"] == "button"
+        button_ids = [b["reply"]["id"] for b in interactive["action"]["buttons"]]
+        assert "LANG_EN" in button_ids
+        assert "LANG_MR" in button_ids
+        # Main menu must not be sent
+        assert "Report Waste" not in sent_messages[0]["message_text"]
+
+
+def test_first_time_citizen_selects_language_and_receives_approved_template(db, auth_citizen, sent_messages):
+    """
+    When a first-time citizen in AWAITING_LANGUAGE selects a language:
+    - Language is persisted in preferred_language
+    - State returns to IDLE
+    - Approved municipal template in chosen language with 3 primary buttons is sent
+    """
+    # Test English selection
+    auth_citizen.preferred_language = None
+    auth_citizen.conversation_state = "AWAITING_LANGUAGE"
+    db.commit()
+
+    res_en = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="LANG_EN"
+    )
+    assert res_en["status"] == "language_selected"
+    assert res_en["language"] == "en"
+    db.refresh(auth_citizen)
+    assert auth_citizen.preferred_language == "en"
+    assert auth_citizen.conversation_state == "IDLE"
+    assert len(sent_messages) == 1
+    assert "EcoPulse AI — Municipal Services" in sent_messages[0]["message_text"]
+    assert "1. 🗑️ Report Waste" in sent_messages[0]["message_text"]
+
+    # Test Marathi selection
+    sent_messages.clear()
+    auth_citizen.preferred_language = None
+    auth_citizen.conversation_state = "AWAITING_LANGUAGE"
+    db.commit()
+
+    res_mr = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="LANG_MR"
+    )
+    assert res_mr["status"] == "language_selected"
+    assert res_mr["language"] == "mr"
+    db.refresh(auth_citizen)
+    assert auth_citizen.preferred_language == "mr"
+    assert auth_citizen.conversation_state == "IDLE"
+    assert len(sent_messages) == 1
+    assert "EcoPulse AI — नागरी सेवा" in sent_messages[0]["message_text"]
+    assert "1. 🗑️ कचरा नोंदवा" in sent_messages[0]["message_text"]
+
+
+def test_single_response_dispatch_per_incoming_message(db, auth_citizen, sent_messages):
+    """
+    Every incoming message produces exactly one intended response dispatch.
+    Zero duplicate messages across greetings, buttons, and numeric replies.
+    """
+    # 1. Greeting
+    sent_messages.clear()
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="yoo"
+    )
+    assert len(sent_messages) == 1
+
+    # 2. Open Full Menu button
+    sent_messages.clear()
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "interactive", text_body="OPEN_FULL_MENU"
+    )
+    assert len(sent_messages) == 1
+
+    # 3. Numeric selection
+    sent_messages.clear()
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="5"
+    )
+    assert len(sent_messages) == 1
 
