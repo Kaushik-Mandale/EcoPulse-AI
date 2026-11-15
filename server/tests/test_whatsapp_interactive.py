@@ -1340,10 +1340,10 @@ def test_build_primary_buttons_interactive_spec_compliance():
             )
 
 
-@pytest.mark.parametrize("cmd", ["START", "LANG", "LANGUAGE", "start", "lang", "language"])
+@pytest.mark.parametrize("cmd", ["LANG", "LANGUAGE", "lang", "language"])
 def test_explicit_commands_reopen_language_selection(db, auth_citizen, sent_messages, cmd):
     """
-    Explicit START, LANG, and LANGUAGE commands reopen language selection,
+    Explicit LANG and LANGUAGE commands reopen language selection,
     even for existing citizens who already have a preferred_language set and are in IDLE state.
     """
     assert auth_citizen.preferred_language == "en"
@@ -1363,6 +1363,29 @@ def test_explicit_commands_reopen_language_selection(db, auth_citizen, sent_mess
     # Citizen state is updated to AWAITING_LANGUAGE
     db.refresh(auth_citizen)
     assert auth_citizen.conversation_state == "AWAITING_LANGUAGE"
+
+
+@pytest.mark.parametrize("greeting_cmd", ["hey", "hello", "hi", "start", "START", "namaskar", "namaste", "नमस्कार"])
+def test_normalized_greetings_use_consistent_welcome_handler(db, auth_citizen, sent_messages, greeting_cmd):
+    """
+    Normalized greetings (hey, hello, hi, start, namaskar) all invoke one consistent
+    welcome handler, delivering localized welcome text and the 3 primary buttons.
+    """
+    assert auth_citizen.preferred_language == "en"
+    assert auth_citizen.conversation_state == "IDLE"
+
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body=greeting_cmd
+    )
+    assert res["status"] == "menu_presented"
+    assert len(sent_messages) == 1
+    msg = sent_messages[0]
+    assert msg["interactive"]["type"] == "button"
+    button_ids = [b["reply"]["id"] for b in msg["interactive"]["action"]["buttons"]]
+    assert "REPORT_WASTE" in button_ids
+    assert "GENERAL_COMPLAINT" in button_ids
+    assert "OPEN_FULL_MENU" in button_ids
+
 
 
 def test_open_full_menu_sends_exactly_once_without_primary_buttons(db, auth_citizen, sent_messages):

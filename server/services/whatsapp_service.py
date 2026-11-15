@@ -1345,7 +1345,7 @@ class WhatsAppService:
         # ----------------------------------------------------------------
         # STEP 1b: Language Selection — first-time citizens or explicit trigger
         # ----------------------------------------------------------------
-        _lang_selection_cmds = {"START", "LANGUAGE", "LANG"}
+        _lang_selection_cmds = {"LANGUAGE", "LANG"}
         _has_saved_lang = bool(citizen.preferred_language and str(citizen.preferred_language).strip().lower() in {"en", "mr"})
         _in_lang_state = citizen.conversation_state == "AWAITING_LANGUAGE"
         _explicit_lang_cmd = clean_text.upper() in _lang_selection_cmds
@@ -1746,6 +1746,14 @@ class WhatsAppService:
                 WhatsAppService.send_meta_location_request(citizen.phone_number, reply)
                 return {"status": "awaiting_location", "reply": reply}
 
+        # In-flight guard: text message while awaiting photo repeats prompt
+        if citizen.conversation_state == "AWAITING_PHOTO" and message_type == "text":
+            reply = strings["ask_photo"]
+            btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+            interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+            return {"status": "awaiting_photo", "reply": reply}
+
         # ----------------------------------------------------------------
         # STEP 2: Multi-Step Waste Reporting: Photo Ingestion
         # ----------------------------------------------------------------
@@ -2085,8 +2093,142 @@ class WhatsAppService:
             return {"status": "awaiting_general_complaint", "ticket": ticket_num, "reply": reply}
 
         # ----------------------------------------------------------------
-        # 8-OPTION MAIN MENU DISPATCH
+        # 8-OPTION MAIN MENU DISPATCH: Exact Button IDs & Numeric Shortcuts
         # ----------------------------------------------------------------
+        exact_menu_match = clean_text in {
+            "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            "MENU_REPORT_WASTE", "REPORT_WASTE",
+            "MENU_GENERAL_COMPLAINT", "GENERAL_COMPLAINT",
+            "MENU_VEHICLE_TRACKING",
+            "MENU_COLLECTION_SCHEDULE",
+            "MENU_ECO_WALLET",
+            "MENU_MY_COMPLAINTS",
+            "MENU_NOTICES",
+            "MENU_HELP_LANG",
+            "MENU_REPORT_EVENT", "EVENT", "EVENT_REPORT",
+            "LANG_EN", "LANG_MR",
+        }
+
+        # ----------------------------------------------------------------
+        # GEMINI CONVERSATIONAL INTELLIGENCE (Phase 1)
+        # Evaluates natural language messages before legacy keyword substrings.
+        # Bypassed completely if citizen is in an active workflow or if an
+        # exact button/numeric shortcut was tapped.
+        # ----------------------------------------------------------------
+        if not exact_menu_match and citizen.conversation_state == "IDLE" and clean_text:
+            from server.services.gemini_service import GeminiService
+            ai_res = GeminiService.classify_and_respond(clean_text, preferred_language=lang)
+            if ai_res and not ai_res.is_fallback and ai_res.intent:
+                if ai_res.intent == "GREETING":
+                    return _present_main_menu()
+
+                if ai_res.intent == "REPORT_WASTE":
+                    citizen.conversation_state = "AWAITING_PHOTO"
+                    db.commit()
+                    reply = strings["ask_photo"]
+                    btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+                    interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+                    return {"status": "awaiting_photo", "reply": reply, "ai_classified": True, "intent": "REPORT_WASTE"}
+
+                if ai_res.intent == "GENERAL_COMPLAINT":
+                    citizen.conversation_state = "AWAITING_GENERAL_COMPLAINT"
+                    db.commit()
+                    reply = strings["general_complaint_prompt"]
+                    btn = [("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")]
+                    interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+                    return {"status": "awaiting_general_complaint", "reply": reply, "ai_classified": True, "intent": "GENERAL_COMPLAINT"}
+
+                if ai_res.intent == "TRACK_COMPLAINT":
+                    complaints_query = db.query(Complaint).filter(
+                        or_(
+                            Complaint.whatsapp_citizen_id == citizen.id,
+                            Complaint.citizen_id == citizen.user_id if citizen.user_id else False
+                        )
+                    ).order_by(Complaint.created_at.desc()).limit(3)
+                    user_complaints = complaints_query.all()
+
+                    if not user_complaints:
+                        reply = strings["no_complaints"]
+                    else:
+                        reply = strings["complaints_header"]
+                        for c in user_complaints:
+                            status_emoji = "⏳" if c.status == "Pending" else ("🚚" if c.status == "In Progress" else "✅")
+                            date_str = c.created_at.strftime("%d/%m/%Y") if c.created_at else "Today"
+                            reply += f"{status_emoji} *#{c.tracking_number}* ({date_str})\n"
+                            reply += f"   प्रकार / Type: {c.waste_type}\n"
+                            reply += f"   स्थिती / Status: *{c.status}*\n"
+                            if c.assigned_driver_name:
+                                reply += f"   गाडी / Vehicle: {c.assigned_driver_name}\n"
+                            reply += "\n"
+
+                    btn = [
+                        ("MENU_REPORT_WASTE", "नवीन तक्रार" if lang == "mr" else "New Complaint"),
+                        ("MENU_MAIN", "मुख्य मेनू" if lang == "mr" else "Main Menu")
+                    ]
+                    interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+                    return {"status": "track_complaints", "reply": reply, "ai_classified": True, "intent": "TRACK_COMPLAINT"}
+
+                if ai_res.intent == "OPEN_MENU":
+                    interactive_menu = WhatsAppService.build_main_menu_interactive(
+                        lang=lang,
+                        greeting_text=(
+                            "सेवा निवडा / Select a service"
+                            if lang == "mr"
+                            else "Select a service / सेवा निवडा"
+                        )
+                    )
+                    WhatsAppService.send_meta_whatsapp(
+                        citizen.phone_number,
+                        message_text=strings["menu_options"],
+                        interactive=interactive_menu
+                    )
+                    return {"status": "full_menu_presented", "reply": strings["menu_options"], "ai_classified": True, "intent": "OPEN_MENU"}
+
+                if ai_res.intent == "CHANGE_LANGUAGE":
+                    if ai_res.target_language in {"en", "mr"}:
+                        new_lang = ai_res.target_language
+                        citizen.preferred_language = new_lang
+                        db.commit()
+                        all_texts = _build_texts()
+                        strings = all_texts[new_lang]
+                        reply = (
+                            "Language changed to English 🇬🇧\n\n"
+                            if new_lang == "en"
+                            else "भाषा मराठी म्हणून सेट केली आहे 🇮🇳\n\n"
+                        ) + strings["help_text"]
+                        btn = [("MENU_MAIN", "Main Menu" if new_lang == "en" else "मुख्य मेनू")]
+                        interactive = WhatsAppService.build_quick_buttons_interactive(reply, btn)
+                        WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=interactive)
+                        return {"status": "help", "reply": reply, "ai_classified": True, "intent": "CHANGE_LANGUAGE", "language": new_lang}
+                    else:
+                        lang_sel = WhatsAppService.build_language_selection_interactive()
+                        prompt_text = "Welcome to EcoPulse AI\n\nChoose your preferred language / कृपया भाषा निवडा"
+                        WhatsAppService.send_meta_whatsapp(citizen.phone_number, prompt_text, interactive=lang_sel)
+                        return {"status": "awaiting_language", "reply": prompt_text, "ai_classified": True, "intent": "CHANGE_LANGUAGE"}
+
+                if ai_res.intent == "MUNICIPAL_FAQ":
+                    reply = (ai_res.contextual_reply or "").strip()
+                    if not reply:
+                        reply = strings["help_text"]
+                    primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang, body_text=reply)
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=primary_btns)
+                    return {"status": "faq_answered", "reply": reply, "ai_classified": True, "intent": "MUNICIPAL_FAQ"}
+
+                if ai_res.intent == "UNCLEAR":
+                    reply = (ai_res.contextual_reply or "").strip()
+                    if not reply:
+                        reply = (
+                            "आपला संदेश स्पष्ट समजला नाही. आपण खालील पर्यायांमधून निवड करू शकता:"
+                            if lang == "mr"
+                            else "I couldn't quite understand your request. You can choose from the options below:"
+                        )
+                    primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=lang, body_text=reply)
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply, interactive=primary_btns)
+                    return {"status": "unclear_clarified", "reply": reply, "ai_classified": True, "intent": "UNCLEAR"}
+
         # Option 1: Waste Complaint
         if clean_text in {"MENU_REPORT_WASTE", "REPORT_WASTE", "1"} or "कचरा" in lowered or "waste" in lowered or "report" in lowered or "तक्रार नोंद" in lowered:
             citizen.conversation_state = "AWAITING_PHOTO"

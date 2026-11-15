@@ -137,6 +137,14 @@ class Config:
         self.FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://ecopulse-ai-frontend.onrender.com/").rstrip("/") + "/"
         self.TRACKING_PREFIX: str = os.getenv("TRACKING_PREFIX", "DHL-")
 
+        # Gemini Conversational Intelligence (Phase 1)
+        self.GEMINI_API_KEY: str = (os.getenv("GEMINI_API_KEY", "") or "").strip()
+        self.GEMINI_MODEL: str = (os.getenv("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash").strip()
+        try:
+            self.GEMINI_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "4.0"))
+        except (ValueError, TypeError):
+            self.GEMINI_TIMEOUT_SECONDS = 4.0
+
     @property
     def CORS_ORIGINS(self) -> list[str]:
         raw = os.getenv("CORS_ORIGINS", os.getenv("BACKEND_CORS_ORIGINS", "")).strip()
