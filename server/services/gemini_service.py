@@ -9,15 +9,23 @@ from server.utils.config import config
 
 logger = logging.getLogger(__name__)
 
-# Allowed initial intent categories as specified by Phase 1 requirements
+# Allowed initial intent categories as specified by Phase 1 & 2 requirements
 SUPPORTED_INTENTS = {
     "REPORT_WASTE",
+    "GARBAGE_NOT_COLLECTED",
     "GENERAL_COMPLAINT",
     "TRACK_COMPLAINT",
-    "MUNICIPAL_FAQ",
-    "CHANGE_LANGUAGE",
+    "COLLECTION_SCHEDULE",
+    "TRACK_VEHICLE",
+    "CHECK_WALLET",
+    "MUNICIPAL_NOTICES",
+    "REGISTER_EVENT",
+    "GRATITUDE",
     "GREETING",
     "OPEN_MENU",
+    "CHANGE_LANGUAGE",
+    "HELP",
+    "MUNICIPAL_FAQ",
     "UNCLEAR",
 }
 
@@ -26,12 +34,20 @@ class GeminiIntentResult(BaseModel):
     """Structured representation of Gemini intent classification and response."""
     intent: Optional[Literal[
         "REPORT_WASTE",
+        "GARBAGE_NOT_COLLECTED",
         "GENERAL_COMPLAINT",
         "TRACK_COMPLAINT",
-        "MUNICIPAL_FAQ",
-        "CHANGE_LANGUAGE",
+        "COLLECTION_SCHEDULE",
+        "TRACK_VEHICLE",
+        "CHECK_WALLET",
+        "MUNICIPAL_NOTICES",
+        "REGISTER_EVENT",
+        "GRATITUDE",
         "GREETING",
         "OPEN_MENU",
+        "CHANGE_LANGUAGE",
+        "HELP",
+        "MUNICIPAL_FAQ",
         "UNCLEAR"
     ]] = None
     confidence: float = 0.0
@@ -51,22 +67,30 @@ class GeminiService:
         "Corporation (धुळे महानगरपालिका), Maharashtra, India.\n\n"
         "Analyze the citizen's WhatsApp message and output a strict JSON object with these fields:\n"
         "1. \"intent\": exactly one of:\n"
-        "   - \"REPORT_WASTE\": citizen wants to report garbage, trash, overflow, debris, dead animal, or uncollected waste.\n"
-        "   - \"GENERAL_COMPLAINT\": citizen wants to report non-waste municipal issues (streetlights, drainage, potholes, staff, water leakage).\n"
-        "   - \"TRACK_COMPLAINT\": citizen wants to check complaint status or view past complaints.\n"
-        "   - \"MUNICIPAL_FAQ\": citizen asks a question about municipal timings, EcoCoins, property tax rebates, waste segregation, helpline, or civic procedures.\n"
-        "   - \"CHANGE_LANGUAGE\": citizen asks to switch or change language (e.g. 'speak in English', 'मराठीत बोला').\n"
-        "   - \"GREETING\": citizen says hi, hello, namaskar, good morning, start, etc.\n"
-        "   - \"OPEN_MENU\": citizen asks to see the menu, services list, or all options.\n"
+        "   - \"REPORT_WASTE\": citizen wants to report garbage, uncollected waste, trash, debris, or overflowing bin (e.g. 'I want to report garbage', 'कचरा उचलला नाही', 'येथे घाण साचली आहे', 'kachra pada hai').\n"
+        "   - \"GARBAGE_NOT_COLLECTED\": citizen specifically complains that garbage was not picked up or collected (e.g. 'कचरा अजून उचलला नाही', 'garbage has not been picked up').\n"
+        "   - \"GENERAL_COMPLAINT\": citizen reports non-waste municipal issues like streetlights, potholes, drainage, or water supply (e.g. 'मला तक्रार करायची आहे', 'street light broken', 'drainage leakage').\n"
+        "   - \"TRACK_COMPLAINT\": citizen wants to check complaint status or track tickets (e.g. 'Where is my complaint?', 'माझी तक्रार कुठे आहे?', 'track my complaint').\n"
+        "   - \"COLLECTION_SCHEDULE\": citizen asks about garbage collection timings or truck schedule (e.g. 'उद्या कचरा कधी येणार?', 'when does the truck arrive?', 'pickup timings').\n"
+        "   - \"TRACK_VEHICLE\": citizen asks for live truck/ghantagadi location (e.g. 'घंटागाडी कुठे आहे?', 'where is the truck?', 'live tracking').\n"
+        "   - \"CHECK_WALLET\": citizen asks about EcoCoins, points, or tax rebate balance (e.g. 'माझे कॉइन्स किती आहेत?', 'check my wallet', 'ecocoin balance').\n"
+        "   - \"MUNICIPAL_NOTICES\": citizen asks for municipal notices, news, or announcements (e.g. 'काही नवीन सूचना आहेत का?', 'municipal notices').\n"
+        "   - \"REGISTER_EVENT\": citizen wants to register a public gathering, festival, or event for bulk sanitation (e.g. 'कार्यक्रमाची नोंदणी करायची आहे', 'register event').\n"
+        "   - \"GRATITUDE\": citizen expresses thanks, appreciation, or blessing (e.g. 'Thank you', 'धन्यवाद', 'आभारी आहे', 'thanks a lot', 'shukriya').\n"
+        "   - \"GREETING\": citizen says hello, hi, hey, namaskar, namaste, start (e.g. 'Hello', 'Hi', 'नमस्कार', 'नमस्ते', 'Hey').\n"
+        "   - \"OPEN_MENU\": citizen asks to see the menu, services list, or all options (e.g. 'सर्व पर्याय दाखवा', 'menu', 'full menu', 'show options').\n"
+        "   - \"CHANGE_LANGUAGE\": citizen asks to change or switch language (e.g. 'Can I change my language?', 'मला भाषा बदलायची आहे', 'speak in English', 'मराठीत बोला').\n"
+        "   - \"HELP\": citizen asks for helpline, contact details, or support assistance (e.g. 'मदत हवी आहे', 'helpline number', 'support contact').\n"
+        "   - \"MUNICIPAL_FAQ\": citizen asks an informational question about Dhule municipal rules, tax rebate rates, waste segregation, or civic procedures.\n"
         "   - \"UNCLEAR\": message is ambiguous, random, or not understood.\n\n"
         "2. \"confidence\": float between 0.0 and 1.0.\n"
-        "3. \"detected_language\": \"mr\", \"en\", or \"mixed\".\n"
-        "4. \"target_language\": \"mr\" or \"en\" if intent is CHANGE_LANGUAGE, else null.\n"
+        "3. \"detected_language\": \"mr\", \"en\", \"hi\", or \"mixed\".\n"
+        "4. \"target_language\": \"mr\" or \"en\" if intent is CHANGE_LANGUAGE and user specified target, else null.\n"
         "5. \"ticket_id\": complaint tracking number if present (e.g. DHL-2026-W12-XYZ), else null.\n"
         "6. \"contextual_reply\": \n"
         "   - For MUNICIPAL_FAQ: provide a concise, factual 1-3 sentence civic answer in the citizen's preferred language.\n"
         "   - For UNCLEAR: provide a polite 1-2 sentence clarification in the citizen's preferred language.\n"
-        "   - For other intents: null.\n\n"
+        "   - For other intents: null (EcoPulse AI deterministic backend handles formatting).\n\n"
         "Context for Dhule Municipality (धुळे महानगरपालिका):\n"
         "- Wet waste (ओला कचरा) in green bin; dry waste (सुका कचरा) in blue bin.\n"
         "- Citizen helpline: 1800-XXX-XXXX, email: contact@dhulecorporation.gov.in.\n"
@@ -80,8 +104,20 @@ class GeminiService:
         """Strip sensitive credentials like API keys from logs or exception strings."""
         if not err_str:
             return ""
-        # Redact query string key parameter if present
-        return re.sub(r'([?&]key=)[^&\s]+', r'\1[REDACTED]', str(err_str))
+        sanitized = str(err_str)
+        # Redact configured API key if present
+        api_key = getattr(config, "GEMINI_API_KEY", "")
+        if api_key and len(str(api_key).strip()) >= 5:
+            sanitized = sanitized.replace(str(api_key).strip(), "[REDACTED]")
+        # Redact query string key parameter (?key=... or &key=...)
+        sanitized = re.sub(r'([?&]key=)[^&\s\'"<>]+', r'\1[REDACTED]', sanitized)
+        # Redact Google API key format (AIzaSy...)
+        sanitized = re.sub(r'\bAIza[0-9A-Za-z\-_]{35}\b', '[REDACTED]', sanitized)
+        # Redact Authorization Bearer token if present
+        sanitized = re.sub(r'(Bearer\s+)[A-Za-z0-9\-._~+/]+=*', r'\1[REDACTED]', sanitized, flags=re.IGNORECASE)
+        # Redact x-goog-api-key header if present in logs
+        sanitized = re.sub(r'(x-goog-api-key[:=]\s*)[^\s,;\'"]+', r'\1[REDACTED]', sanitized, flags=re.IGNORECASE)
+        return sanitized
 
     @staticmethod
     def clean_json_text(raw_text: str) -> str:
@@ -96,16 +132,58 @@ class GeminiService:
     def parse_gemini_payload(data: dict) -> GeminiIntentResult:
         """Parse the raw response dict from Google Generative Language API into GeminiIntentResult."""
         try:
-            candidates = data.get("candidates", [])
-            if not candidates:
+            if not isinstance(data, dict):
+                return GeminiIntentResult(
+                    intent="UNCLEAR",
+                    is_fallback=True,
+                    error="Invalid payload: expected dict"
+                )
+
+            # Check if prompt was blocked by safety filters
+            prompt_feedback = data.get("promptFeedback")
+            if isinstance(prompt_feedback, dict):
+                block_reason = prompt_feedback.get("blockReason")
+                if block_reason:
+                    return GeminiIntentResult(
+                        intent="UNCLEAR",
+                        is_fallback=True,
+                        error=f"Prompt blocked: {block_reason}"
+                    )
+
+            candidates = data.get("candidates")
+            if not isinstance(candidates, list) or not candidates:
                 return GeminiIntentResult(
                     intent="UNCLEAR",
                     is_fallback=True,
                     error="No candidates returned by Gemini"
                 )
 
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if not parts:
+            first_candidate = candidates[0]
+            if not isinstance(first_candidate, dict):
+                return GeminiIntentResult(
+                    intent="UNCLEAR",
+                    is_fallback=True,
+                    error="Invalid candidate format in Gemini response"
+                )
+
+            finish_reason = first_candidate.get("finishReason")
+            if finish_reason and finish_reason in {"SAFETY", "RECITATION", "BLOCKLIST"}:
+                return GeminiIntentResult(
+                    intent="UNCLEAR",
+                    is_fallback=True,
+                    error=f"Candidate blocked: finishReason={finish_reason}"
+                )
+
+            content = first_candidate.get("content")
+            if not isinstance(content, dict):
+                return GeminiIntentResult(
+                    intent="UNCLEAR",
+                    is_fallback=True,
+                    error="Missing or invalid content in Gemini candidate"
+                )
+
+            parts = content.get("parts")
+            if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
                 return GeminiIntentResult(
                     intent="UNCLEAR",
                     is_fallback=True,
@@ -115,6 +193,13 @@ class GeminiService:
             raw_text = parts[0].get("text", "")
             cleaned_json = GeminiService.clean_json_text(raw_text)
             parsed = json.loads(cleaned_json)
+
+            if not isinstance(parsed, dict):
+                return GeminiIntentResult(
+                    intent="UNCLEAR",
+                    is_fallback=True,
+                    error="Model output is not a JSON object"
+                )
 
             raw_intent = str(parsed.get("intent", "")).strip().upper()
             validated_intent = raw_intent if raw_intent in SUPPORTED_INTENTS else "UNCLEAR"
@@ -241,6 +326,14 @@ class GeminiService:
                 intent=None,
                 is_fallback=True,
                 error=f"HTTP_{http_err.response.status_code}"
+            )
+        except httpx.RequestError as req_err:
+            safe_msg = cls._sanitize_error_message(str(req_err))
+            logger.warning("[GEMINI] Network/connection error contacting Gemini API: %s", safe_msg)
+            return GeminiIntentResult(
+                intent=None,
+                is_fallback=True,
+                error="GEMINI_NETWORK_ERROR"
             )
         except Exception as exc:
             safe_msg = cls._sanitize_error_message(str(exc))

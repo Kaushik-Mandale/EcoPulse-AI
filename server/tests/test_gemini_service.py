@@ -399,3 +399,156 @@ def test_gemini_api_key_not_exposed_in_logs_or_errors():
     sanitized = GeminiService._sanitize_error_message(leaked_url)
     assert "AIzaSySecretKey123456789" not in sanitized
     assert "key=[REDACTED]" in sanitized
+
+
+def test_gemini_sanitization_comprehensive(monkeypatch):
+    """Verify that error sanitization redacts query parameters, configured keys, and auth headers."""
+    test_key = "AIzaSySpecialSecretKey9876543210123"
+    monkeypatch.setattr(config, "GEMINI_API_KEY", test_key)
+
+    # 1. Direct configured API key occurrence in error text
+    raw_error = f"Failed to authenticate with secret {test_key} against Google endpoint"
+    sanitized = GeminiService._sanitize_error_message(raw_error)
+    assert test_key not in sanitized
+    assert "[REDACTED]" in sanitized
+
+    # 2. URL with &key=
+    amp_url = f"https://example.com/api?model=flash&key={test_key}"
+    sanitized_amp = GeminiService._sanitize_error_message(amp_url)
+    assert test_key not in sanitized_amp
+    assert "&key=[REDACTED]" in sanitized_amp
+
+    # 3. Quoted URL representation in exceptions
+    quoted = f"RequestError(url='https://example.com/?key={test_key}')"
+    sanitized_quoted = GeminiService._sanitize_error_message(quoted)
+    assert test_key not in sanitized_quoted
+    assert "key=[REDACTED]" in sanitized_quoted
+
+    # 4. Bearer token in headers
+    bearer_err = "Authorization failed for Bearer ya29.a0AfH6SM_test_token_value_here123"
+    sanitized_bearer = GeminiService._sanitize_error_message(bearer_err)
+    assert "ya29.a0AfH6SM_test_token_value_here123" not in sanitized_bearer
+    assert "Bearer [REDACTED]" in sanitized_bearer
+
+    # 5. x-goog-api-key header
+    goog_header = f"Headers: {{'x-goog-api-key': '{test_key}'}}"
+    sanitized_header = GeminiService._sanitize_error_message(goog_header)
+    assert test_key not in sanitized_header
+    assert "[REDACTED]" in sanitized_header
+
+    # 6. Empty and None inputs
+    assert GeminiService._sanitize_error_message("") == ""
+    assert GeminiService._sanitize_error_message(None) == ""
+
+
+def test_gemini_network_error_fallback_to_deterministic_menu(db, auth_citizen, sent_messages, monkeypatch):
+    """When a network error occurs (DNS/connection), fallback gracefully to deterministic menu."""
+    def raise_connect_error(*args, **kwargs):
+        req = httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+        raise httpx.ConnectError("Failed to establish a new connection: Connection refused", request=req)
+
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "mock-test-gemini-key")
+    monkeypatch.setattr(httpx.Client, "post", raise_connect_error)
+
+    res = WhatsAppService.handle_incoming_message(
+        db, auth_citizen.phone_number, "text", text_body="random text triggering network failure"
+    )
+    assert res["status"] == "menu_presented"
+    assert len(sent_messages) == 1
+    assert sent_messages[0]["interactive"]["type"] == "button"
+
+
+def test_gemini_classify_direct_network_error(monkeypatch):
+    """Direct classify_and_respond handles httpx.RequestError gracefully."""
+    def raise_request_error(*args, **kwargs):
+        req = httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+        raise httpx.NetworkError("Network unreachable", request=req)
+
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "mock-test-key")
+    monkeypatch.setattr(httpx.Client, "post", raise_request_error)
+
+    result = GeminiService.classify_and_respond("Hello, report waste")
+    assert result.is_fallback is True
+    assert result.error == "GEMINI_NETWORK_ERROR"
+    assert result.intent is None
+
+
+def test_gemini_classify_direct_unexpected_exception(monkeypatch):
+    """Direct classify_and_respond handles unexpected exceptions without crashing."""
+    def raise_unexpected(*args, **kwargs):
+        raise RuntimeError("Unexpected memory failure")
+
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "mock-test-key")
+    monkeypatch.setattr(httpx.Client, "post", raise_unexpected)
+
+    result = GeminiService.classify_and_respond("Hello, report waste")
+    assert result.is_fallback is True
+    assert result.error == "API_FAILURE_RuntimeError"
+    assert result.intent is None
+
+
+def test_gemini_response_parsing_non_dict_payload():
+    """Verify that non-dict or None payloads fall back gracefully to UNCLEAR."""
+    for invalid_payload in [None, [], "not a dict", 12345]:
+        result = GeminiService.parse_gemini_payload(invalid_payload)
+        assert result.intent == "UNCLEAR"
+        assert result.is_fallback is True
+        assert "Invalid payload" in (result.error or "")
+
+
+def test_gemini_response_parsing_non_dict_parsed_json():
+    """Verify that model output parsing falls back when model returns non-dict JSON."""
+    array_response = {
+        "candidates": [{
+            "content": {"parts": [{"text": "```json\n[\"REPORT_WASTE\"]\n```"}]}
+        }]
+    }
+    result = GeminiService.parse_gemini_payload(array_response)
+    assert result.intent == "UNCLEAR"
+    assert result.is_fallback is True
+    assert "not a JSON object" in (result.error or "")
+
+
+def test_gemini_response_parsing_prompt_blocked():
+    """Verify that prompt safety block feedback is handled cleanly."""
+    blocked_response = {
+        "promptFeedback": {
+            "blockReason": "SAFETY"
+        }
+    }
+    result = GeminiService.parse_gemini_payload(blocked_response)
+    assert result.intent == "UNCLEAR"
+    assert result.is_fallback is True
+    assert "Prompt blocked: SAFETY" in (result.error or "")
+
+
+def test_gemini_response_parsing_finish_reason_safety():
+    """Verify that candidate safety finishReason is handled cleanly."""
+    safety_response = {
+        "candidates": [
+            {
+                "finishReason": "SAFETY",
+                "content": {}
+            }
+        ]
+    }
+    result = GeminiService.parse_gemini_payload(safety_response)
+    assert result.intent == "UNCLEAR"
+    assert result.is_fallback is True
+    assert "Candidate blocked: finishReason=SAFETY" in (result.error or "")
+
+
+def test_gemini_response_parsing_malformed_parts():
+    """Verify that malformed parts in candidate content fall back cleanly."""
+    malformed_response = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": ["invalid_string_part"]
+                }
+            }
+        ]
+    }
+    result = GeminiService.parse_gemini_payload(malformed_response)
+    assert result.intent == "UNCLEAR"
+    assert result.is_fallback is True
