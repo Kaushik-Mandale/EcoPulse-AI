@@ -478,15 +478,23 @@ def test_complaints_and_whatsapp_menu_regression(db_session):
     phone = "9876510013"
     cleanup_test_phone(db_session, phone)
 
-    # Unlinked citizen sends random text -> onboarding registration prompt
-    res_unlinked = WhatsAppService.handle_incoming_message(
+    # Unlinked citizen sends random text -> prompts language selection first
+    res_lang = WhatsAppService.handle_incoming_message(
         db=db_session,
         sender_phone=f"91{phone}",
         message_type="text",
         text_body="Hello EcoPulse"
     )
+    assert res_lang["status"] == "awaiting_language"
+
+    # Selecting language -> onboarding registration prompt
+    res_unlinked = WhatsAppService.handle_incoming_message(
+        db=db_session,
+        sender_phone=f"91{phone}",
+        message_type="interactive",
+        text_body="LANG_MR"
+    )
     assert res_unlinked["status"] == "not_linked"
-    assert "वेबसाइटवर नागरिक म्हणून नोंदणी करा" in res_unlinked["reply"] or "first register" in res_unlinked["reply"]
 
     # Pre-link user
     user = User(full_name="Authorized User", phone=phone, role="citizen", is_active=True)

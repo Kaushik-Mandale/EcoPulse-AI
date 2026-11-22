@@ -372,9 +372,16 @@ class TestWhatsAppWebhookRegression:
 
     def test_unlinked_sender_sends_hey(self):
         wa_phone = f"91{random.randint(1000000000, 9999999999)}"
-        res = client.post(
+        res1 = client.post(
             "/api/whatsapp/simulate-incoming",
             json={"phone": wa_phone, "message": "hey", "type": "text"}
+        )
+        assert res1.status_code == 200
+        assert res1.json()["status"] == "awaiting_language"
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "LANG_MR", "type": "interactive"}
         )
         assert res.status_code == 200
         data = res.json()
@@ -387,15 +394,23 @@ class TestWhatsAppWebhookRegression:
 
     def test_unlinked_sender_sends_arbitrary_text(self):
         wa_phone = f"91{random.randint(1000000000, 9999999999)}"
-        res = client.post(
+        res1 = client.post(
             "/api/whatsapp/simulate-incoming",
             json={"phone": wa_phone, "message": "When will the garbage truck arrive in my area?", "type": "text"}
+        )
+        assert res1.status_code == 200
+        assert res1.json()["status"] == "awaiting_language"
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "LANG_MR", "type": "interactive"}
         )
         assert res.status_code == 200
         data = res.json()
         assert data["status"] == "not_linked"
         assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
         assert "https://ecopulse-ai-frontend.onrender.com/" in data["reply"]
+        assert "LINK <code>" in data["reply"]
         assert "Shirpur" not in data["reply"]
         assert "SHP" not in data["reply"]
 

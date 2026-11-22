@@ -1420,38 +1420,43 @@ class WhatsAppService:
             citizen.household_id = full_code
             citizen.ward = f'Ward {ward_num}'
             citizen.is_authorized = True
-            citizen.conversation_state = 'IDLE'
+
             if not citizen.preferred_language:
-                citizen.preferred_language = 'mr'
-            db.commit()
-
-            reply = strings['authorized_welcome'].format(
-                name=citizen.full_name or 'Citizen',
-                coins=citizen.eco_coins,
-                rupees=citizen.eco_coins // 2
-            ) + f"\n📍 प्रभाग: {citizen.ward} | घर क्र.: {citizen.household_id}\n\n" + strings["menu_options"]
-
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {'status': 'authorized', 'citizen': citizen.phone_number, 'reply': reply}
-
-        # ----------------------------------------------------------------
-        # STEP 1: Auth gatekeeper — citizen must have user_id or is_authorized
-        # ----------------------------------------------------------------
-        is_linked = bool(citizen.user_id or citizen.is_authorized)
-        if not is_linked:
-            reply = strings["not_linked_prompt"]
-            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
-            return {"status": "not_linked", "reply": reply}
+                citizen.conversation_state = 'AWAITING_LANGUAGE'
+                db.commit()
+                lang_sel = WhatsAppService.build_language_selection_interactive()
+                prompt_text = "Welcome to EcoPulse AI\n\nChoose your preferred language / कृपया भाषा निवडा"
+                WhatsAppService.send_meta_whatsapp(
+                    citizen.phone_number,
+                    prompt_text,
+                    interactive=lang_sel
+                )
+                return {
+                    'status': 'awaiting_language',
+                    'citizen': citizen.phone_number,
+                    'reply': prompt_text,
+                    'household_id': citizen.household_id,
+                    'ward': citizen.ward,
+                }
+            else:
+                citizen.conversation_state = 'IDLE'
+                db.commit()
+                reply = strings['authorized_welcome'].format(
+                    name=citizen.full_name or 'Citizen',
+                    coins=citizen.eco_coins,
+                    rupees=citizen.eco_coins // 2
+                ) + f"\n📍 प्रभाग: {citizen.ward} | घर क्र.: {citizen.household_id}\n\n" + strings["menu_options"]
+                WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                return {'status': 'authorized', 'citizen': citizen.phone_number, 'reply': reply}
 
         lowered = clean_text.lower()
 
         # ----------------------------------------------------------------
-        # STEP 1b: Language Selection — first-time citizens or explicit trigger
+        # STEP 1: Language Selection Gate — Every WhatsApp citizen must
+        # select Marathi or English before receiving onboarding menus or accessing workflows.
+        # Executes BEFORE citizen authorization.
         # ----------------------------------------------------------------
         _lang_selection_cmds = {"START", "LANGUAGE", "LANG"}
-        if not citizen.preferred_language and citizen.household_id:
-            citizen.preferred_language = "mr"
-            db.commit()
 
         _has_saved_lang = bool(
             citizen.preferred_language
@@ -1462,48 +1467,49 @@ class WhatsAppService:
         _is_conversational_msg = message_type in {"text", "interactive"}
         _in_active_workflow = citizen.conversation_state in {
             "AWAITING_PHOTO", "AWAITING_LOCATION", "AWAITING_GENERAL_COMPLAINT",
-            "AWAITING_EVENT_CATEGORY", "AWAITING_EVENT_LOCATION", "AWAITING_EVENT_ATTENDEES",
-            "AWAITING_EVENT_DESCRIPTION", "AWAITING_EVENT_CONFIRM"
+            "AWAITING_EVENT_CATEGORY", "AWAITING_EVENT_DATE", "AWAITING_EVENT_TIME",
+            "AWAITING_EVENT_LOCATION", "AWAITING_EVENT_CONFIRMATION",
+            "AWAITING_EVENT_ATTENDEES", "AWAITING_EVENT_DESCRIPTION", "AWAITING_EVENT_CONFIRM"
         }
 
         if _is_conversational_msg and not _in_active_workflow and (_in_lang_state or _explicit_lang_cmd or not _has_saved_lang):
-            # Determine whether this message is a valid language choice
+            # Determine whether this message is a valid language choice:
+            # - Interactive button IDs (LANG_EN, LANG_MR) are always accepted as language selections
+            # - Plain-text words ('english', 'marathi', 'मराठी') and numeric digits ('1', '2')
+            #   are accepted ONLY when the citizen is already in AWAITING_LANGUAGE state.
             _chose_en = (
-                clean_text in {"LANG_EN", "1"}
-                or lowered in {"english", "1"}
+                clean_text == "LANG_EN"
+                or (_in_lang_state and (clean_text == "1" or lowered in {"english", "1"}))
             ) and not _explicit_lang_cmd
+
             _chose_mr = (
-                clean_text in {"LANG_MR", "2"}
-                or lowered in {"marathi", "मराठी", "2"}
+                clean_text == "LANG_MR"
+                or (_in_lang_state and (clean_text == "2" or lowered in {"marathi", "मराठी", "2"}))
             ) and not _explicit_lang_cmd
 
-            if _chose_en:
-                citizen.preferred_language = "en"
+            if _chose_en or _chose_mr:
+                chosen_lang = "en" if _chose_en else "mr"
+                citizen.preferred_language = chosen_lang
                 citizen.conversation_state = "IDLE"
                 db.commit()
-                lang = "en"
+                lang = chosen_lang
                 all_texts = _build_texts()
-                strings = all_texts["en"]
-                welcome_txt = WhatsAppService.build_full_menu_text(citizen, db, lang="en")
-                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="en", body_text=welcome_txt)
-                WhatsAppService.send_meta_whatsapp(
-                    citizen.phone_number, welcome_txt, interactive=primary_btns
-                )
-                return {"status": "language_selected", "language": "en", "reply": welcome_txt}
+                strings = all_texts[chosen_lang]
 
-            if _chose_mr:
-                citizen.preferred_language = "mr"
-                citizen.conversation_state = "IDLE"
-                db.commit()
-                lang = "mr"
-                all_texts = _build_texts()
-                strings = all_texts["mr"]
-                welcome_txt = WhatsAppService.build_full_menu_text(citizen, db, lang="mr")
-                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang="mr", body_text=welcome_txt)
+                # Enforce authorization: Unlinked citizens receive authorization prompt in chosen language
+                # and are prevented from accessing protected services.
+                is_linked = bool(citizen.user_id or citizen.is_authorized)
+                if not is_linked:
+                    reply = strings["not_linked_prompt"]
+                    WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+                    return {"status": "not_linked", "language": chosen_lang, "reply": reply}
+
+                welcome_txt = WhatsAppService.build_full_menu_text(citizen, db, lang=chosen_lang)
+                primary_btns = WhatsAppService.build_primary_buttons_interactive(lang=chosen_lang, body_text=welcome_txt)
                 WhatsAppService.send_meta_whatsapp(
                     citizen.phone_number, welcome_txt, interactive=primary_btns
                 )
-                return {"status": "language_selected", "language": "mr", "reply": welcome_txt}
+                return {"status": "language_selected", "language": chosen_lang, "reply": welcome_txt}
 
             # Not a language choice (or explicit command) — prompt language selection and persist state
             citizen.conversation_state = "AWAITING_LANGUAGE"
@@ -1516,6 +1522,16 @@ class WhatsAppService:
                 interactive=lang_sel
             )
             return {"status": "awaiting_language", "reply": prompt_text}
+
+        # ----------------------------------------------------------------
+        # STEP 1b: Auth gatekeeper — citizen must have user_id or is_authorized
+        # Enforced after language selection is verified.
+        # ----------------------------------------------------------------
+        is_linked = bool(citizen.user_id or citizen.is_authorized)
+        if not is_linked:
+            reply = strings["not_linked_prompt"]
+            WhatsAppService.send_meta_whatsapp(citizen.phone_number, reply)
+            return {"status": "not_linked", "reply": reply}
 
         is_full_menu_cmd = (
             clean_text in {"MENU_FULL_MENU", "FULL_MENU", "OPEN_FULL_MENU"}

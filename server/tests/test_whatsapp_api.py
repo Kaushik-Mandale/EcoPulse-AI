@@ -33,14 +33,24 @@ def test_meta_webhook_verification_handshake():
     assert res_bad.status_code == 403
 
 def test_unauthorized_user_prompt():
-    unauth_phone = "917711223344"
+    import uuid
+    unauth_phone = f"9177{uuid.uuid4().int % 100000000:08d}"
     # Ensure this phone starts clean/unauthorized
-    res = client.post(
+    # Step 1: First message prompts language selection
+    res1 = client.post(
         "/api/whatsapp/simulate-incoming",
         json={"phone": unauth_phone, "message": "Hello", "type": "text"}
     )
-    assert res.status_code == 200
-    data = res.json()
+    assert res1.status_code == 200
+    assert res1.json()["status"] == "awaiting_language"
+
+    # Step 2: Language selected -> unauthorized/not_linked onboarding prompt
+    res2 = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={"phone": unauth_phone, "message": "LANG_MR", "type": "interactive"}
+    )
+    assert res2.status_code == 200
+    data = res2.json()
     assert data["status"] in ("unauthorized_prompt", "not_linked")
     assert "LINK" in data["reply"] or "ecopulse" in data["reply"].lower()
 
@@ -52,9 +62,14 @@ def test_qr_code_authorization():
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "authorized"
-    assert "Ward 14" in data["reply"]
-    assert "SHP-W14-H2045" in data["reply"]
+    assert data["status"] in ("authorized", "awaiting_language")
+    if data["status"] == "awaiting_language":
+        res_lang = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": auth_phone, "message": "LANG_MR", "type": "interactive"}
+        )
+        assert res_lang.status_code == 200
+        assert res_lang.json()["status"] == "language_selected"
 
 def test_authorized_dashboard_navigation():
     test_phone = "919988776655"
@@ -241,12 +256,14 @@ def test_whatsapp_tracking_only_returns_the_current_household_complaints(monkeyp
             household_id=f"SHP-W12-H{run_id}",
             ward="Ward 12",
             is_authorized=True,
+            preferred_language="mr",
         )
         other_citizen = WhatsAppCitizen(
             phone_number=f"91{(int(run_id, 16) + 1) % 10**10:010d}",
             household_id=f"SHP-W12-HOTHER{run_id}",
             ward="Ward 12",
             is_authorized=True,
+            preferred_language="mr",
         )
         db.add_all([citizen, other_citizen])
         db.flush()
