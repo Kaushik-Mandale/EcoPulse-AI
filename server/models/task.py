@@ -9,7 +9,7 @@ class DriverTask(Base):
     complaint_id = Column(Integer, ForeignKey("complaints.id"), nullable=True)
     driver_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     location_name = Column(String(255), nullable=False)
-    status = Column(String(20), default="Pending") # Pending, In Progress, Completed
+    status = Column(String(20), default="Pending") # Pending, Accepted, In Progress, Evidence Submitted, Pending Verification, Completed, Requires Rework, Cancelled
     proof_image_url = Column(String(255), nullable=True)
     route_order = Column(Integer, default=1)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

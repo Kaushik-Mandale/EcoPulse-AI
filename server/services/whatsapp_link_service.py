@@ -69,7 +69,7 @@ class WhatsAppLinkService:
                 detail="Only citizen accounts can generate a WhatsApp linking code.",
             )
 
-        if not user.is_active:
+        if not user.is_active or user.account_status != "active":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Account is inactive.",
@@ -230,7 +230,7 @@ class WhatsAppLinkService:
 
         # Validate the user account
         user: Optional[User] = db.query(User).filter(User.id == token.user_id).first()
-        if not user or not user.is_active or user.role.lower() != "citizen":
+        if not user or not user.is_active or user.account_status != "active" or user.role.lower() != "citizen":
             db.commit()
             logger.warning("[LINK] Token refers to invalid/inactive user_id=%s.", token.user_id)
             return None
@@ -285,9 +285,9 @@ class WhatsAppLinkService:
                 full_name=user.full_name,
                 ward=user.ward,
                 is_authorized=True,
-                preferred_language="mr",
+                preferred_language=None,
                 eco_coins=0,
-                conversation_state="IDLE",
+                conversation_state="AWAITING_LANGUAGE",
             )
             db.add(citizen)
 

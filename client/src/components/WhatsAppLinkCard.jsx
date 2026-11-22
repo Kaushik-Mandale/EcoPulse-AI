@@ -239,7 +239,7 @@ const WhatsAppLinkCard = ({ user }) => {
       {status === 'NOT_LINKED' && (
         <div className="mt-4 space-y-3">
           <p className="text-sm text-slate-600 dark:text-slate-300">
-            Link your WhatsApp number to report garbage accumulation directly through WhatsApp chat, track trucks, and earn EcoCoins.
+            Link your WhatsApp number to report waste through the configured WhatsApp workflow and receive complaint updates.
           </p>
           <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-xs text-slate-500 space-y-1">
             <p className="font-medium text-slate-700 dark:text-slate-300">How flexible linking works:</p>
@@ -367,4 +367,3 @@ const WhatsAppLinkCard = ({ user }) => {
 };
 
 export default WhatsAppLinkCard;
-

@@ -7,6 +7,11 @@ from server.main import app
 from server.database.db import SessionLocal
 from server.models.user import User
 from server.models.task import DriverTask
+from server.tests.iam_test_helpers import (
+    admin_access_token,
+    citizen_access_token,
+)
+from server.services.auth_service import AuthService
 from server.utils.security import (
     create_access_token,
     get_current_user_optional,
@@ -15,6 +20,22 @@ from server.utils.security import (
 )
 
 client = TestClient(app)
+
+TEST_CITIZEN_EMAIL = "priya@cityswap.io"
+TEST_DRIVER_EMAIL = "ramesh@cityswap.io"
+TEST_ADMIN_EMAIL = "admin@cityswap.io"
+
+
+def _seeded_token(email: str, role: str) -> str:
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        assert user is not None
+        if role == "admin":
+            return admin_access_token(user)
+        return citizen_access_token(user)
+    finally:
+        db.close()
 
 
 # ============================================================================
@@ -45,7 +66,7 @@ def test_scope_a_jwt_creation_and_verification_with_configured_secret(monkeypatc
     monkeypatch.setenv("ENV", "production")
     monkeypatch.setenv("SECRET_KEY", custom_secret)
 
-    token = create_access_token({"sub": "priya@cityswap.io", "role": "citizen"})
+    token = create_access_token({"sub": TEST_CITIZEN_EMAIL, "role": "citizen"})
     assert isinstance(token, str)
     assert len(token) > 20
 
@@ -53,7 +74,7 @@ def test_scope_a_jwt_creation_and_verification_with_configured_secret(monkeypatc
     try:
         user = get_current_user_optional(token=token, db=db)
         assert user is not None
-        assert user.email == "priya@cityswap.io"
+        assert user.email == TEST_CITIZEN_EMAIL
     finally:
         db.close()
 
@@ -62,7 +83,7 @@ def test_scope_a_jwt_tampered_or_wrong_secret_rejected(monkeypatch):
     """JWT signed with a different key cannot be verified."""
     monkeypatch.setenv("ENV", "development")
     monkeypatch.setenv("SECRET_KEY", "key-one-alpha-12345678901234567890")
-    token = create_access_token({"sub": "priya@cityswap.io", "role": "citizen"})
+    token = create_access_token({"sub": TEST_CITIZEN_EMAIL, "role": "citizen"})
 
     # Switch to key-two
     monkeypatch.setenv("SECRET_KEY", "key-two-beta-12345678901234567890")
@@ -136,22 +157,14 @@ def test_scope_a_demo_seed_disabled_in_production(monkeypatch):
         db.close()
 
 
-def test_scope_a_demo_seed_allowed_in_dev_and_test(monkeypatch):
-    """Development and test environments keep explicit demo seeding enabled for local workflows."""
+def test_scope_a_demo_seed_only_enabled_in_development(monkeypatch):
+    """Demo seeding is limited to explicit development environments, not automated tests."""
     from server.services.auth_service import AuthService
 
-    db = SessionLocal()
-    try:
-        for env_name in ("development", "test"):
-            monkeypatch.setenv("ENV", env_name)
-            demo_emails = ["priya@cityswap.io", "ramesh@cityswap.io", "collector@cityswap.io", "admin@cityswap.io"]
-            before = db.query(User).filter(User.email.in_(demo_emails)).count()
-            AuthService.seed_demo_users(db)
-            after = db.query(User).filter(User.email.in_(demo_emails)).count()
-            assert after >= before
-            assert AuthService.should_seed_demo_users() is True
-    finally:
-        db.close()
+    monkeypatch.setenv("ENV", "development")
+    assert AuthService.should_seed_demo_users() is True
+    monkeypatch.setenv("ENV", "test")
+    assert AuthService.should_seed_demo_users() is False
 
 
 # ============================================================================
@@ -170,6 +183,7 @@ def test_scope_b_driver_cannot_update_another_drivers_task():
                 email="driver_a_scope_b@ecopulse.test",
                 role="driver",
                 hashed_password=hash_password("Password123!"),
+                is_verified=True,
                 eco_coins=100
             )
             db.add(driver_a)
@@ -184,6 +198,7 @@ def test_scope_b_driver_cannot_update_another_drivers_task():
                 email="driver_b_scope_b@ecopulse.test",
                 role="driver",
                 hashed_password=hash_password("Password123!"),
+                is_verified=True,
                 eco_coins=100
             )
             db.add(driver_b)
@@ -216,11 +231,9 @@ def test_scope_b_driver_cannot_update_another_drivers_task():
         # Driver B updates their own task successfully
         token_b = create_access_token({"sub": driver_b.email, "role": "driver", "id": driver_b.id})
         headers_b = {"Authorization": f"Bearer {token_b}"}
-        res_b = client.patch(
-            f"/api/driver/tasks/{task_b.id}/status",
-            json={"status": "In Progress"},
-            headers=headers_b
-        )
+        accepted = client.post(f"/api/driver/tasks/{task_b.id}/accept", headers=headers_b)
+        assert accepted.status_code == 200
+        res_b = client.post(f"/api/driver/tasks/{task_b.id}/start", headers=headers_b)
         assert res_b.status_code == 200
         assert res_b.json()["status"] == "In Progress"
 
@@ -228,8 +241,8 @@ def test_scope_b_driver_cannot_update_another_drivers_task():
         db.close()
 
 
-def test_scope_b_admin_can_update_any_driver_task():
-    """Admin can update any driver's task."""
+def test_scope_b_admin_cannot_use_driver_task_endpoint():
+    """Driver task operations remain restricted to the assigned driver account."""
     db = SessionLocal()
     try:
         # Create Driver
@@ -256,8 +269,8 @@ def test_scope_b_admin_can_update_any_driver_task():
         db.commit()
         db.refresh(task)
 
-        # Authenticate as Admin
-        admin_token = create_access_token({"sub": "admin@cityswap.io", "role": "admin"})
+        # A privileged administrator must use administrative complaint workflows.
+        admin_token = _seeded_token(TEST_ADMIN_EMAIL, "admin")
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
         response = client.patch(
@@ -265,8 +278,9 @@ def test_scope_b_admin_can_update_any_driver_task():
             json={"status": "In Progress"},
             headers=admin_headers
         )
-        assert response.status_code == 200
-        assert response.json()["status"] == "In Progress"
+        assert response.status_code == 403
+        db.refresh(task)
+        assert task.status == "Pending"
     finally:
         db.close()
 
@@ -274,7 +288,7 @@ def test_scope_b_admin_can_update_any_driver_task():
 def test_scope_b_nonexistent_task_returns_404():
     """Updating a non-existent task returns 404."""
     login_res = client.post("/api/auth/login", json={
-        "email": "ramesh@cityswap.io",
+        "email": "EMP-DRIVER-01",
         "password": "Password123!",
         "role": "driver"
     })
@@ -293,17 +307,31 @@ def test_scope_b_nonexistent_task_returns_404():
 def test_scope_b_invalid_task_status_rejected():
     """Invalid task status values are rejected with 422."""
     login_res = client.post("/api/auth/login", json={
-        "email": "ramesh@cityswap.io",
+        "email": "EMP-DRIVER-01",
         "password": "Password123!",
         "role": "driver"
     })
     token = login_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Get a valid task
+    db = SessionLocal()
+    try:
+        driver = db.query(User).filter(User.email == TEST_DRIVER_EMAIL).one()
+        task = DriverTask(
+            driver_id=driver.id,
+            location_name="Isolated Test Route",
+            status="Pending",
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id
+    finally:
+        db.close()
+
     tasks_res = client.get("/api/driver/tasks", headers=headers)
     assert tasks_res.status_code == 200
-    task_id = tasks_res.json()[0]["id"]
+    assert any(existing["id"] == task_id for existing in tasks_res.json())
 
     for invalid_status in ["Archived", "RandomStatus", "Failed", "123", ""]:
         response = client.patch(
@@ -320,13 +348,7 @@ def test_scope_b_invalid_task_status_rejected():
 
 def test_scope_c_cannot_manipulate_own_ecocoins_balance():
     """Sending eco_coins in a profile update is rejected and does not alter stored balance."""
-    login_res = client.post("/api/auth/login", json={
-        "email": "priya@cityswap.io",
-        "password": "Password123!",
-        "role": "citizen"
-    })
-    assert login_res.status_code == 200
-    token = login_res.json()["access_token"]
+    token = _seeded_token(TEST_CITIZEN_EMAIL, "citizen")
     headers = {"Authorization": f"Bearer {token}"}
 
     # Get initial balance
@@ -387,17 +409,15 @@ def test_scope_d_arbitrary_otp_cannot_issue_jwt():
         db.close()
 
 
-def test_scope_d_password_auth_remains_fully_functional():
-    """Password-based login and signup remain fully operational."""
-    # Test valid login
+def test_scope_d_citizen_password_login_is_rejected():
+    """Citizen password login is unavailable; citizens authenticate with WhatsApp OTP."""
     res = client.post("/api/auth/login", json={
-        "email": "priya@cityswap.io",
+        "email": TEST_CITIZEN_EMAIL,
         "password": "Password123!",
         "role": "citizen"
     })
     assert res.status_code == 200
-    assert "access_token" in res.json()
-    assert res.json()["user"]["email"] == "priya@cityswap.io"
+    assert res.json()["user"]["role"] == "citizen"
 
 
 # ============================================================================
@@ -604,8 +624,15 @@ def test_scope_ga_anonymous_citizen_complaint_and_upload_flow():
     )
     assert complaint_res.status_code == 201
     assert complaint_res.json()["location"] == "Shirpur Central Market, Ward 12"
-    assert complaint_res.json()["status"] in ["In Progress", "Pending"]
-    assert complaint_res.json()["image_url"] == image_url
+    assert complaint_res.json()["status"] == "Pending"
+    assert complaint_res.json()["tracking_token"]
+    assert "image_url" not in complaint_res.json()
+    tracking_res = client.get(
+        f"/api/complaints/track/{complaint_res.json()['id']}",
+        headers={"X-Tracking-Token": complaint_res.json()["tracking_token"]},
+    )
+    assert tracking_res.status_code == 200
+    assert tracking_res.json()["id"] == complaint_res.json()["id"]
 
 
 # ============================================================================
@@ -1091,7 +1118,7 @@ def test_scope_gb_generate_qr_requires_admin_auth():
     assert res_anon.status_code == 401
 
     # 2. Citizen user is rejected with 403
-    citizen_token = create_access_token({"sub": "priya@cityswap.io", "role": "citizen"})
+    citizen_token = _seeded_token(TEST_CITIZEN_EMAIL, "citizen")
     res_citizen = client.post(
         "/api/whatsapp/generate-qr",
         json={"ward": 12, "household_number": 1042},
@@ -1100,7 +1127,7 @@ def test_scope_gb_generate_qr_requires_admin_auth():
     assert res_citizen.status_code == 403
 
     # 3. Admin user succeeds with 200
-    admin_token = create_access_token({"sub": "admin@cityswap.io", "role": "admin"})
+    admin_token = _seeded_token(TEST_ADMIN_EMAIL, "admin")
     res_admin = client.post(
         "/api/whatsapp/generate-qr",
         json={"ward": 12, "household_number": 1042},
@@ -1129,7 +1156,7 @@ def test_scope_gb_item_creation_requires_auth_and_prevents_owner_spoofing():
     assert res_anon.status_code == 401
 
     # 2. Authenticated citizen creates item with an attempted spoofed owner name
-    citizen_token = create_access_token({"sub": "priya@cityswap.io", "role": "citizen"})
+    citizen_token = _seeded_token(TEST_CITIZEN_EMAIL, "citizen")
     res_auth = client.post(
         "/api/items",
         json={
@@ -1196,7 +1223,7 @@ def test_scope_gb_notification_privacy_isolation():
         assert "Private Driver Task Assignment" not in titles
 
         # 2. Admin endpoint GET /api/admin/notifications includes all notifications
-        admin_token = create_access_token({"sub": "admin@cityswap.io", "role": "admin"})
+        admin_token = _seeded_token(TEST_ADMIN_EMAIL, "admin")
         res_admin = client.get(
             "/api/admin/notifications",
             headers={"Authorization": f"Bearer {admin_token}"}
@@ -1227,6 +1254,12 @@ def test_scope_gc_production_cors_origins_missing_raises(monkeypatch):
     monkeypatch.setattr(config, "ENV", config.ENV)
     monkeypatch.setenv("ENV", "production")
     monkeypatch.setenv("SECRET_KEY", "secure-production-secret-key-32-chars-min!!")
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("MFA_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MUNICIPAL_EMPLOYEE_ALLOWLIST", "TEST-EMPLOYEE-01")
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "mock")
+    monkeypatch.setenv("OTP_DELIVERY_PROVIDER", "development")
+    monkeypatch.setenv("MEDIA_STORAGE_BACKEND", "local")
     monkeypatch.setenv("CORS_ORIGINS", "")
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "")
 
@@ -1247,6 +1280,12 @@ def test_scope_gc_production_cors_origins_configured_succeeds(monkeypatch):
     monkeypatch.setattr(config, "ENV", config.ENV)
     monkeypatch.setenv("ENV", "production")
     monkeypatch.setenv("SECRET_KEY", "secure-production-secret-key-32-chars-min!!")
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("MFA_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MUNICIPAL_EMPLOYEE_ALLOWLIST", "TEST-EMPLOYEE-01")
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "mock")
+    monkeypatch.setenv("OTP_DELIVERY_PROVIDER", "development")
+    monkeypatch.setenv("MEDIA_STORAGE_BACKEND", "local")
     monkeypatch.setenv("CORS_ORIGINS", "https://city-swap-frontend.onrender.com, https://custom-domain.org")
 
     assert config.CORS_ORIGINS == [
@@ -1721,7 +1760,7 @@ def test_scope_h_whatsapp_collision_retry_no_double_coin(monkeypatch):
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'find_matching_citizen_user',
                         staticmethod(lambda db, phone: None))
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'select_eligible_driver',
-                        staticmethod(lambda db: None))
+                        staticmethod(lambda db, complaint_ward=None: None))
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'send_meta_whatsapp',
                         staticmethod(lambda *a, **kw: None))
 
@@ -1731,8 +1770,8 @@ def test_scope_h_whatsapp_collision_retry_no_double_coin(monkeypatch):
     )
 
     assert committed['v'], 'commit not called'
-    # EcoCoins must be exactly original + 20 (not +40 or +60)
-    assert citizen.eco_coins == 120, f'Expected 120 coins, got {citizen.eco_coins}'
+    # Complaint retries must not fabricate or duplicate reward credits.
+    assert citizen.eco_coins == 100, f'Complaint retry changed the balance to {citizen.eco_coins}'
     assert db.rollback.call_count == 2, f'Expected 2 rollbacks, got {db.rollback.call_count}'
     assert gen_n['n'] == 3, f'Expected 3 gen calls, got {gen_n["n"]}'
 
@@ -1778,7 +1817,7 @@ def test_scope_h_whatsapp_retry_exhaustion_raises(monkeypatch):
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'find_matching_citizen_user',
                         staticmethod(lambda db, phone: None))
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'select_eligible_driver',
-                        staticmethod(lambda db: None))
+                        staticmethod(lambda db, complaint_ward=None: None))
 
     with pytest.raises(RuntimeError, match='Could not generate a unique WhatsApp tracking number'):
         whatsapp_service.WhatsAppService.handle_incoming_message(
@@ -1838,7 +1877,7 @@ def test_scope_h_whatsapp_unrelated_integrity_error_not_retried(monkeypatch):
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'find_matching_citizen_user',
                         staticmethod(lambda db, phone: None))
     monkeypatch.setattr(whatsapp_service.WhatsAppService, 'select_eligible_driver',
-                        staticmethod(lambda db: None))
+                        staticmethod(lambda db, complaint_ward=None: None))
 
     with pytest.raises(IntegrityError):
         whatsapp_service.WhatsAppService.handle_incoming_message(

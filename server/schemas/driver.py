@@ -20,8 +20,8 @@ class FuelLogResponse(BaseModel):
 
 class FuelLogsSummaryResponse(BaseModel):
     logs: List[FuelLogResponse]
-    current_fuel_level: int
-    avg_consumption: float
+    current_fuel_level: Optional[int] = None
+    avg_consumption: Optional[float] = None
     total_spent: float
 
 # Performance Schemas
@@ -45,14 +45,14 @@ class LeaderboardEntry(BaseModel):
     is_you: bool
 
 class PerformanceOverviewResponse(BaseModel):
-    collection_efficiency: str
-    collection_efficiency_pct: str
+    collection_efficiency: Optional[str] = None
+    collection_efficiency_pct: Optional[str] = None
     eco_coins_balance: int
-    eco_coins_earned: str
-    fuel_economy: str
-    fuel_economy_pct: str
-    safety_score: str
-    safety_score_pct: str
+    eco_coins_earned: Optional[str] = None
+    fuel_economy: Optional[str] = None
+    fuel_economy_pct: Optional[str] = None
+    safety_score: Optional[str] = None
+    safety_score_pct: Optional[str] = None
     weekly_trends: List[WeeklyTrendBar]
     achievements: List[Achievement]
     leaderboard: List[LeaderboardEntry]

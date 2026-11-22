@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Mail, MapPin, Recycle } from 'lucide-react';
+import { MapPin, Recycle } from 'lucide-react';
 
 const FooterSection = () => {
   return (
@@ -67,8 +67,8 @@ const FooterSection = () => {
               <li><Link to="/" className="hover:text-white transition-colors">Home Portal</Link></li>
               <li><Link to="/report" className="hover:text-white transition-colors">Report Waste</Link></li>
               <li><Link to="/track" className="hover:text-white transition-colors">Track Complaint</Link></li>
-              <li><Link to="/map" className="hover:text-white transition-colors">Live City Map</Link></li>
-              <li><Link to="/demo" className="hover:text-white transition-colors">Evaluation Sandbox</Link></li>
+              <li><Link to="/map" className="hover:text-white transition-colors">Reported Locations</Link></li>
+              <li><Link to="/login" className="hover:text-white transition-colors">Sign in</Link></li>
             </ul>
           </div>
 
@@ -80,26 +80,22 @@ const FooterSection = () => {
               <li><Link to="/privacy" className="hover:text-white transition-colors">Privacy Policy (DPDP)</Link></li>
               <li><Link to="/terms" className="hover:text-white transition-colors">Terms of Service</Link></li>
               <li><Link to="/contact" className="hover:text-white transition-colors">Council Contact</Link></li>
-              <li><Link to="/wallet" className="hover:text-white transition-colors">EcoCoin Rewards</Link></li>
+              <li><Link to="/wallet" className="hover:text-white transition-colors">Wallet Status</Link></li>
             </ul>
           </div>
 
           {/* Contact Us */}
           <div className="md:col-span-2 space-y-3">
-            <h4 className="text-xs font-extrabold tracking-wider text-white uppercase">Contact Council</h4>
+            <h4 className="text-xs font-extrabold tracking-wider text-white uppercase">Municipal Support</h4>
             <ul className="space-y-2.5 text-xs font-semibold text-emerald-100/80">
-              <li className="flex items-center gap-2">
-                <Mail className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <a href="mailto:support@ecopulse.ai" className="hover:underline truncate">support@ecopulse.ai</a>
-              </li>
               <li className="flex items-start gap-2">
                 <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                <span>Dhule Urban Region, Maharashtra, India</span>
+                <span>Use your municipality’s official support channel.</span>
               </li>
             </ul>
           </div>
 
-          {/* WhatsApp QR Box */}
+          {/* Configured WhatsApp entry point */}
           <div className="md:col-span-2 flex justify-start md:justify-end">
             <a 
               href="https://wa.me/?text=Hi%20EcoPulse%20AI%20Civic%20Assistant"
@@ -108,10 +104,10 @@ const FooterSection = () => {
               className="bg-white text-gray-900 rounded-2xl p-4 shadow-lg w-full max-w-[200px] relative block hover:scale-102 transition-transform"
             >
               <div className="text-xs font-black text-gray-900 mb-2 leading-tight">
-                Scan to Chat <br /> on WhatsApp
+                Continue to WhatsApp
               </div>
               
-              {/* QR Code */}
+              {/* WhatsApp entry point illustration */}
               <div className="bg-gray-50 rounded-xl p-2.5 border border-gray-200 aspect-square flex items-center justify-center">
                 <div className="grid grid-cols-4 gap-1 w-full h-full p-1 bg-white rounded-md">
                   <div className="bg-gray-900 rounded-2xs"></div>
@@ -144,11 +140,11 @@ const FooterSection = () => {
 
         {/* Bottom Copyright Bar */}
         <div className="pt-6 text-center text-xs font-semibold text-emerald-200/70">
-          © 2026 EcoPulse AI • Smart Sanitation & Civic Intelligence Pilot (Dhule). All rights reserved.
+          © 2026 EcoPulse AI • Smart Civic & Sustainability Ecosystem. All rights reserved.
         </div>
       </div>
 
-      {/* Floating WhatsApp AI Chatbot Widget */}
+      {/* WhatsApp entry point */}
       <a 
         href="https://wa.me/?text=Hi%20EcoPulse%20AI%20Civic%20Assistant"
         target="_blank"
@@ -159,11 +155,10 @@ const FooterSection = () => {
           <svg className="w-6 h-6 fill-current" viewBox="0 0 24 24">
             <path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.84 9.84 0 0 0 12.04 2z"/>
           </svg>
-          <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white"></span>
         </div>
         <div className="text-left hidden sm:block">
-          <div className="text-[11px] font-extrabold leading-tight">WhatsApp AI Chatbot</div>
-          <div className="text-[9px] font-medium opacity-90">Click to start chatting</div>
+          <div className="text-[11px] font-extrabold leading-tight">WhatsApp</div>
+          <div className="text-[9px] font-medium opacity-90">Open the civic workflow</div>
         </div>
       </a>
 

@@ -1,70 +1,118 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Lock, Eye, EyeOff, ChevronRight, Headphones, CheckCircle2, ShieldAlert, Phone, ShieldCheck, Key } from 'lucide-react';
+import { User, Lock, Eye, EyeOff, ChevronRight, Headphones, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { loginUser } from '../../services/authService';
+import api from '../../services/api';
+import { isStrongOnboardingPassword, ONBOARDING_PASSWORD_REQUIREMENTS } from '../../utils/passwordStrength';
 
 const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
-  const [loginMode, setLoginMode] = useState('password'); // 'password' | 'otp'
-  const [identifier, setIdentifier] = useState(''); // Employee ID, Email, or Phone
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [mobileNumber, setMobileNumber] = useState('');
-  const [otp, setOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [authSuccess, setAuthSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-
-  const handleSendOtp = () => {
-    if (!mobileNumber || mobileNumber.length < 10) {
-      setErrorMsg('Please enter a valid 10-digit mobile number');
-      return;
-    }
-    setErrorMsg('');
-    setOtpSent(true);
-  };
+  const [phoneVerificationRequired, setPhoneVerificationRequired] = useState(false);
+  const [phoneChallengeId, setPhoneChallengeId] = useState('');
+  const [phoneOtp, setPhoneOtp] = useState('');
+  const [rotationRequired, setRotationRequired] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (loginMode === 'password') {
-      if (!identifier) {
-        setErrorMsg('Employee ID, Email or Mobile Number is required');
-        return;
-      }
-      if (!password) {
-        setErrorMsg('Password is required');
-        return;
-      }
-    } else {
-      if (!mobileNumber) {
-        setErrorMsg('Mobile number is required');
-        return;
-      }
-      if (!otp) {
-        setErrorMsg('Please enter the 6-digit OTP');
-        return;
-      }
+    if (!identifier.trim() || !password) {
+      setErrorMsg('Employee ID and password are required');
+      return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const loginPayload = loginMode === 'password'
-        ? { email: identifier, password: password, role: 'driver', rememberMe }
-        : { email: mobileNumber.includes('@') ? mobileNumber : `${mobileNumber}@driver.cityswap.io`, password: 'Password123!', role: 'driver', rememberMe };
-
-      const result = await loginUser(loginPayload);
+      const result = await loginUser({ email: identifier.trim(), password, role: 'driver', rememberMe });
+      if (!result?.user?.role) throw new Error('The authenticated account role could not be verified. Please sign in again.');
       setAuthSuccess(true);
       setTimeout(() => {
         if (onSuccess) {
-          onSuccess(result?.user || { email: identifier, role: 'driver' });
+          onSuccess(result.user);
         }
       }, 700);
     } catch (err) {
+      if (err.code === 'PHONE_VERIFICATION_REQUIRED') {
+        setPhoneVerificationRequired(true);
+        setErrorMsg('Verify your registered mobile number before continuing.');
+        return;
+      }
+      if (err.code === 'PASSWORD_CHANGE_REQUIRED') {
+        setRotationRequired(true);
+        setErrorMsg('Change your temporary password before continuing.');
+        return;
+      }
+      if (err.code === 'TEMPORARY_CREDENTIAL_EXPIRED') {
+        setErrorMsg('This temporary password has expired. Contact your municipal administrator for a reset.');
+        return;
+      }
       setErrorMsg(err.message || 'Invalid Employee ID/Credentials or Password');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const sendPhoneVerification = async () => {
+    setErrorMsg('');
+    setIsSubmitting(true);
+    try {
+      const { data } = await api.post('/auth/drivers/phone-verification/send', {
+        login_id: identifier.trim(), password
+      });
+      setPhoneChallengeId(data.challenge_id);
+      setErrorMsg('A verification code was sent to your registered mobile number.');
+    } catch (error) {
+      setErrorMsg(error.response?.data?.detail || 'Mobile verification could not be started.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const confirmPhoneVerification = async () => {
+    setErrorMsg('');
+    setIsSubmitting(true);
+    try {
+      await api.post('/auth/drivers/phone-verification/confirm', {
+        login_id: identifier.trim(), password, otp: phoneOtp, challenge_id: phoneChallengeId
+      });
+      setPhoneVerificationRequired(false);
+      setPhoneChallengeId('');
+      setPhoneOtp('');
+      setErrorMsg('Mobile verified. Sign in again to rotate your temporary password.');
+    } catch (error) {
+      setErrorMsg(error.response?.data?.detail || 'Mobile verification failed or expired.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const changeInitialPassword = async () => {
+    setErrorMsg('');
+    if (!isStrongOnboardingPassword(newPassword) || newPassword !== confirmNewPassword) {
+      setErrorMsg('Choose a strong password that meets the requirements and confirm it.');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await api.post('/auth/initial-password/change', {
+        login_id: identifier.trim(), current_password: password, new_password: newPassword
+      });
+      setPassword(newPassword);
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setRotationRequired(false);
+      setErrorMsg('Temporary password changed. Sign in to continue.');
+    } catch (error) {
+      setErrorMsg(error.response?.data?.detail || 'Password change could not be completed.');
     } finally {
       setIsSubmitting(false);
     }
@@ -97,7 +145,7 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
         {/* Portal Title & Subtitle */}
         <div className="text-center mb-2.5">
           <h3 className="text-xl sm:text-2xl font-extrabold text-[#2563eb] tracking-tight">
-            Driver Portal
+            Field Operations Portal · Driver
           </h3>
           <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
             View your routes, tasks and complete your duty.
@@ -113,35 +161,6 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
           />
         </div>
 
-        {/* Auth Mode Toggle Pills */}
-        <div className="flex rounded-xl bg-slate-100 p-1 mb-3 border border-slate-200">
-          <button
-            type="button"
-            onClick={() => { setLoginMode('password'); setErrorMsg(''); }}
-            className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              loginMode === 'password'
-                ? 'bg-white text-[#2563eb] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Key className="w-3.5 h-3.5" />
-            <span>Password Login</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setLoginMode('otp'); setErrorMsg(''); }}
-            className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              loginMode === 'otp'
-                ? 'bg-white text-[#2563eb] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Phone className="w-3.5 h-3.5" />
-            <span>OTP Login</span>
-          </button>
-        </div>
-
         {/* Form Fields */}
         <form onSubmit={handleSubmit} className="space-y-2.5 sm:space-y-3">
           {errorMsg && (
@@ -151,105 +170,69 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
             </div>
           )}
 
-          {loginMode === 'password' ? (
-            <>
-              {/* Employee ID, Email, or Phone */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Employee ID, Email or Phone Number
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                  <div className="pl-3.5 text-slate-400">
-                    <User className="w-4 h-4" />
-                  </div>
-                  <input
-                    type="text"
-                    value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value)}
-                    placeholder="EMP-DRIVER-01 or ramesh@ecopulse.ai"
-                    className="w-full pl-2.5 pr-4 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                </div>
-              </div>
+          <div>
+            <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">Employee ID or Login ID</label>
+            <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100 transition-all">
+              <div className="pl-3.5 text-slate-400"><User className="w-4 h-4" /></div>
+              <input
+                type="text"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="Enter your municipal login ID"
+                autoComplete="username"
+                className="w-full pl-2.5 pr-4 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
+              />
+            </div>
+          </div>
 
-              {/* Password Field */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Password
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                  <div className="pl-3.5 text-slate-400">
-                    <Lock className="w-4 h-4" />
-                  </div>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter your password"
-                    className="w-full pl-2.5 pr-10 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              {/* Mobile Number Field */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Mobile Number
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100 transition-all overflow-hidden">
-                  <div className="pl-3 pr-2 py-2 sm:py-2.5 flex items-center gap-1 border-r border-slate-200 text-slate-600 font-bold text-xs shrink-0">
-                    <Phone className="w-3.5 h-3.5 text-slate-400" />
-                    <span>+91</span>
-                  </div>
-                  <input
-                    type="tel"
-                    value={mobileNumber}
-                    onChange={(e) => setMobileNumber(e.target.value)}
-                    placeholder="Enter mobile number"
-                    className="w-full px-3 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                </div>
-              </div>
-
-              {/* Enter OTP Field */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Enter OTP
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100 transition-all overflow-hidden">
-                  <div className="pl-3 text-slate-400 shrink-0">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value)}
-                    placeholder="Enter 6 digit OTP"
-                    className="w-full pl-2.5 pr-20 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSendOtp}
-                    className="absolute right-2 px-2.5 py-1 text-xs font-extrabold text-[#2563eb] hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                  >
-                    {otpSent ? 'Resend' : 'Send OTP'}
-                  </button>
-                </div>
-              </div>
-            </>
+          {phoneVerificationRequired && (
+            <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50 p-3">
+              <p className="text-xs font-semibold text-blue-900">Step 2 of 2 · Verify the mobile number registered to this Driver account. Codes expire and can be used once.</p>
+              {!phoneChallengeId ? <button type="button" onClick={sendPhoneVerification} disabled={isSubmitting}
+                className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{isSubmitting ? 'Sending…' : 'Send mobile verification code'}</button> : <>
+                <input aria-label="Mobile verification code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={phoneOtp}
+                  onChange={(event) => setPhoneOtp(event.target.value.replace(/\D/g, ''))} placeholder="6-digit code"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+                <button type="button" onClick={confirmPhoneVerification} disabled={isSubmitting || phoneOtp.length !== 6}
+                  className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{isSubmitting ? 'Verifying…' : 'Verify mobile'}</button>
+                <button type="button" onClick={sendPhoneVerification} disabled={isSubmitting}
+                  className="ml-2 rounded-lg border border-blue-300 px-3 py-2 text-xs font-bold text-blue-900 disabled:opacity-50">Request a new code</button>
+              </>}
+            </div>
           )}
 
-          {/* Checkbox & Forgot Password / Resend OTP */}
+          {rotationRequired && (
+            <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-semibold text-amber-900">Step 1 of 2 · Change your one-time password before mobile verification.</p>
+              <input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="New password (12+ characters)" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              <p className="text-[11px] text-amber-900">{ONBOARDING_PASSWORD_REQUIREMENTS}</p>
+              <input type="password" autoComplete="new-password" value={confirmNewPassword} onChange={(event) => setConfirmNewPassword(event.target.value)} placeholder="Confirm new password" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+            </div>
+          )}
+          <div>
+            <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">Password</label>
+            <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100 transition-all">
+              <div className="pl-3.5 text-slate-400"><Lock className="w-4 h-4" /></div>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                autoComplete="current-password"
+                className="w-full pl-2.5 pr-10 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Remember me and password recovery */}
           <div className="flex items-center justify-between text-[11px] sm:text-xs pt-0.5">
             <label className="flex items-center gap-1.5 cursor-pointer font-bold text-slate-600 select-none">
               <input
@@ -261,30 +244,17 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
               <span>Remember me</span>
             </label>
 
-            {loginMode === 'password' ? (
-              <button
-                type="button"
-                onClick={onOpenForgotPassword}
-                className="font-bold text-[#2563eb] hover:underline cursor-pointer"
-              >
-                Forgot Password?
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSendOtp}
-                className="font-bold text-[#2563eb] hover:underline cursor-pointer"
-              >
-                Resend OTP
-              </button>
-            )}
+            <button type="button" onClick={onOpenForgotPassword} className="font-bold text-[#2563eb] hover:underline cursor-pointer">
+              Forgot Password?
+            </button>
           </div>
 
           {/* Primary Submit Button */}
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
-            type="submit"
+            type={rotationRequired ? 'button' : 'submit'}
+            onClick={rotationRequired ? changeInitialPassword : undefined}
             disabled={isSubmitting || authSuccess}
             className="w-full py-2.5 sm:py-3 px-4 rounded-xl bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 disabled:opacity-80 min-h-[42px]"
           >
@@ -297,7 +267,7 @@ const DriverPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
               <span>Authenticating...</span>
             ) : (
               <>
-                <span>Login</span>
+                <span>{rotationRequired ? 'Change temporary password' : 'Login'}</span>
                 <ChevronRight className="w-4 h-4" />
               </>
             )}

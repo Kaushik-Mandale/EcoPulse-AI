@@ -181,7 +181,7 @@ const CitizenPortalLogin = ({ onSuccess, onSwitchToSignup }) => {
             <span className="text-lg sm:text-xl font-black text-[#16a34a] tracking-tight">EcoPulse AI</span>
           </div>
           <div className="text-[11px] sm:text-xs font-bold text-slate-700 tracking-wide">
-            Dhule Civic Sandbox | <span className="text-[#16a34a]">स्वच्छता पोर्टल</span>
+            Dhule Civic Portal | <span className="text-[#16a34a]">स्वच्छता पोर्टल</span>
           </div>
           <div className="text-[10px] font-bold text-[#16a34a] mt-0.5">
             🌱 एकत्र येऊ, स्वच्छ धुळे घडवू. 🌱
@@ -418,7 +418,7 @@ const CitizenPortalLogin = ({ onSuccess, onSwitchToSignup }) => {
 
       {/* Municipal Branding Footer */}
       <div className="mt-4 pt-2 border-t border-emerald-100 flex items-center justify-between text-[10px] text-emerald-800/80 font-bold">
-        <span>🏛️ Dhule Civic Sandbox</span>
+        <span>🏛️ Dhule Civic Portal</span>
         <span>DPDP Act 2023 Compliant</span>
       </div>
     </div>

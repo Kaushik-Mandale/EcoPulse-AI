@@ -130,8 +130,8 @@ const SplitAuthLayout = ({ mode = 'signup', onSuccessNavigation }) => {
                 <Zap className="w-4 h-4" />
               </div>
               <div>
-                <div className="text-[10px] font-black text-gray-900">AI Route Sync</div>
-                <div className="text-[8px] font-semibold text-gray-500">99.4% Efficiency</div>
+                <div className="text-[10px] font-black text-gray-900">Complaint Updates</div>
+                <div className="text-[8px] font-semibold text-gray-500">Recorded municipal status</div>
               </div>
             </motion.div>
 
@@ -145,8 +145,8 @@ const SplitAuthLayout = ({ mode = 'signup', onSuccessNavigation }) => {
                 <Shield className="w-4 h-4" />
               </div>
               <div>
-                <div className="text-[10px] font-black text-gray-900">Verified Proof</div>
-                <div className="text-[8px] font-semibold text-gray-500">AI Photo Verification</div>
+                <div className="text-[10px] font-black text-gray-900">Photo Review</div>
+                <div className="text-[8px] font-semibold text-gray-500">Municipal review process</div>
               </div>
             </motion.div>
 
@@ -183,7 +183,7 @@ const SplitAuthLayout = ({ mode = 'signup', onSuccessNavigation }) => {
               <div>
                 <h4 className="text-[11px] font-black text-gray-900">Circular Economy</h4>
                 <p className="text-[10px] font-semibold text-gray-500 leading-tight mt-0.5">
-                  Turn scrap into eco-credits.
+                  Browse community reuse listings.
                 </p>
               </div>
             </div>
@@ -195,7 +195,7 @@ const SplitAuthLayout = ({ mode = 'signup', onSuccessNavigation }) => {
               <div>
                 <h4 className="text-[11px] font-black text-gray-900">Smart City Ecosystem</h4>
                 <p className="text-[10px] font-semibold text-gray-500 leading-tight mt-0.5">
-                  AI route navigation for drivers.
+                  Manage assigned collection tasks.
                 </p>
               </div>
             </div>

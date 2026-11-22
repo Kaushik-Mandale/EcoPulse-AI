@@ -26,6 +26,7 @@ from server.models.task import DriverTask
 from server.utils.security import create_access_token, hash_password
 from server.services.media_storage import SupabaseMediaStorage, set_media_storage, LocalMediaStorage
 from server.services.complaint_service import ComplaintService
+from server.tests.iam_test_helpers import admin_access_token
 
 client = TestClient(app)
 
@@ -83,7 +84,8 @@ def test_users_and_complaints():
         email=f"dave_{u_id}@example.com",
         hashed_password=hash_password("Password123!"),
         role="driver",
-        ward="Ward 12"
+        ward="Ward 12",
+        is_verified=True,
     )
     # 4. Driver Other (Unassigned)
     driver_other = User(
@@ -91,7 +93,8 @@ def test_users_and_complaints():
         email=f"dan_{u_id}@example.com",
         hashed_password=hash_password("Password123!"),
         role="driver",
-        ward="Ward 8"
+        ward="Ward 8",
+        is_verified=True,
     )
     # 5. Administrator
     admin_user = User(
@@ -192,7 +195,15 @@ def test_users_and_complaints():
 
 def auth_headers(user: User) -> dict:
     """Helper to generate Authorization header for a user."""
-    token = create_access_token({"sub": user.email, "role": user.role, "id": user.id})
+    if user.role in {"admin", "collector"}:
+        token = admin_access_token(user)
+    else:
+        token = create_access_token({
+            "sub": user.email,
+            "role": user.role,
+            "id": user.id,
+            "sv": user.session_version or 0,
+        })
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -279,17 +290,52 @@ def test_admin_accessing_any_complaint_image_allowed(mock_supabase_storage, test
         assert "test.supabase.co" in response.json()["url"]
 
 
-def test_collector_accessing_any_complaint_image_allowed(mock_supabase_storage, test_users_and_complaints):
-    """Collector has administrative authorization to access complaint images."""
+def test_collector_image_access_is_limited_to_assigned_ward(mock_supabase_storage, test_users_and_complaints):
+    """Collectors can retrieve images in their assigned ward only."""
     collector = test_users_and_complaints["collector"]
+    comp_a = test_users_and_complaints["comp_a"]
     comp_b = test_users_and_complaints["comp_b"]
+    original_ward = collector.ward
+    db = SessionLocal()
+    try:
+        db_collector = db.query(User).filter(User.id == collector.id).one()
+        db_collector.ward = comp_a.ward
+        db.commit()
+    finally:
+        db.close()
 
-    response = client.get(
-        f"/api/complaints/{comp_b.tracking_number}/image-url",
-        headers=auth_headers(collector)
+    allowed = client.get(
+        f"/api/complaints/{comp_a.tracking_number}/image-url",
+        headers=auth_headers(collector),
     )
-    assert response.status_code == 200
-    assert "test.supabase.co" in response.json()["url"]
+    assert allowed.status_code == 200
+    assert "test.supabase.co" in allowed.json()["url"]
+
+    denied_cross_ward = client.get(
+        f"/api/complaints/{comp_b.tracking_number}/image-url",
+        headers=auth_headers(collector),
+    )
+    assert denied_cross_ward.status_code == 403
+
+    db = SessionLocal()
+    try:
+        db_collector = db.query(User).filter(User.id == collector.id).one()
+        db_collector.ward = None
+        db.commit()
+    finally:
+        db.close()
+    denied_unassigned = client.get(
+        f"/api/complaints/{comp_a.tracking_number}/image-url",
+        headers=auth_headers(collector),
+    )
+    assert denied_unassigned.status_code == 403
+    db = SessionLocal()
+    try:
+        db_collector = db.query(User).filter(User.id == collector.id).one()
+        db_collector.ward = original_ward
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_anonymous_tracking_with_valid_token_allowed(mock_supabase_storage, test_users_and_complaints):
@@ -330,8 +376,10 @@ def test_object_key_manipulation_rejected(mock_supabase_storage):
 
 
 def test_public_complaint_list_does_not_leak_signed_urls(mock_supabase_storage, test_users_and_complaints):
-    """GET /api/complaints must NOT leak signed Supabase URLs, tokens, or private bucket domains."""
-    response = client.get("/api/complaints")
+    """Authenticated administrative listings use mediated URLs, never signed storage URLs."""
+    users = test_users_and_complaints
+    assert client.get("/api/complaints").status_code == 401
+    response = client.get("/api/complaints", headers=auth_headers(users["admin"]))
     assert response.status_code == 200
     complaints = response.json()
 
@@ -345,6 +393,185 @@ def test_public_complaint_list_does_not_leak_signed_urls(mock_supabase_storage, 
             if "ALICE" in comp["id"] or "BOB" in comp["id"]:
                 assert image_url.startswith("/api/complaints/")
                 assert image_url.endswith("/image")
+
+
+def test_anonymous_cannot_enumerate_complaints_or_use_numeric_ids(test_users_and_complaints):
+    comp_a = test_users_and_complaints["comp_a"]
+    assert client.get("/api/complaints").status_code == 401
+    assert client.get("/api/complaints/my").status_code == 401
+    assert client.get(f"/api/complaints/track/{comp_a.id}").status_code == 404
+    assert client.get(f"/api/complaints/{comp_a.id}").status_code == 404
+    assert client.get(f"/api/complaints/{comp_a.tracking_number}").status_code == 404
+    assert client.get(f"/api/complaints/{comp_a.id}/image-url").status_code == 404
+
+
+def test_citizen_complaint_access_is_limited_to_ownership(test_users_and_complaints):
+    users = test_users_and_complaints
+    citizen_a_headers = auth_headers(users["citizen_a"])
+    owned_ids = {row["id"] for row in client.get("/api/complaints/my", headers=citizen_a_headers).json()}
+    assert users["comp_a"].tracking_number in owned_ids
+    assert users["comp_local"].tracking_number in owned_ids
+    assert users["comp_b"].tracking_number not in owned_ids
+    own_row = next(row for row in client.get("/api/complaints/my", headers=citizen_a_headers).json()
+                   if row["id"] == users["comp_a"].tracking_number)
+    assert own_row["has_image"] is True
+    assert "image_url" not in own_row
+
+    all_route_ids = {row["id"] for row in client.get("/api/complaints", headers=citizen_a_headers).json()}
+    assert all_route_ids == owned_ids
+    assert client.get(
+        f"/api/complaints/track/{users['comp_a'].tracking_number}",
+        headers=citizen_a_headers,
+    ).status_code == 200
+    assert client.get(
+        f"/api/complaints/track/{users['comp_b'].tracking_number}",
+        headers=citizen_a_headers,
+    ).status_code == 404
+
+
+def test_tracking_capability_is_hash_stored_scoped_and_minimal(test_users_and_complaints):
+    users = test_users_and_complaints
+    comp_anon = users["comp_anon"]
+    raw_token = ComplaintService.generate_tracking_secret()
+    stored_hash = ComplaintService.hash_tracking_secret(raw_token)
+    db = SessionLocal()
+    try:
+        db.query(Complaint).filter(Complaint.id == comp_anon.id).update(
+            {"tracking_secret": stored_hash}
+        )
+        db.commit()
+        assert db.query(Complaint).filter(Complaint.id == comp_anon.id).one().tracking_secret == stored_hash
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/api/complaints/track/{comp_anon.tracking_number}",
+        headers={"X-Tracking-Token": raw_token},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == comp_anon.tracking_number
+    assert set(body) <= {"id", "location", "type", "ward", "status", "time", "statusColor", "created_at"}
+    for sensitive_key in ("db_id", "assignedTo", "image_url", "latitude", "longitude", "ai_status", "tracking_token"):
+        assert sensitive_key not in body
+
+    assert client.get(
+        f"/api/complaints/track/{comp_anon.tracking_number}",
+        headers={"X-Tracking-Token": "invalid-capability"},
+    ).status_code == 404
+    assert client.get(
+        f"/api/complaints/track/{users['comp_b'].tracking_number}",
+        headers={"X-Tracking-Token": raw_token},
+    ).status_code == 404
+
+
+def test_new_hashed_tracking_capability_authorizes_only_its_evidence(
+    mock_supabase_storage, test_users_and_complaints
+):
+    users = test_users_and_complaints
+    comp_anon = users["comp_anon"]
+    raw_token = ComplaintService.generate_tracking_secret()
+    db = SessionLocal()
+    try:
+        db.query(Complaint).filter(Complaint.id == comp_anon.id).update({
+            "tracking_secret": ComplaintService.hash_tracking_secret(raw_token)
+        })
+        db.commit()
+    finally:
+        db.close()
+
+    allowed = client.get(
+        f"/api/complaints/{comp_anon.tracking_number}/image-url",
+        headers={"X-Tracking-Token": raw_token},
+    )
+    assert allowed.status_code == 200
+    denied = client.get(
+        f"/api/complaints/{users['comp_b'].tracking_number}/image-url",
+        headers={"X-Tracking-Token": raw_token},
+    )
+    assert denied.status_code in {401, 403}
+
+
+def test_submission_returns_one_time_capability_and_only_hash_is_persisted():
+    create = client.post("/api/complaints", json={
+        "location": "Capability Test Location",
+        "type": "Mixed Waste",
+        "ward": "Ward 9",
+        "description": "Must not be in public status response",
+        "latitude": 20.0,
+        "longitude": 74.0,
+        "image_url": "https://private.example.test/photo.jpg",
+    })
+    assert create.status_code == 201
+    receipt = create.json()
+    token = receipt["tracking_token"]
+    assert token and len(token) >= 40
+    assert "db_id" not in receipt and "assignedTo" not in receipt and "image_url" not in receipt
+
+    db = SessionLocal()
+    try:
+        complaint = db.query(Complaint).filter(Complaint.tracking_number == receipt["id"]).one()
+        assert complaint.tracking_secret == ComplaintService.hash_tracking_secret(token)
+        assert token != complaint.tracking_secret
+    finally:
+        db.close()
+
+    track = client.get(
+        f"/api/complaints/track/{receipt['id']}",
+        headers={"X-Tracking-Token": token},
+    )
+    assert track.status_code == 200
+    assert track.json()["id"] == receipt["id"]
+    assert "description" not in track.json()
+
+
+def test_admin_driver_and_collector_complaint_scope_is_preserved(test_users_and_complaints):
+    users = test_users_and_complaints
+    admin_rows = client.get("/api/complaints", headers=auth_headers(users["admin"])).json()
+    assert users["comp_a"].tracking_number in {row["id"] for row in admin_rows}
+    assert users["comp_b"].tracking_number in {row["id"] for row in admin_rows}
+
+    driver_rows = client.get("/api/complaints", headers=auth_headers(users["driver_assigned"])).json()
+    driver_ids = {row["id"] for row in driver_rows}
+    assert users["comp_a"].tracking_number in driver_ids
+    assert users["comp_b"].tracking_number not in driver_ids
+    assert client.get(
+        f"/api/complaints/track/{users['comp_a'].tracking_number}",
+        headers=auth_headers(users["driver_assigned"]),
+    ).status_code == 200
+    assert client.get(
+        f"/api/complaints/track/{users['comp_b'].tracking_number}",
+        headers=auth_headers(users["driver_assigned"]),
+    ).status_code == 404
+
+    scoped = Complaint(
+        tracking_number=f"EP-2026-SCOPE{uuid.uuid4().hex[:8].upper()}",
+        ward=users["collector"].ward,
+        location_address="Collector ward location",
+        waste_type="Mixed Waste",
+    )
+    db = SessionLocal()
+    try:
+        db.add(scoped)
+        db.commit()
+        db.refresh(scoped)
+        collector_headers = auth_headers(users["collector"])
+        collector_rows = client.get("/api/complaints", headers=collector_headers).json()
+        assert scoped.tracking_number in {row["id"] for row in collector_rows}
+        assert users["comp_a"].tracking_number not in {row["id"] for row in collector_rows}
+        assert client.get(
+            f"/api/complaints/track/{scoped.tracking_number}",
+            headers=collector_headers,
+        ).status_code == 200
+        assert client.get(
+            f"/api/complaints/track/{users['comp_a'].tracking_number}",
+            headers=collector_headers,
+        ).status_code == 404
+    finally:
+        if scoped.id:
+            db.query(Complaint).filter(Complaint.id == scoped.id).delete()
+            db.commit()
+        db.close()
 
 
 def test_service_role_key_never_leaked(mock_supabase_storage, test_users_and_complaints):

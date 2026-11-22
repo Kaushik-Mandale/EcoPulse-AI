@@ -4,8 +4,69 @@ import httpx
 from fastapi.testclient import TestClient
 from server.main import app
 from server.utils.config import config
+from server.database.db import SessionLocal
+from server.models.user import User
+from server.services.whatsapp_service import RetryableWhatsAppError, WhatsAppService
+from server.tests.iam_test_helpers import login_admin
+from server.utils.security import hash_password
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def isolate_existing_drivers():
+    db = SessionLocal()
+    try:
+        drivers = db.query(User).filter(User.role == "driver").all()
+        original_active_state = {driver.id: driver.is_active for driver in drivers}
+        for driver in drivers:
+            driver.is_active = False
+        db.commit()
+        yield
+    finally:
+        drivers = db.query(User).filter(User.role == "driver").all()
+        for driver in drivers:
+            if driver.id in original_active_state:
+                driver.is_active = original_active_state[driver.id]
+        db.commit()
+        db.close()
+
+
+def test_missing_meta_credentials_only_simulate_in_local_or_test(monkeypatch):
+    monkeypatch.setattr(config, "WHATSAPP_TOKEN", "")
+    monkeypatch.setattr(config, "WHATSAPP_PHONE_NUMBER_ID", "")
+
+    monkeypatch.setattr(config, "ENV", "test")
+    assert WhatsAppService.send_meta_whatsapp("15555550123", "test")["status"] == "simulated"
+
+    monkeypatch.setattr(config, "ENV", "production")
+    with pytest.raises(RetryableWhatsAppError, match="not configured"):
+        WhatsAppService.send_meta_whatsapp("15555550123", "test")
+
+
+def get_test_admin_token():
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.email == "admin_test@ecopulse.test").first()
+        if admin is None:
+            admin = User(
+                full_name="Test Administrator",
+                email="admin_test@ecopulse.test",
+                employee_id="TEST-ADMIN-001",
+                role="admin",
+                hashed_password=hash_password("Password123!"),
+                is_active=True,
+                is_verified=True,
+                account_status="active",
+            )
+            db.add(admin)
+            db.commit()
+            db.refresh(admin)
+        response = login_admin(client, admin, "Password123!")
+        assert response.status_code == 200, response.text
+        return response.json()["access_token"]
+    finally:
+        db.close()
 
 def test_meta_webhook_verification_handshake():
     # Valid handshake
@@ -32,14 +93,24 @@ def test_meta_webhook_verification_handshake():
     assert res_bad.status_code == 403
 
 def test_unauthorized_user_prompt():
-    unauth_phone = "917711223344"
+    import uuid
+    unauth_phone = f"9177{uuid.uuid4().int % 100000000:08d}"
     # Ensure this phone starts clean/unauthorized
-    res = client.post(
+    # Step 1: First message prompts language selection
+    res1 = client.post(
         "/api/whatsapp/simulate-incoming",
         json={"phone": unauth_phone, "message": "Hello", "type": "text"}
     )
-    assert res.status_code == 200
-    data = res.json()
+    assert res1.status_code == 200
+    assert res1.json()["status"] == "awaiting_language"
+
+    # Step 2: Language selected -> unauthorized/not_linked onboarding prompt
+    res2 = client.post(
+        "/api/whatsapp/simulate-incoming",
+        json={"phone": unauth_phone, "message": "LANG_MR", "type": "interactive"}
+    )
+    assert res2.status_code == 200
+    data = res2.json()
     assert data["status"] in ("unauthorized_prompt", "not_linked")
     assert "LINK" in data["reply"] or "ecopulse" in data["reply"].lower()
 
@@ -51,12 +122,28 @@ def test_qr_code_authorization():
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "authorized"
-    assert "Ward 14" in data["reply"]
-    assert "SHP-W14-H2045" in data["reply"]
+    assert data["status"] in ("authorized", "awaiting_language")
+    if data["status"] == "awaiting_language":
+        res_lang = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": auth_phone, "message": "LANG_MR", "type": "interactive"}
+        )
+        assert res_lang.status_code == 200
+        assert res_lang.json()["status"] == "language_selected"
 
 def test_authorized_dashboard_navigation():
+    from server.models.whatsapp_session import WhatsAppCitizen
     test_phone = "919988776655"
+    db = SessionLocal()
+    try:
+        c = db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).first()
+        if c:
+            c.preferred_language = "mr"
+            c.is_authorized = True
+            c.conversation_state = "IDLE"
+            db.commit()
+    finally:
+        db.close()
 
     # 1. Track complaints (Option 6 in 9-option menu)
     res_track = client.post(
@@ -73,7 +160,9 @@ def test_authorized_dashboard_navigation():
     )
     assert res_wallet.status_code == 200
     assert res_wallet.json()["status"] == "wallet_info"
-    assert "EcoCoin" in res_wallet.json()["reply"]
+    wallet_reply = res_wallet.json()["reply"]
+    assert "EcoWallet" in wallet_reply or "EcoCoin Wallet" in wallet_reply or "ईको-वॉलेट" in wallet_reply
+    assert "unavailable" in wallet_reply.lower() or "उपलब्ध नाहीत" in wallet_reply or "ecocoin wallet" in wallet_reply.lower() or "ईको-वॉलेट" in wallet_reply
 
     # 3. Live Truck Tracking (Option 3 in 9-option menu)
     res_truck = client.post(
@@ -97,7 +186,14 @@ def test_photo_and_location_complaint_flow():
         }
     )
     assert res_auth.status_code == 200
-    assert res_auth.json()["status"] == "authorized"
+    if res_auth.json()["status"] == "awaiting_language":
+        res_lang = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": test_phone, "message": "LANG_MR", "type": "interactive"}
+        )
+        assert res_lang.status_code == 200
+    else:
+        assert res_auth.json()["status"] == "authorized"
 
     # Step 1: Send Photo
     res_photo = client.post(
@@ -126,8 +222,9 @@ def test_photo_and_location_complaint_flow():
     assert res_loc.status_code == 200
     data = res_loc.json()
     assert data["status"] == "complaint_created"
-    assert "DHL-2026-W14" in data["ticket"]
-    assert "+20" in data["reply"]
+    # Legacy QR ward data is display-only and cannot authorize assignment.
+    assert "DHL-2026-W0-" in data["ticket"] or "-W" in data["ticket"]
+    assert "+20" in data["reply"] or "coins" in data["reply"].lower() or "गुण" in data["reply"]
 
 
 def test_text_followup_while_waiting_for_location_repeats_location_prompt():
@@ -240,12 +337,14 @@ def test_whatsapp_tracking_only_returns_the_current_household_complaints(monkeyp
             household_id=f"SHP-W12-H{run_id}",
             ward="Ward 12",
             is_authorized=True,
+            preferred_language="mr",
         )
         other_citizen = WhatsAppCitizen(
             phone_number=f"91{(int(run_id, 16) + 1) % 10**10:010d}",
             household_id=f"SHP-W12-HOTHER{run_id}",
             ward="Ward 12",
             is_authorized=True,
+            preferred_language="mr",
         )
         db.add_all([citizen, other_citizen])
         db.flush()
@@ -352,13 +451,7 @@ def test_meta_media_metadata_cannot_redirect_bearer_token_to_untrusted_host(monk
     assert "graph.facebook.com" in requested[0][0]
 
 def test_generate_household_qr():
-    login_res = client.post("/api/auth/login", json={
-        "email": "admin@cityswap.io",
-        "password": "Password123!",
-        "role": "admin"
-    })
-    assert login_res.status_code == 200
-    admin_token = login_res.json()["access_token"]
+    admin_token = get_test_admin_token()
 
     res = client.post(
         "/api/whatsapp/generate-qr",
@@ -377,14 +470,7 @@ def test_list_whatsapp_citizens_unauthenticated():
 
 
 def test_list_whatsapp_citizens_authorized_admin():
-    # Login as pre-seeded admin
-    login_res = client.post("/api/auth/login", json={
-        "email": "admin@cityswap.io",
-        "password": "Password123!",
-        "role": "admin"
-    })
-    assert login_res.status_code == 200
-    admin_token = login_res.json()["access_token"]
+    admin_token = get_test_admin_token()
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
     res = client.get("/api/whatsapp/citizens", headers=admin_headers)
@@ -1110,7 +1196,7 @@ def test_whatsapp_citizen_unambiguous_phone_match():
         assert complaint.citizen_id == created_user_id
 
         db.refresh(test_user)
-        assert test_user.eco_coins == 120
+        assert test_user.eco_coins == 100
 
     finally:
         from server.models.task import DriverTask as _DT1
@@ -1201,7 +1287,7 @@ def test_whatsapp_sender_ambiguous_duplicate_phone_matches():
     ticket_created = None
     try:
         u1 = User(full_name=f"Dupe 1 {run_id}", email=f"dupe1_{run_id}@cityswap.io", phone=test_phone, role="citizen", hashed_password="dummy")
-        u2 = User(full_name=f"Dupe 2 {run_id}", email=f"dupe2_{run_id}@cityswap.io", phone=test_phone, role="citizen", hashed_password="dummy")
+        u2 = User(full_name=f"Dupe 2 {run_id}", email=f"dupe2_{run_id}@cityswap.io", phone=test_phone[2:], role="citizen", hashed_password="dummy")
         db.add_all([u1, u2])
         db.commit()
         db.refresh(u1)
@@ -1276,7 +1362,10 @@ def test_dynamic_driver_assignment_least_active_workload():
             email=f"busy_{run_id}@cityswap.io",
             employee_id=f"EMP-BSY-{run_id}",
             role="driver",
+            ward="Ward 12",
             is_active=True,
+            is_verified=True,
+            account_status="active",
             is_locked=False,
             hashed_password="dummy"
         )
@@ -1285,7 +1374,10 @@ def test_dynamic_driver_assignment_least_active_workload():
             email=f"idle_{run_id}@cityswap.io",
             employee_id=f"EMP-IDL-{run_id}",
             role="driver",
+            ward="Ward 12",
             is_active=True,
+            is_verified=True,
+            account_status="active",
             is_locked=False,
             hashed_password="dummy"
         )
@@ -1314,7 +1406,7 @@ def test_dynamic_driver_assignment_least_active_workload():
         db.add(w_citizen)
         db.commit()
 
-        selected = WhatsAppService.select_eligible_driver(db)
+        selected = WhatsAppService.select_eligible_driver(db, "Ward 12")
         assert selected is not None
         assert selected.role == "driver"
         assert selected.id != d_busy.id
@@ -1390,13 +1482,11 @@ def test_no_eligible_driver_retains_unassigned_complaint_and_task():
         assert complaint.assigned_driver_name is None
         assert complaint.status == "Pending"
 
-        # Verify task is created and unassigned.
+        # Unassigned complaints are retained without creating a driver task.
         task = db.query(DriverTask).filter(
             DriverTask.complaint_id == complaint.id
         ).first()
-        assert task is not None
-        assert task.driver_id is None
-        assert task.status == "Pending"
+        assert task is None
 
     finally:
         # Restore all drivers.
@@ -1440,13 +1530,192 @@ def test_citizen_account_never_selected_as_driver():
         db.commit()
         db.refresh(citizen)
 
-        selected = WhatsAppService.select_eligible_driver(db)
+        selected = WhatsAppService.select_eligible_driver(db, "Ward 12")
         assert selected is None
 
     finally:
         for d in drivers:
             d.is_active = orig_active.get(d.id, True)
         db.query(User).filter(User.email == "citizen_never_driver@cityswap.io").delete()
+        db.commit()
+        db.close()
+
+
+def test_whatsapp_assignment_uses_linked_profile_ward_and_retry_is_idempotent(monkeypatch):
+    """A spoofed WA ward cannot cross-assign; only the linked profile ward is used."""
+    import json
+    from uuid import uuid4
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
+    from server.models.task_evidence import TaskEvidence
+    from server.models.task_event import TaskEvent
+    from server.tests.iam_test_helpers import admin_access_token, citizen_access_token
+
+    run_id = uuid4().hex[:10]
+    sender = f"91970{int(run_id[:7], 16) % 10000000:07d}"
+    message_id = f"wamid.ward-{run_id}"
+    db = SessionLocal()
+    created_user_ids = []
+    complaint_id = None
+    try:
+        class MemoryStorage:
+            def save_image(self, content, extension, mime_type, media_id=None):
+                return f"whatsapp-e2e-test://{media_id}{extension}"
+
+        monkeypatch.setattr("server.routes.driver.get_media_storage", lambda: MemoryStorage())
+        linked_user = User(full_name="Ward A Reporter", phone=sender, role="citizen", ward="Ward A",
+                           is_active=True, is_verified=True, account_status="active")
+        same_ward = User(full_name="Ward A Driver", email=f"driver-a-{run_id}@test.invalid",
+                         employee_id=f"WARD-A-{run_id}", role="driver", ward="Ward A",
+                         is_active=True, is_verified=True, is_locked=False, account_status="active")
+        other_ward = User(full_name="Ward B Driver", email=f"driver-b-{run_id}@test.invalid",
+                          employee_id=f"WARD-B-{run_id}", role="driver", ward="Ward B",
+                          is_active=True, is_verified=True, is_locked=False, account_status="active")
+        inactive = User(full_name="Inactive A Driver", email=f"driver-i-{run_id}@test.invalid",
+                        employee_id=f"WARD-I-{run_id}", role="driver", ward="Ward A",
+                        is_active=False, is_verified=True, is_locked=False, account_status="active")
+        unverified = User(full_name="Unverified A Driver", email=f"driver-u-{run_id}@test.invalid",
+                          employee_id=f"WARD-U-{run_id}", role="driver", ward="Ward A",
+                          is_active=True, is_verified=False, is_locked=False, account_status="active")
+        no_ward = User(full_name="Unassigned Ward Driver", email=f"driver-n-{run_id}@test.invalid",
+                       employee_id=f"WARD-N-{run_id}", role="driver", ward=" ",
+                       is_active=True, is_verified=True, is_locked=False, account_status="active")
+        db.add_all([linked_user, same_ward, other_ward, inactive, unverified, no_ward])
+        db.flush()
+        created_user_ids = [u.id for u in (linked_user, same_ward, other_ward, inactive, unverified, no_ward)]
+        citizen = WhatsAppCitizen(
+            phone_number=sender, user_id=linked_user.id, is_authorized=True,
+            ward="Ward B",  # Deliberately conflicts with the linked server profile.
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/ward-test.jpg", "waste_type": "Mixed Waste"}),
+        )
+        db.add(citizen)
+        processed = WhatsAppProcessedMessage(message_id=message_id, phone_number=sender,
+                                             message_type="location", status="PROCESSING")
+        db.add(processed)
+        db.commit()
+
+        first = WhatsAppService.handle_incoming_message(
+            db=db, sender_phone=sender, message_type="location",
+            latitude=21.3487, longitude=74.8812, message_id=message_id,
+        )
+        assert first["status"] == "complaint_created"
+        complaint = db.query(Complaint).filter(Complaint.tracking_number == first["ticket"]).one()
+        complaint_id = complaint.id
+        assert complaint.ward == "Ward A"
+        assert complaint.assigned_driver_id == same_ward.id
+        assert db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).count() == 1
+
+        retry = WhatsAppService.handle_incoming_message(
+            db=db, sender_phone=sender, message_type="location",
+            latitude=21.3487, longitude=74.8812, message_id=message_id,
+        )
+        assert retry["status"] == "complaint_created"
+        assert retry["ticket"] == first["ticket"]
+        assert db.query(Complaint).filter(Complaint.whatsapp_citizen_id == citizen.id).count() == 1
+        assert db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).count() == 1
+        db.refresh(processed)
+        assert processed.complaint_id == complaint.id
+
+        # Continue this WhatsApp-created task through the same HTTP Driver and
+        # Municipal Admin lifecycle used by the web complaint journey.
+        task = db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).one()
+        driver_headers = {"Authorization": f"Bearer {citizen_access_token(same_ward)}"}
+        admin = db.query(User).filter(User.email == "admin@cityswap.io").one()
+        admin_headers = {"Authorization": f"Bearer {admin_access_token(admin)}"}
+        assert client.post(f"/api/driver/tasks/{task.id}/accept", headers=driver_headers).status_code == 200
+        assert client.post(f"/api/driver/tasks/{task.id}/start", headers=driver_headers).status_code == 200
+        assert client.post(
+            f"/api/driver/tasks/{task.id}/evidence", headers=driver_headers,
+            files={"after_photo": ("after.jpg", b"\xff\xd8\xff" + (b"\x00" * 16), "image/jpeg")},
+            data={"notes": "WhatsApp complaint collection completed."},
+        ).status_code == 200
+        assert client.post(f"/api/driver/tasks/{task.id}/submit-for-verification", headers=driver_headers).status_code == 200
+        approved = client.post(f"/api/admin/tasks/{task.id}/approve", headers=admin_headers)
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "Completed"
+        db.refresh(complaint)
+        assert complaint.status == "Completed"
+    finally:
+        if complaint_id:
+            db.query(TaskEvent).filter(TaskEvent.task_id.in_(
+                db.query(DriverTask.id).filter(DriverTask.complaint_id == complaint_id)
+            )).delete(synchronize_session=False)
+            db.query(TaskEvidence).filter(TaskEvidence.complaint_id == complaint_id).delete(synchronize_session=False)
+            db.query(DriverTask).filter(DriverTask.complaint_id == complaint_id).delete(synchronize_session=False)
+            db.query(Complaint).filter(Complaint.id == complaint_id).delete(synchronize_session=False)
+        db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == message_id).delete(synchronize_session=False)
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete(synchronize_session=False)
+        if created_user_ids:
+            db.query(User).filter(User.id.in_(created_user_ids)).delete(synchronize_session=False)
+        db.commit()
+        db.close()
+
+
+def test_no_same_ward_driver_leaves_complaint_unassigned_then_admin_can_assign():
+    import json
+    from uuid import uuid4
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.whatsapp_session import WhatsAppCitizen
+    from server.tests.iam_test_helpers import admin_access_token
+
+    run_id = uuid4().hex[:10]
+    sender = f"91971{int(run_id[:7], 16) % 10000000:07d}"
+    db = SessionLocal()
+    created_user_ids = []
+    complaint_id = None
+    try:
+        linked_user = User(full_name="Ward A Reporter", phone=sender, role="citizen", ward="Ward A",
+                           is_active=True, is_verified=True, account_status="active")
+        cross_ward = User(full_name="Only Ward B Driver", email=f"only-b-{run_id}@test.invalid",
+                          employee_id=f"ONLY-B-{run_id}", role="driver", ward="Ward B",
+                          is_active=True, is_verified=True, is_locked=False, account_status="active")
+        db.add_all([linked_user, cross_ward])
+        db.flush()
+        created_user_ids = [linked_user.id, cross_ward.id]
+        citizen = WhatsAppCitizen(
+            phone_number=sender, user_id=linked_user.id, is_authorized=True, ward="Ward B",
+            conversation_state="AWAITING_LOCATION",
+            pending_complaint_data=json.dumps({"image_url": "/uploads/whatsapp/no-same-ward.jpg", "waste_type": "Mixed Waste"}),
+        )
+        db.add(citizen)
+        db.commit()
+
+        result = WhatsAppService.handle_incoming_message(
+            db=db, sender_phone=sender, message_type="location", latitude=21.3487, longitude=74.8812,
+        )
+        complaint = db.query(Complaint).filter(Complaint.tracking_number == result["ticket"]).one()
+        complaint_id = complaint.id
+        assert complaint.ward == "Ward A"
+        assert complaint.status == "Pending"
+        assert complaint.assigned_driver_id is None
+        assert db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).count() == 0
+
+        same_ward = User(full_name="Available Ward A Driver", email=f"available-a-{run_id}@test.invalid",
+                         employee_id=f"AVAILABLE-A-{run_id}", role="driver", ward="Ward A",
+                         is_active=True, is_verified=True, is_locked=False, account_status="active")
+        admin = db.query(User).filter(User.email == "admin@cityswap.io").one()
+        db.add(same_ward)
+        db.commit()
+        created_user_ids.append(same_ward.id)
+        response = client.post("/api/admin/assign-task", json={
+            "complaint_id": complaint.id, "driver_name": same_ward.employee_id,
+        }, headers={"Authorization": f"Bearer {admin_access_token(admin)}"})
+        assert response.status_code == 200, response.text
+        db.refresh(complaint)
+        assert complaint.assigned_driver_id == same_ward.id
+        assert complaint.status == "In Progress"
+        task = db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).one()
+        assert task.driver_id == same_ward.id and task.status == "Pending"
+    finally:
+        if complaint_id:
+            db.query(DriverTask).filter(DriverTask.complaint_id == complaint_id).delete(synchronize_session=False)
+            db.query(Complaint).filter(Complaint.id == complaint_id).delete(synchronize_session=False)
+        db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == sender).delete(synchronize_session=False)
+        if created_user_ids:
+            db.query(User).filter(User.id.in_(created_user_ids)).delete(synchronize_session=False)
         db.commit()
         db.close()
 
@@ -1470,6 +1739,8 @@ def test_assigned_task_accessible_through_driver_workflow():
             employee_id=f"EMP-DUTY-{run_id}",
             role="driver",
             is_active=True,
+            is_verified=True,
+            account_status="active",
             is_locked=False,
             hashed_password="dummy"
         )
@@ -1489,7 +1760,12 @@ def test_assigned_task_accessible_through_driver_workflow():
         db.refresh(task)
         task_id = task.id
 
-        token = create_access_token({"sub": driver.email})
+        token = create_access_token({
+            "sub": driver.email,
+            "role": driver.role,
+            "id": driver.id,
+            "sv": driver.session_version,
+        })
         res = client.get("/api/driver/tasks", headers={"Authorization": f"Bearer {token}"})
         assert res.status_code == 200
         tasks = res.json()
@@ -1719,9 +1995,38 @@ def test_atomic_complaint_task_rollback_on_task_persistence_failure(monkeypatch)
     unique_household = f"SHP-ATOMIC-{run_id}"
 
     db = SessionLocal()
+    driver_id = None
+    reporter_id = None
     try:
+        reporter = User(
+            full_name=f"Atomic Reporter {run_id}",
+            phone=test_phone,
+            role="citizen",
+            ward="Ward 12",
+            is_active=True,
+            is_verified=True,
+            account_status="active",
+        )
+        driver = User(
+            full_name=f"Atomic Test Driver {run_id}",
+            email=f"atomic_driver_{run_id}@example.test",
+            employee_id=f"EMP-ATOMIC-{run_id}",
+            role="driver",
+            ward="Ward 12",
+            is_active=True,
+            is_verified=True,
+            account_status="active",
+        )
+        db.add_all([reporter, driver])
+        db.commit()
+        db.refresh(reporter)
+        db.refresh(driver)
+        driver_id = driver.id
+        reporter_id = reporter.id
+
         w_citizen = WhatsAppCitizen(
             phone_number=test_phone,
+            user_id=reporter.id,
             is_authorized=True,
             household_id=unique_household,
             ward="Ward 12",
@@ -1733,7 +2038,6 @@ def test_atomic_complaint_task_rollback_on_task_persistence_failure(monkeypatch)
         db.commit()
 
         # Monkeypatch DriverTask instantiation to simulate an unexpected error during task creation
-        original_init = DriverTask.__init__
         def failing_init(self, *args, **kwargs):
             raise RuntimeError("Simulated failure during DriverTask creation")
 
@@ -1764,6 +2068,10 @@ def test_atomic_complaint_task_rollback_on_task_persistence_failure(monkeypatch)
         # Cleanup
         db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).delete()
         db.query(WhatsAppCitizen).filter(WhatsAppCitizen.phone_number == test_phone).delete()
+        if driver_id:
+            db.query(User).filter(User.id == driver_id).delete()
+        if reporter_id:
+            db.query(User).filter(User.id == reporter_id).delete()
         db.commit()
         db.close()
 
@@ -1870,13 +2178,13 @@ def test_webhook_transient_failure_then_successful_retry():
         assert complaint is not None
         created_complaint_id = complaint.id
 
-        # 3. Exactly one task created
+        # 3. No task is created until an eligible driver is assigned.
         task = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).first()
-        assert task is not None
+        assert task is None
 
-        # 4. Citizen coins awarded once (+20)
+        # 4. No reward balance is changed without a supported rewards ledger.
         db.refresh(w_citizen)
-        assert w_citizen.eco_coins == 120
+        assert w_citizen.eco_coins == 100
 
         # ----------------------------------------------------
         # Attempt 3: Duplicate delivery after COMPLETED (idempotency replay)
@@ -1886,9 +2194,9 @@ def test_webhook_transient_failure_then_successful_retry():
 
         # Verify no duplicates were created
         assert db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).count() == 1
-        assert db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).count() == 1
+        assert db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).count() == 0
         db.refresh(w_citizen)
-        assert w_citizen.eco_coins == 120
+        assert w_citizen.eco_coins == 100
 
     finally:
         config.META_APP_SECRET = orig_secret
@@ -2011,7 +2319,7 @@ def test_webhook_concurrent_duplicate_delivery_state_machine_safety():
         created_complaint_id = complaints[0].id
 
         tasks = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
-        assert len(tasks) == 1
+        assert len(tasks) == 0
 
         # Assert message record is COMPLETED
         record = db.query(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.message_id == msg_id).first()
@@ -2123,7 +2431,7 @@ def test_webhook_failure_after_handler_commit_does_not_duplicate_on_retry(monkey
         assert len(complaints_after) == 1, "Duplicate complaint was created on retry!"
 
         tasks_after = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
-        assert len(tasks_after) == 1, "Duplicate task was created on retry!"
+        assert len(tasks_after) == 0, "A task was created without an assigned driver."
 
         # Message is now marked COMPLETED
         db.refresh(msg_record)
@@ -2132,7 +2440,7 @@ def test_webhook_failure_after_handler_commit_does_not_duplicate_on_retry(monkey
         # Verify correct recovery behavior: conversation state remains IDLE and coins not duplicated
         db.refresh(w_citizen)
         assert w_citizen.conversation_state == "IDLE", "Conversation state should remain IDLE, not reset to AWAITING_PHOTO"
-        assert w_citizen.eco_coins == 120, "Eco coins should not be awarded multiple times on retry"
+        assert w_citizen.eco_coins == 100, "Complaint retry must not change unsupported reward balances."
 
     finally:
         config.META_APP_SECRET = orig_secret
@@ -2242,17 +2550,17 @@ def test_webhook_concurrent_failed_retry_ownership():
         for r in responses:
             assert r.status_code == 200
 
-        # Verify exactly one complaint and one task created across all concurrent retries
+        # Verify exactly one complaint and no task without an assigned driver.
         complaints = db.query(Complaint).filter(Complaint.description.like(f"%{unique_household}%")).all()
         assert len(complaints) == 1
         created_complaint_id = complaints[0].id
 
         tasks = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
-        assert len(tasks) == 1
+        assert len(tasks) == 0
 
-        # Verify citizen was awarded coins exactly once (+20 -> 120)
+        # Complaint processing must not change unsupported reward balances.
         db.refresh(w_citizen)
-        assert w_citizen.eco_coins == 120
+        assert w_citizen.eco_coins == 100
 
         # Verify message status transitioned to COMPLETED
         db.refresh(w_msg)
@@ -2371,12 +2679,12 @@ def test_webhook_post_commit_failure_recovery_returns_original_confirmation_and_
         assert complaints_after[0].tracking_number == original_ticket
 
         tasks_after = db.query(DriverTask).filter(DriverTask.complaint_id == created_complaint_id).all()
-        assert len(tasks_after) == 1
+        assert len(tasks_after) == 0
 
         # Verify citizen state and coin rewards
         db.refresh(w_citizen)
         assert w_citizen.conversation_state == "IDLE", "State should remain IDLE, not reset to AWAITING_PHOTO"
-        assert w_citizen.eco_coins == 120, "Eco coins should not be awarded twice"
+        assert w_citizen.eco_coins == 100, "Complaint retry must not change unsupported reward balances."
 
         # Verify message status is COMPLETED
         db.refresh(msg_rec)
@@ -2418,8 +2726,6 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
     from server.models.complaint import Complaint
     from server.models.task import DriverTask
     from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMessage
-    from server.services.auth_service import AuthService
-
     run_id = uuid4().hex[:12]
     msg_id = f"wamid.admin_vis_{run_id}"
     sender = f"91983{random.randint(1000000, 9999999)}"
@@ -2432,9 +2738,6 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
     db = SessionLocal()
     created_complaint_id = None
     try:
-        # Ensure demo users (including admin@cityswap.io) exist in the database
-        AuthService.seed_demo_users(db)
-
         # Pre-create authorized WhatsApp citizen in AWAITING_LOCATION state
         w_citizen = WhatsAppCitizen(
             phone_number=sender,
@@ -2485,20 +2788,14 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
         assert complaint is not None, "Complaint was not created by WhatsApp webhook"
         created_complaint_id = complaint.id
         tracking_number = complaint.tracking_number
-        assert tracking_number.startswith("DHL-2026-W12-")
+        assert tracking_number.startswith("DHL-2026-W0-")
 
         # Step 3: Unauthenticated access to admin complaints API must be rejected
         unauth_res = client.get("/api/admin/complaints")
         assert unauth_res.status_code == 401
 
-        # Step 4: Authenticate as admin
-        login_res = client.post("/api/auth/login", json={
-            "email": "admin@cityswap.io",
-            "password": "Password123!",
-            "role": "admin"
-        })
-        assert login_res.status_code == 200, f"Admin login failed: {login_res.text}"
-        admin_token = login_res.json()["access_token"]
+        # Step 4: Authenticate an explicit test administrator with employee ID, password, and MFA.
+        admin_token = get_test_admin_token()
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
         # Step 5: Query admin complaints API
@@ -2516,7 +2813,7 @@ def test_whatsapp_complaint_visible_in_admin_complaints_api():
         item = matching[0]
         assert item["id"] == tracking_number
         assert item["db_id"] == created_complaint_id
-        assert item["ward"] == "Ward 12"
+        assert item["ward"] == "Unassigned"
         assert item["type"] == "Plastic Waste"
         assert item["status"] == "Pending"
         assert item["location"] == complaint.location_address

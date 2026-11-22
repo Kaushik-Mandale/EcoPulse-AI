@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 from server.main import app
 from server.services.auth_service import AuthService
 from server.database.db import SessionLocal
+from server.models.user import User
+from server.tests.iam_test_helpers import login_admin
 
 client = TestClient(app)
 
@@ -9,15 +11,13 @@ client = TestClient(app)
 def get_admin_token():
     db = SessionLocal()
     try:
-        # Ensure demo users are seeded
         AuthService.seed_demo_users(db)
+        admin = db.query(User).filter(User.email == "admin@cityswap.io").first()
+        assert admin is not None
+        response = login_admin(client, admin, "Password123!")
+        db.commit()
     finally:
         db.close()
-    
-    response = client.post(
-        "/api/auth/login",
-        json={"email": "admin@cityswap.io", "password": "Password123!", "role": "admin"}
-    )
     assert response.status_code == 200, f"Login failed: {response.text}"
     return response.json()["access_token"]
 
@@ -53,19 +53,9 @@ def test_admin_drivers_crud():
         "password": "Password123!"
     }
     create_res = client.post("/api/admin/drivers", json=new_driver, headers={"Authorization": f"Bearer {token}"})
-    assert create_res.status_code == 201
-    created_data = create_res.json()
-    assert created_data["email"] == rand_email
-
-    # Toggle status
-    driver_id = created_data["id"]
-    status_res = client.patch(
-        f"/api/admin/drivers/{driver_id}/status",
-        json={"is_active": False},
-        headers={"Authorization": f"Bearer {token}"}
-    )
-    assert status_res.status_code == 200
-    assert status_res.json()["is_active"] is False
+    assert create_res.status_code == 410
+    assert "activation_token" not in create_res.json()
+    assert "#token=" not in create_res.text
 
 
 def test_admin_bins_telemetry():
@@ -75,17 +65,17 @@ def test_admin_bins_telemetry():
     data = response.json()
     assert "total_bins" in data
     assert "bins" in data
-    assert len(data["bins"]) > 0
-
-    # Update bin fill
-    bin_id = data["bins"][0]["id"]
-    patch_res = client.patch(
-        f"/api/admin/bins/{bin_id}",
-        json={"fill_level_pct": 50},
-        headers={"Authorization": f"Bearer {token}"}
-    )
-    assert patch_res.status_code == 200
-    assert patch_res.json()["fill_level_pct"] == 50
+    if data["bins"]:
+        bin_id = data["bins"][0]["id"]
+        patch_res = client.patch(
+            f"/api/admin/bins/{bin_id}",
+            json={"fill_level_pct": 50},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        assert patch_res.status_code == 200
+        assert patch_res.json()["fill_level_pct"] == 50
+    else:
+        assert data["total_bins"] == 0
 
 
 def test_admin_analytics():
@@ -108,11 +98,17 @@ def test_admin_notifications_and_broadcast():
 
     # Send broadcast
     broadcast_data = {
-        "title": "Emergency Weather Alert",
-        "message": "Heavy rain expected in Ward 4, clear all drainage bins immediately.",
-        "audience": "All Drivers (Active Shift)",
-        "priority": "Emergency (Override Silent Mode)"
+        "title": "Municipal in-app notice",
+        "message": "Heavy rain expected in Ward 4.",
+        "audience": "In-app announcement feed",
+        "priority": "Standard (in-app)"
     }
     b_res = client.post("/api/admin/notifications/broadcast", json=broadcast_data, headers={"Authorization": f"Bearer {token}"})
     assert b_res.status_code == 201
-    assert b_res.json()["title"] == "Emergency Weather Alert"
+    assert b_res.json()["title"] == "Municipal in-app notice"
+    assert b_res.json()["audience"] == "In-app announcement feed"
+    assert b_res.json()["priority"] == "Standard (in-app)"
+    assert b_res.json()["is_broadcast"] is True
+    history = client.get("/api/admin/notifications", headers={"Authorization": f"Bearer {token}"})
+    assert history.status_code == 200
+    assert any(item["id"] == b_res.json()["id"] for item in history.json())

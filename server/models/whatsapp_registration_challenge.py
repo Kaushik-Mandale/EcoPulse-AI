@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import json
 from typing import Optional, Dict, Any
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, func
+from sqlalchemy import Column, Index, Integer, String, DateTime, Text, ForeignKey, func, text
 from sqlalchemy.orm import relationship
 
 from server.database.db import Base
@@ -27,23 +27,31 @@ class WhatsAppRegistrationChallenge(Base):
     __tablename__ = "whatsapp_registration_challenges"
 
     id = Column(Integer, primary_key=True, index=True)
-    phone = Column(String(20), index=True, nullable=False)
+    phone = Column(String(20), nullable=False)
     otp_hash = Column(String(64), nullable=False)
     secret_hash = Column(String(64), nullable=True)  # SHA-256 of high-entropy challenge secret
-    purpose = Column(String(50), default="citizen_registration", nullable=False)
+    purpose = Column(String(50), default="citizen_registration", server_default=text("'citizen_registration'"), nullable=False)
     profile_data = Column(Text, nullable=True)  # JSON-encoded draft profile (name, email, password_hash, ward)
-    attempts = Column(Integer, default=0, nullable=False)
-    max_attempts = Column(Integer, default=5, nullable=False)
-    status = Column(String(30), default="PENDING", index=True, nullable=False)  # PENDING, VERIFIED, CONSUMED, EXPIRED, FAILED
+    attempts = Column(Integer, default=0, server_default=text("0"), nullable=False)
+    max_attempts = Column(Integer, default=5, server_default=text("5"), nullable=False)
+    status = Column(String(30), default="PENDING", server_default=text("'PENDING'"), nullable=False)  # PENDING, VERIFIED, CONSUMED, EXPIRED, FAILED
     expires_at = Column(DateTime(timezone=True), nullable=False)
     verified_at = Column(DateTime(timezone=True), nullable=True)
     consumed_at = Column(DateTime(timezone=True), nullable=True)
     ip_address = Column(String(50), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        # Index names must exactly match migration 006_whatsapp_registration_verification.sql
+        Index("ix_whatsapp_reg_challenges_phone", "phone"),
+        Index("ix_whatsapp_reg_challenges_status", "status"),
+        Index("ix_whatsapp_reg_challenges_created_at", "created_at"),
+        Index("ix_whatsapp_reg_challenges_user_id", "user_id"),
+    )
 
     def get_profile(self) -> Dict[str, Any]:
         """Safely parses JSON-encoded profile data."""
@@ -63,34 +71,9 @@ def check_whatsapp_registration_challenges_schema(engine) -> bool:
     """
     Read-only validation checking whether migration 006_whatsapp_registration_verification.sql
     has been applied. Does NOT execute ALTER TABLE or CREATE INDEX at runtime.
-    Logs a clear schema compatibility error if required table/columns are missing.
+    Raises SchemaValidationError if required objects are missing or cannot be
+    inspected. Does not mutate the database.
     """
-    from sqlalchemy import inspect
-    import logging
-    log = logging.getLogger(__name__)
-    try:
-        insp = inspect(engine)
-        if "whatsapp_registration_challenges" not in insp.get_table_names():
-            log.warning(
-                "[SCHEMA COMPATIBILITY] Table 'whatsapp_registration_challenges' not found. "
-                "Authoritative migration required: execute migrations/006_whatsapp_registration_verification.sql."
-            )
-            return False
-        cols = {col["name"] for col in insp.get_columns("whatsapp_registration_challenges")}
-        required = {
-            "id", "phone", "otp_hash", "secret_hash", "purpose", "profile_data",
-            "attempts", "max_attempts", "status", "expires_at",
-            "verified_at", "consumed_at", "ip_address", "user_id", "created_at"
-        }
-        missing = required - cols
-        if missing:
-            log.error(
-                "[SCHEMA COMPATIBILITY ERROR] Table 'whatsapp_registration_challenges' missing columns: %s. "
-                "Authoritative migration required: execute migrations/006_whatsapp_registration_verification.sql.",
-                sorted(missing)
-            )
-            return False
-        return True
-    except Exception as e:
-        log.warning("[SCHEMA] Error inspecting whatsapp_registration_challenges schema: %s", e)
-        return True
+    from server.database.initialization import verify_migration_contracts
+
+    return verify_migration_contracts(engine, ("006",))

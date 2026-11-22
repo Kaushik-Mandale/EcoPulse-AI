@@ -9,7 +9,7 @@
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![PostgreSQL](https://img.shields.io/badge/Neon_PostgreSQL-16-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://neon.tech)
-[![Pytest](https://img.shields.io/badge/Pytest-21_Passed-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://docs.pytest.org)
+[![Pytest](https://img.shields.io/badge/Pytest-test_suite-555?style=for-the-badge&logo=pytest&logoColor=white)](https://docs.pytest.org)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 
 ---
@@ -23,13 +23,14 @@
 6. [Developer Quickstart & Setup Guide](#-developer-quickstart--setup-guide)
 7. [Environment Variables (`.env`)](#-environment-variables-env)
 8. [Run Commands Reference](#-run-commands-reference)
-9. [Pre-Seeded Demo Credentials](#-pre-seeded-demo-credentials)
-10. [API Documentation & Endpoints](#-api-documentation--endpoints)
-11. [WhatsApp Conversational Engine Setup](#-whatsapp-conversational-engine-setup)
-12. [Testing & Quality Verification](#-testing--quality-verification)
-13. [Deployment Guide (Render Blueprint)](#-deployment-guide-render-blueprint)
-14. [Security Best Practices](#-security-best-practices)
-15. [Future Scope](#-future-scope)
+9. [API Documentation & Endpoints](#-api-documentation--endpoints)
+10. [WhatsApp Conversational Engine Setup](#-whatsapp-conversational-engine-setup)
+11. [Testing & Quality Verification](#-testing--quality-verification)
+12. [Database Migration Workflow](#database-migration-workflow)
+13. [Municipal IAM Deployment](#municipal-iam-deployment)
+14. [Deployment Guide (Render Blueprint)](#-deployment-guide-render-blueprint)
+15. [Security Best Practices](#-security-best-practices)
+16. [Future Scope](#-future-scope)
 
 ---
 
@@ -54,6 +55,13 @@ Originally conceptualized as an intercity resource exchange network (**City Swap
    - Auto-triage incoming citizen complaints using AI vision and assign them to active drivers.
    - Broadcast emergency municipal sanitation advisories to citizens.
 
+### Support Status
+
+The Contact page states that platform contact details and inquiry handling are
+not configured and directs users to their municipality's official channel.
+Support ownership and approved support wording remain unresolved product
+decisions.
+
 ---
 
 ## 🚀 Key Features
@@ -63,7 +71,6 @@ Originally conceptualized as an intercity resource exchange network (**City Swap
 - **🗺️ Real-Time GIS & Driver Telematics**: Live interactive OpenStreetMap powered by Leaflet, displaying live driver GPS coordinates, route polylines, and geotagged waste incident markers.
 - **🪙 Municipal Eco-Wallet & Gamification**: Citizen coin ledger incentivizing civic cleanliness with tangible local government rebates.
 - **🔄 Intercity Swap Marketplace (`/swaps`)**: Dedicated peer-to-peer listing portal where users can list and exchange items across different cities.
-- **⚡ 1-Click Instant Evaluation Sandbox (`/demo`)**: Instant evaluator sandbox allowing developers and reviewers to test Citizen, Driver, and Admin portals with zero typing.
 - **🛡️ DPDP Act 2023 Compliant**: Built strictly adhering to the Indian Digital Personal Data Protection Act with masked contact info and 256-bit encryption.
 
 ---
@@ -91,9 +98,8 @@ CITY_SWAP/
 │   │   ├── pages/                       # 25+ Standalone Full-Page Route Views
 │   │   │   ├── AdminDashboardPage.jsx   # Municipal administrative control center
 │   │   │   ├── AuthPage.jsx             # Multi-portal login & registration
-│   │   │   ├── ContactPage.jsx          # Municipal consultation and council contacts
+│   │   │   ├── ContactPage.jsx          # Support status and municipal channel guidance
 │   │   │   ├── DashboardPage.jsx        # Citizen dashboard & complaint status
-│   │   │   ├── DemoPage.jsx             # 1-Click instant role evaluation sandbox
 │   │   │   ├── DriverDashboardPage.jsx  # Sanitation driver route & duty portal
 │   │   │   ├── EcoWalletPage.jsx        # Citizen EcoCoin wallet & rebate redemption
 │   │   │   ├── ForgotPasswordPage.jsx   # Role-based password recovery
@@ -282,7 +288,7 @@ Create or review the `server/.env` configuration file. A template is provided be
 
 ```env
 # Application Metadata
-PROJECT_NAME="CITY_SWAP / EcoPulse AI API"
+PROJECT_NAME="EcoPulse AI"
 VERSION="1.0.0"
 ENV="development"
 PORT=8000
@@ -347,9 +353,12 @@ $env:WHATSAPP_PHONE_NUMBER_ID = ""
 This uses a fresh temporary SQLite database; Meta requests are mocked by the test
 suite. Do not run tests with a shared or production `DATABASE_URL`.
 
-### Build & Lint Frontend
+### Build, Test & Lint Frontend
 ```bash
 cd client
+
+# Check route registration and unknown-route behavior:
+npm test
 
 # Run high-speed static linter:
 npm run lint
@@ -357,21 +366,6 @@ npm run lint
 # Compile production build:
 npm run build
 ```
-
----
-
-## 🔑 Pre-Seeded Demo Credentials
-
-You can test any role immediately using these pre-configured municipal accounts, or simply visit the **`/demo`** sandbox page for **1-click instant login**:
-
-| Role | Identifier / Email | Password | Primary Dashboard |
-| :--- | :--- | :--- | :--- |
-| **Citizen (नागरिक)** | `priya@cityswap.io` | `Password123!` | [`/citizen`](http://localhost:5173/citizen) |
-| **Driver (चालक)** | `EMP-DRIVER-01` | `Password123!` | [`/driver`](http://localhost:5173/driver) |
-| **Driver 2 (चालक २)** | `EMP-DRIVER-02` | `Password123!` | [`/driver`](http://localhost:5173/driver) |
-| **Municipal Admin (प्रशासक)** | `admin@cityswap.io` | `Password123!` | [`/admin`](http://localhost:5173/admin) |
-
----
 
 ## 📡 API Documentation & Endpoints
 
@@ -488,14 +482,194 @@ $env:WHATSAPP_PHONE_NUMBER_ID = ""
 & ".\server\myenv\Scripts\python.exe" -m pytest -q
 ```
 
-Most recently verified locally: **159 passed, 7 warnings** on a fresh temporary
-SQLite database. This is not evidence of live Meta or production integration.
+Tests run against a fresh temporary SQLite database; Meta requests are mocked.
+Passing tests are not evidence of live Meta or production integration.
+
+---
+
+## Database Migration Workflow
+
+The migration runner is an explicit operator tool; application startup does not
+apply migrations. Every command requires an explicit `--url` and never falls
+back to `DATABASE_URL`. `status` and `check` inspect migration state without
+writing migration history or applying DDL. `up --dry-run` only prints a plan.
+Applying with `up` (without `--dry-run`), confirmed `adopt`, and confirmed
+`reconcile` are the mutating operations that require
+`--authorize-disposable-target DISPOSABLE`.
+
+The target guard blocks known hosted database providers, public PostgreSQL
+hosts, system databases, and production-like database names. PostgreSQL target
+names must identify test, development, local, disposable, or CI use; private
+network addresses also require the explicit disposable designation. SQLite is
+supported for local/test use. A disposable designation is an operator
+assertion, not infrastructure-level proof that a database is disposable.
+Independently verify the target before any mutating command.
+
+These examples are limited to a local disposable PostgreSQL database named
+`ecopulse_test`. Create that database specifically for testing and never point
+the variable at a shared or production system:
+
+```powershell
+$testDatabaseUrl = "postgresql://127.0.0.1:5432/ecopulse_test"
+python -m server.scripts.migrate status --url $testDatabaseUrl
+python -m server.scripts.migrate check --url $testDatabaseUrl
+python -m server.scripts.migrate up --dry-run --url $testDatabaseUrl
+python -m server.scripts.migrate up --yes --authorize-disposable-target DISPOSABLE --url $testDatabaseUrl
+```
+
+PostgreSQL 16 integration tests must run against an independently verified,
+disposable database. CI uses a PostgreSQL 16 service container with a loopback
+URL and test database name. A local run without a verified disposable
+PostgreSQL instance skips those integration tests; SQLite results do not prove
+PostgreSQL catalog or migration behavior.
+
+## Municipal IAM Deployment
+
+The municipal IAM schema is versioned in `migrations/007_municipal_iam.sql`.
+Migration 007 was not applied to production as part of this task; any future
+production application requires a separate approved operational change.
+Application startup does not apply migration 007. Its down script is
+destructive: it drops invitation and audit history and removes IAM columns.
+Treat it as a reviewed recovery operation, not a routine rollback, and preserve
+required records before any approved use. The pre-migration `users.eco_coins`
+default is 100, which the down migration restores.
+
+Migration 007 does not infer municipal identity verification from a legacy role
+or account age. Existing citizen accounts retain their verified state for
+backward compatibility because they were provisioned through the existing
+citizen/OTP flow. Legacy drivers, administrators, and collectors remain present
+and retain their active/suspended status, but are marked unverified. Privileged
+access stays blocked until each active account is verified against approved
+municipal identity records. Before enabling the application, use
+`migrations/007_municipal_iam_legacy_verification.sql` with individually
+approved employee IDs, role matches, approver IDs, and evidence references.
+The script refuses to finish if an active legacy staff account is missing from
+the approval input; it activates only accounts already marked active and
+records every decision in the security audit table. Do not put real employee
+IDs or evidence references in a committed copy of the SQL file. Complete the
+review and backfill during the planned maintenance window before starting the
+application, so legitimate accounts are not left in a temporary access hold
+and unverified identities are not granted trust.
+
+Validate the forward and down migration scripts against a disposable
+PostgreSQL database matching the target schema before considering a separate
+production change. SQLite test results do not establish PostgreSQL
+compatibility.
+
+Production runtime configuration must include a strong `SECRET_KEY` and a valid
+Fernet-formatted `MFA_ENCRYPTION_KEY`. Set `MUNICIPAL_EMPLOYEE_ALLOWLIST` only
+when running the separately guarded initial Super Admin bootstrap/recovery
+process or approved legacy-identity verification; it is not required for
+application startup or routine staff provisioning. Newly assigned Municipal
+Admin employee IDs do not need to be pre-listed: an authenticated Super Admin
+authorizes those accounts through staff provisioning. Configure database,
+WhatsApp, storage, and CORS values as applicable in the deployment secret store.
+
+After an independently approved migration and production configuration, an
+authorized operator can create the initial Super Admin with the interactive bootstrap
+command. It verifies the employee ID against the allowlist, prompts for a
+password without echoing it, and refuses to run outside production or if a
+Super Admin already exists:
+
+```powershell
+$env:ENV = "production"
+$env:MUNICIPAL_SUPER_ADMIN_EMPLOYEE_ID = "<approved-employee-id>"
+$env:MUNICIPAL_SUPER_ADMIN_NAME = "<employee-name>"
+python server/scripts/bootstrap_super_admin.py
+```
+
+Enroll authenticator-app MFA immediately. Privileged sign-in and API access
+remain blocked until MFA is enrolled. Additional administrators are
+invitation-only; drivers are provisioned by authorized Admins and activate
+their own passwords with one-time links. Administrator activation requires
+password setup followed by TOTP enrollment; driver activation also verifies the
+invited mobile number. Invitation tokens are carried in URL fragments so they
+are not sent in HTTP requests or referrer headers, and are removed from the
+address bar before validation.
+
+### Offline staff invitation issuance and reset
+
+There is no email, SMS, or WhatsApp invitation-delivery integration. Dashboard
+invitation and reset actions are disabled; dashboards show invitation metadata
+only. Authorized operators issue and reset invitations with the offline command
+below. The command requires a local/disposable target URL, a non-production
+environment, and the `DISPOSABLE` designation; it never falls back to
+`DATABASE_URL` and has no production override. The current target guard refuses
+hosted production providers and production-like database names, so this command
+is not an operational path to a hosted production database.
+
+Inspect the actual command options with:
+
+```powershell
+python -m server.scripts.issue_invitation_offline --help
+```
+
+For example, a Municipal Admin can invite a Collector into a disposable local
+development database. Replace the sample operator and invitee values, and
+choose a new output path outside the repository:
+
+```powershell
+python -m server.scripts.issue_invitation_offline `
+  --url "sqlite:///./ecopulse_dev.db" `
+  --environment development `
+  --authorize-disposable-target DISPOSABLE `
+  --actor-employee-id "<operator-employee-id>" `
+  --role collector `
+  --full-name "<invitee-name>" `
+  --employee-id "<invitee-employee-id>" `
+  --ward "<assigned-ward>" `
+  --frontend-origin "https://portal.example.gov" `
+  --output-file "$env:TEMP\ecopulse-collector-invitation.txt"
+```
+
+The operator must have an active, verified administrator account and provide
+the account password and a current, unused authenticator code when prompted.
+Only a Super Admin can issue Municipal Admin invitations; the assigned official
+employee ID must be unique but does not need to be in
+`MUNICIPAL_EMPLOYEE_ALLOWLIST`. Municipal Admins can issue Driver and Collector
+invitations. Driver invitations require a valid mobile number and ward;
+Collector invitations require a ward. The command asks the operator to type
+`ISSUE` or `RESET` before making a database change.
+
+For a reset, pass `--role` and `--reset-user-id` instead of new-invitee fields.
+Only a Super Admin can reset a Municipal Admin invitation; Municipal Admins
+can reset Driver/Collector invitations. Reset revokes all outstanding
+invitations before creating the replacement, clears the target's activation
+credentials and revokes its sessions in the same transaction. The replacement
+expires after 24 hours; old, expired, revoked, and consumed tokens cannot be
+reused. Invitation creation, reset, invalidation, and activation use existing
+security audit records. Expiry is computed in invitation status; there is no
+separate expiry audit event in the current schema.
+
+The activation link retains the existing `/activate#token=...` URL-fragment
+format. The raw token is written once to a newly created operator-selected
+file outside the repository: POSIX mode `0600`, or a Windows protected DACL
+granting access to the current user. The command fails if the file exists or
+permissions cannot be established. Deliver the link privately, avoid
+screenshots or shared terminal logs, delete the temporary file after delivery,
+and never commit it. Deleting a file does not guarantee secure erasure of the
+underlying storage media. Do not run this command against a shared or
+production database; the `DISPOSABLE` flag is an operator assertion, so verify
+the target independently before use.
+
+If the primary Super Admin is unavailable, the separate recovery process
+requires municipal approval, an allowlisted replacement employee, and no
+active Super Admin:
+
+```powershell
+$env:MUNICIPAL_IAM_RECOVERY_APPROVED = "YES"
+python server/scripts/recover_super_admin.py
+```
+
+Neither command was run as part of this implementation. Do not execute either
+against production without an approved change window and municipal
+authorization.
 
 ---
 
 ## 🌐 Deployment Guide (Render Blueprint)
 
-The repository includes a production-ready **Render Blueprint** ([`render.yaml`](file:///c:/Users/Hi/Desktop/CITY_SWAP/render.yaml)) configured for high availability:
+The repository includes a **Render Blueprint** ([`render.yaml`](./render.yaml)):
 
 1. **Push your code to GitHub / GitLab**.
 2. Go to your [Render Dashboard](https://dashboard.render.com/) and click **New + ➔ Blueprint**.

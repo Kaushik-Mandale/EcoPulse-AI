@@ -45,7 +45,7 @@ api.interceptors.response.use(
 
       // Avoid redirect loops: only navigate away from protected pages
       const currentPath = window.location.pathname;
-      const publicPaths = ['/login', '/signup', '/forgot-password', '/otp', '/', '/demo', '/help', '/faq', '/contact', '/privacy', '/terms'];
+      const publicPaths = ['/login', '/signup', '/forgot-password', '/otp', '/', '/help', '/faq', '/contact', '/privacy', '/terms'];
       const isPublic = publicPaths.some((p) => currentPath === p || currentPath.startsWith('/track'));
       if (!isPublic) {
         // Use replace to prevent Back from returning to the authenticated page

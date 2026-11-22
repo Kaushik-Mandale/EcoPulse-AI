@@ -23,6 +23,19 @@ export const updateDriverTaskStatus = async (taskId, status, proofImageUrl = nul
   }
 };
 
+export const acceptDriverTask = async (taskId) => (await api.post(`/driver/tasks/${taskId}/accept`)).data;
+export const startDriverTask = async (taskId) => (await api.post(`/driver/tasks/${taskId}/start`)).data;
+export const submitDriverEvidence = async (taskId, { afterPhoto, beforePhoto, notes }) => {
+  const body = new FormData();
+  body.append('after_photo', afterPhoto);
+  if (beforePhoto) body.append('before_photo', beforePhoto);
+  if (notes) body.append('notes', notes);
+  return (await api.post(`/driver/tasks/${taskId}/evidence`, body, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })).data;
+};
+export const requestTaskVerification = async (taskId) => (await api.post(`/driver/tasks/${taskId}/submit-for-verification`)).data;
+
 export const fetchPerformanceData = async () => {
   try {
     const response = await api.get('/driver/performance');

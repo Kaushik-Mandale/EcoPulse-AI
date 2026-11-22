@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Sparkles, Shield, Star } from 'lucide-react';
+import { ArrowLeft, Sparkles, Shield } from 'lucide-react';
 import LoginForm from './LoginForm';
 import SignupForm from './SignupForm';
 import ForgotPasswordModal from './ForgotPasswordModal';
@@ -194,18 +194,18 @@ const AuthLayout = ({ initialMode = 'login', onSuccessNavigation }) => {
                 {/* Top Badge */}
                 <div className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-bold text-emerald-200 border border-white/15">
                   <Sparkles className="w-3.5 h-3.5 text-emerald-300" />
-                  <span>{activeTab === 'login' ? 'Welcome Back Swapper' : 'Join EcoPulse AI Today'}</span>
+                  <span>{activeTab === 'login' ? 'Welcome Back' : 'Join EcoPulse AI'}</span>
                 </div>
 
                 {/* Info Heading */}
                 <div>
                   <h3 className="text-2xl sm:text-3xl font-black leading-snug tracking-tight text-white">
                     {activeTab === 'login'
-                      ? 'Building Cleaner & Greener Cities with AI'
-                      : 'Transform Urban Waste into Eco Rewards'}
+                      ? 'Citizen Reporting and Municipal Operations'
+                      : 'Report Waste and Follow Complaint Updates'}
                   </h3>
                   <p className="text-xs sm:text-sm font-medium text-emerald-100/90 mt-2 leading-relaxed">
-                    Connect with citizens, drivers, and collectors on a single unified AI platform.
+                    Connect citizens, drivers, and municipal teams through one platform.
                   </p>
                 </div>
 
@@ -215,19 +215,19 @@ const AuthLayout = ({ initialMode = 'login', onSuccessNavigation }) => {
                     <div className="w-5 h-5 rounded-full bg-emerald-400/20 text-emerald-300 flex items-center justify-center font-bold text-[10px] shrink-0 border border-emerald-400/30">
                       ✓
                     </div>
-                    <span>No App Required • Real-time WhatsApp AI</span>
+                    <span>Web Reporting • Configured WhatsApp Workflows</span>
                   </li>
                   <li className="flex items-center gap-2.5">
                     <div className="w-5 h-5 rounded-full bg-emerald-400/20 text-emerald-300 flex items-center justify-center font-bold text-[10px] shrink-0 border border-emerald-400/30">
                       ✓
                     </div>
-                    <span>Smart Route Navigation for Drivers</span>
+                    <span>Assigned Driver Tasks</span>
                   </li>
                   <li className="flex items-center gap-2.5">
                     <div className="w-5 h-5 rounded-full bg-emerald-400/20 text-emerald-300 flex items-center justify-center font-bold text-[10px] shrink-0 border border-emerald-400/30">
                       ✓
                     </div>
-                    <span>Earn EcoCoins for Verified Reports</span>
+                    <span>Check Complaint Status</span>
                   </li>
                 </ul>
               </div>
@@ -245,18 +245,10 @@ const AuthLayout = ({ initialMode = 'login', onSuccessNavigation }) => {
                 />
               </div>
 
-              {/* Bottom Testimonial / Impact Banner */}
+              {/* Platform summary */}
               <div className="relative z-10 pt-4 border-t border-emerald-700/50">
-                <div className="flex items-center gap-1 text-amber-300 text-xs mb-1">
-                  <Star className="w-3.5 h-3.5 fill-current" />
-                  <Star className="w-3.5 h-3.5 fill-current" />
-                  <Star className="w-3.5 h-3.5 fill-current" />
-                  <Star className="w-3.5 h-3.5 fill-current" />
-                  <Star className="w-3.5 h-3.5 fill-current" />
-                  <span className="text-white font-bold text-[11px] ml-1">4.9/5 Municipal Rating</span>
-                </div>
                 <p className="text-[11px] font-medium text-emerald-100/80 italic leading-snug">
-                  "EcoPulse AI optimized our collection routes by 42% and engaged over 50,000 active citizens."
+                  Citizen reports and municipal operations in one connected platform.
                 </p>
               </div>
             </motion.div>

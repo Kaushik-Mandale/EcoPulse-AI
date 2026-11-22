@@ -7,9 +7,9 @@ const SignupPage = () => {
 
   const handleSuccess = (user) => {
     localStorage.setItem('ecopulse_user', JSON.stringify(user));
-    if (user?.role === 'driver') {
-      navigate('/driver');
-    } else if (user?.role === 'admin' || user?.role === 'collector') {
+    if (user?.role === 'driver' || user?.role === 'collector') {
+      navigate('/field-operations');
+    } else if (user?.role === 'admin') {
       navigate('/admin');
     } else {
       navigate('/citizen');

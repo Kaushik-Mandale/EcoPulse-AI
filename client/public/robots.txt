@@ -3,7 +3,6 @@ Allow: /
 Allow: /report
 Allow: /track
 Allow: /map
-Allow: /demo
 Allow: /faq
 Allow: /help
 Allow: /contact

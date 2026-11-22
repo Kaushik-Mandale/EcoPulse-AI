@@ -8,14 +8,15 @@ const LoginPage = () => {
   const navigate = useNavigate();
 
   const handleSuccess = (user) => {
+    const role = user?.role?.toLowerCase();
     localStorage.setItem('ecopulse_user', JSON.stringify(user));
-    if (user?.role === 'driver') {
-      navigate('/driver');
-    } else if (user?.role === 'admin' || user?.role === 'collector') {
-      navigate('/admin');
-    } else {
+    if (role === 'driver' || role === 'collector') {
+      navigate('/field-operations');
+    } else if (role === 'admin') {
+      navigate(user?.is_super_admin ? '/super-admin' : '/admin');
+    } else if (role === 'citizen') {
       navigate('/citizen');
-    }
+    } else navigate('/login', { replace: true });
   };
 
   return (
@@ -78,11 +79,11 @@ const LoginPage = () => {
       <footer className="w-full max-w-[1480px] relative z-10 text-center py-4 mt-6 text-xs font-bold text-slate-500 border-t border-slate-200/60">
         <div className="flex items-center justify-center gap-4 mb-1">
           <span className="inline-flex items-center gap-1 text-[#005C2B]">
-            <Leaf className="w-3.5 h-3.5" /> 100% Eco-Certified
+            <Leaf className="w-3.5 h-3.5" /> EcoPulse AI
           </span>
           <span>•</span>
           <span className="inline-flex items-center gap-1 text-[#d9531e]">
-            <ShieldCheck className="w-3.5 h-3.5" /> Municipal Sanitation Prototype
+            <ShieldCheck className="w-3.5 h-3.5" /> Secure sign-in
           </span>
         </div>
         <p className="text-[11px] text-slate-400 font-semibold">

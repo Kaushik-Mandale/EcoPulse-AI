@@ -1,27 +1,27 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Search, HelpCircle, ChevronDown, ChevronUp, MessageSquare, Phone, Mail } from 'lucide-react';
+import { ArrowLeft, Search, HelpCircle, ChevronDown, ChevronUp, MessageSquare } from 'lucide-react';
 
 const FAQS = [
   {
-    q: 'What is EcoPulse AI and how does it work in Dhule?',
-    a: 'EcoPulse AI is a smart waste management platform connecting citizens, sanitation drivers, and municipal officers. Citizens report waste via WhatsApp or Web, AI automatically validates the photo and location, and dispatches the nearest ghantagadi driver for resolution.'
+    q: 'What can I do with EcoPulse AI?',
+    a: 'Citizens can submit waste complaints and check their current status using a complaint reference. Submitted reports are made available through the municipal workflows enabled for this deployment.'
   },
   {
     q: 'कचरा तक्रार कशी नोंदवावी? (How to report waste?)',
-    a: 'नागरिक WhatsApp वरून थेट कचऱ्याचा फोटो व लोकेशन पाठवून किंवा या वेबसाइटवरील "Report Waste" बटणावर क्लिक करून तक्रार नोंदवू शकतात. AI तक्रार तपासून आपोआप EP-2026 क्रमांकाची पावती देईल.'
+    a: 'वेबसाइटवरील "Report Waste" वापरून तक्रारीची माहिती द्या. उपलब्ध असल्यास स्थान आणि फोटो जोडा. तक्रार नोंदवल्यानंतर मिळालेला संदर्भ क्रमांक जतन करा. (Use "Report Waste" on this website, add a location or photo when available, and save the reference shown after submission.)'
   },
   {
     q: 'What are EcoCoins and how can I redeem them?',
-    a: 'EcoCoins are reward points granted to citizens for verified waste reports (+25 coins) and community cleanliness participation. Coins can be redeemed for municipal property tax rebates, city transit passes, and organic compost kits.'
+    a: 'The wallet displays the EcoCoin balance stored on your profile when available. Reward issuance, redemption, and transaction history are not configured in this application.'
   },
   {
     q: 'How does live garbage truck (Ghantagadi) tracking work?',
-    a: 'Each municipal vehicle is equipped with GPS telemetry. When you view the City GIS Map or check tracking via your complaint ID, the platform computes estimated arrival time (ETA) based on active route progress in your ward.'
+    a: 'The map displays submitted complaints that include coordinates. Live vehicle GPS, route progress, and estimated arrival times are not available in this interface.'
   },
   {
     q: 'What should I do for emergency hazardous or dead animal waste?',
-    a: 'For urgent hazardous waste, select "Hazardous / Medical Waste" in the report form or call the municipal emergency helpline or contact support@ecopulse.ai for platform assistance.'
+    a: 'This application is not an emergency service. For urgent hazardous-waste issues, use your municipality’s official emergency or support channel.'
   }
 ];
 
@@ -41,17 +41,12 @@ export default function HelpFaqPage() {
             </Link>
             <div>
               <h1 className="text-lg font-black text-slate-900 tracking-tight leading-none">Help & Support Center</h1>
-              <p className="text-xs text-emerald-700 font-bold mt-0.5">Municipal Sanitation FAQ & Contact</p>
+              <p className="text-xs text-emerald-700 font-bold mt-0.5">Common platform questions</p>
             </div>
           </div>
-          <a
-            href="https://wa.me/?text=Hi%20EcoPulse%20Support"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs font-bold bg-[#25D366] text-white px-3.5 py-2 rounded-xl hover:bg-[#20bd5a] flex items-center gap-1.5"
-          >
-            <MessageSquare className="w-3.5 h-3.5" /> WhatsApp Support
-          </a>
+          <Link to="/contact" className="text-xs font-bold bg-[#005C2B] text-white px-3.5 py-2 rounded-xl hover:bg-[#004a22] flex items-center gap-1.5">
+            <MessageSquare className="w-3.5 h-3.5" /> Contact options
+          </Link>
         </div>
       </header>
 
@@ -86,20 +81,14 @@ export default function HelpFaqPage() {
           ))}
         </div>
 
-        {/* Contact info card */}
         <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
           <div>
             <h4 className="text-sm font-black text-slate-900">Still have questions?</h4>
-            <p className="text-xs text-slate-500 font-semibold mt-0.5">Contact the EcoPulse AI pilot support team</p>
+            <p className="text-xs text-slate-500 font-semibold mt-0.5">Use your municipality’s official support channel.</p>
           </div>
-          <div className="flex items-center gap-3 text-xs font-bold">
-            <a href="tel:18002330123" className="flex items-center gap-1.5 text-[#005C2B] bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-200 hover:bg-emerald-100">
-              <Phone className="w-3.5 h-3.5" /> 1800-233-0123
-            </a>
-            <a href="mailto:support@ecopulse.ai" className="flex items-center gap-1.5 text-slate-700 bg-slate-100 px-3.5 py-2 rounded-xl hover:bg-slate-200">
-              <Mail className="w-3.5 h-3.5" /> support@ecopulse.ai
-            </a>
-          </div>
+          <Link to="/contact" className="text-xs font-bold text-[#005C2B] bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-200 hover:bg-emerald-100">
+            View contact options
+          </Link>
         </div>
       </main>
     </div>

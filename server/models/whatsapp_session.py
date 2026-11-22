@@ -1,5 +1,5 @@
 """WhatsApp session models — citizen conversation state and idempotency."""
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, func, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Index, func, UniqueConstraint, text
 from server.database.db import Base
 
 
@@ -25,19 +25,28 @@ class WhatsAppCitizen(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
-        unique=True,   # one website account → at most one WhatsApp identity
     )
 
-    full_name = Column(String(100), default='Dhule Citizen')
+    full_name = Column(String(100), default='Dhule Citizen', server_default=text("'Dhule Citizen'"))
     ward = Column(String(50), nullable=True)
     household_id = Column(String(50), index=True, nullable=True)  # kept for legacy records
     is_authorized = Column(Boolean, default=False)  # True when user_id is set (linked)
-    preferred_language = Column(String(10), default='mr')   # 'mr' or 'en'
+    preferred_language = Column(String(10), nullable=True)   # 'mr' or 'en'
     eco_coins = Column(Integer, default=0)
     conversation_state = Column(String(50), default='IDLE')  # IDLE, AWAITING_PHOTO, AWAITING_LOCATION
     pending_complaint_data = Column(Text, nullable=True)     # JSON for multi-step report flow
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index(
+            "uq_whatsapp_citizens_user_id_notnull",
+            "user_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+            sqlite_where=text("user_id IS NOT NULL"),
+        ),
+    )
 
 
 class WhatsAppProcessedMessage(Base):
@@ -61,6 +70,10 @@ def ensure_whatsapp_processed_messages_schema(engine):
     exist in already-deployed tables without requiring a full migration.
     Safe to call multiple times (idempotent).
     """
+    from server.database.target_policy import validate_development_target
+    from server.utils.config import get_environment
+
+    validate_development_target(engine, get_environment())
     from sqlalchemy import inspect, text
     try:
         insp = inspect(engine)
@@ -87,6 +100,10 @@ def ensure_whatsapp_citizens_schema(engine):
     exists in whatsapp_citizens on existing databases without breaking startup.
     Safe to call multiple times (idempotent).
     """
+    from server.database.target_policy import validate_development_target
+    from server.utils.config import get_environment
+
+    validate_development_target(engine, get_environment())
     from sqlalchemy import inspect, text
     try:
         insp = inspect(engine)

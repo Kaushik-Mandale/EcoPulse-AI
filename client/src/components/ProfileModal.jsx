@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { User, MapPin, Phone, Mail, X, Check, Save, AlertCircle } from 'lucide-react';
 import { updateUserProfile } from '../services/authService';
+import { buildProfileUpdatePayload } from '../utils/profilePayload.js';
 
 const ProfileModal = ({ isOpen, onClose, user, onProfileUpdated }) => {
+  const canEditWard = (user?.role || '').toLowerCase() === 'citizen';
   const [formData, setFormData] = useState({
     full_name: '',
     ward: '',
@@ -17,7 +19,7 @@ const ProfileModal = ({ isOpen, onClose, user, onProfileUpdated }) => {
     if (user) {
       setFormData({
         full_name: user.name || user.full_name || '',
-        ward: user.ward || 'Ward 12',
+        ward: user.ward || '',
         phone: user.phone || ''
       });
     }
@@ -35,7 +37,7 @@ const ProfileModal = ({ isOpen, onClose, user, onProfileUpdated }) => {
       setErrorMsg('Full Name is compulsory (*)');
       return;
     }
-    if (!formData.ward.trim()) {
+    if (canEditWard && !formData.ward.trim()) {
       setErrorMsg('Assigned Ward is compulsory (*)');
       return;
     }
@@ -46,11 +48,7 @@ const ProfileModal = ({ isOpen, onClose, user, onProfileUpdated }) => {
 
     setIsSaving(true);
     try {
-      const updatedUser = await updateUserProfile({
-        full_name: formData.full_name.trim(),
-        ward: formData.ward.trim(),
-        phone: formData.phone.trim()
-      });
+      const updatedUser = await updateUserProfile(buildProfileUpdatePayload(user, formData));
       
       setSuccessMsg('Profile data updated & saved to database!');
       if (onProfileUpdated) onProfileUpdated(updatedUser);
@@ -147,25 +145,22 @@ const ProfileModal = ({ isOpen, onClose, user, onProfileUpdated }) => {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Assigned Ward <span className="text-red-500 font-black ml-0.5">*</span>
+              Assigned Ward {canEditWard && <span className="text-red-500 font-black ml-0.5">*</span>}
               </label>
               <div className="relative">
                 <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                <select
+                <input
+                  type="text"
                   value={formData.ward}
+                  placeholder="Ward not assigned"
+                  readOnly={!canEditWard}
                   onChange={(e) => {
                     setFormData({ ...formData, ward: e.target.value });
                     if (errorMsg) setErrorMsg('');
                   }}
-                  className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold focus:border-[#02471f] focus:outline-none bg-white"
-                  required
-                >
-                  <option value="Ward 12">Ward 12</option>
-                  <option value="Ward 8">Ward 8</option>
-                  <option value="Ward 4">Ward 4</option>
-                  <option value="Ward 10">Ward 10</option>
-                  <option value="Ward 15">Ward 15</option>
-                </select>
+                  className={`w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold focus:border-[#02471f] focus:outline-none ${canEditWard ? 'bg-white' : 'bg-slate-50 text-slate-500'}`}
+                  required={canEditWard}
+                />
               </div>
             </div>
 

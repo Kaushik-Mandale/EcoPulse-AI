@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { createSwapItem } from '../services/api';
 
 const CreateItemModal = ({ isOpen, onClose, onSubmit }) => {
   const [formData, setFormData] = useState({
@@ -10,6 +9,7 @@ const CreateItemModal = ({ isOpen, onClose, onSubmit }) => {
     description: '',
     owner: ''
   });
+  const [errorMsg, setErrorMsg] = useState('');
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -21,21 +21,21 @@ const CreateItemModal = ({ isOpen, onClose, onSubmit }) => {
       alert('Please fill out all required fields.');
       return;
     }
+    setErrorMsg('');
     try {
-      await createSwapItem(formData);
-    } catch (err) {
-      console.warn('Backend item creation fallback');
+      await onSubmit(formData);
+      setFormData({
+        title: '',
+        category: 'Transportation',
+        offered_city: '',
+        desired_city: '',
+        description: '',
+        owner: ''
+      });
+      onClose();
+    } catch (error) {
+      setErrorMsg(error.response?.data?.detail || error.message || 'The listing could not be saved.');
     }
-    onSubmit(formData);
-    setFormData({
-      title: '',
-      category: 'Transportation',
-      offered_city: '',
-      desired_city: '',
-      description: '',
-      owner: ''
-    });
-    onClose();
   };
 
   if (!isOpen) return null;
@@ -49,6 +49,7 @@ const CreateItemModal = ({ isOpen, onClose, onSubmit }) => {
         </div>
 
         <form onSubmit={handleSubmit} className="modal-form">
+          {errorMsg && <p role="alert" className="text-sm font-semibold text-red-700">{errorMsg}</p>}
           <div className="form-group">
             <label>Item / Offer Title *</label>
             <input

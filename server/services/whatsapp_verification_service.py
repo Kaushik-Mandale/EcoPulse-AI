@@ -36,7 +36,7 @@ from server.models.user import User
 from server.models.whatsapp_registration_challenge import WhatsAppRegistrationChallenge
 from server.models.whatsapp_session import WhatsAppCitizen
 from server.schemas.auth import UserResponse
-from server.services.auth_service import hash_otp, validate_indian_mobile, hash_password
+from server.services.auth_service import AuthService, hash_otp, validate_indian_mobile, hash_password
 from server.utils.config import config
 from server.utils.security import create_access_token, get_jwt_secret
 
@@ -135,7 +135,7 @@ class WhatsAppVerificationService:
         full_name: str,
         email: Optional[str] = None,
         password: Optional[str] = None,
-        ward: Optional[str] = "Ward 12",
+        ward: Optional[str] = None,
         ip_address: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -153,13 +153,14 @@ class WhatsAppVerificationService:
             )
 
         clean_email = email.strip().lower() if email and email.strip() else None
+        clean_ward = ward.strip() if ward and ward.strip() else None
         now = datetime.now(timezone.utc)
 
         # 0. Pre-flight check: ensure official WhatsApp business number is configured on server
         business_phone = WhatsAppVerificationService.format_business_phone()
 
         # 1. Check if user already exists
-        existing_user = db.query(User).filter(User.phone == clean_phone).first()
+        existing_user = AuthService.find_user_by_phone(db, clean_phone)
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -238,7 +239,7 @@ class WhatsAppVerificationService:
             "full_name": full_name,
             "email": clean_email,
             "password_hash": pwd_hash,
-            "ward": ward or "Ward 12",
+            "ward": clean_ward,
         }
 
         challenge = WhatsAppRegistrationChallenge(
@@ -336,7 +337,9 @@ class WhatsAppVerificationService:
 
         # Idempotent replay handling: if already VERIFIED with user created
         if challenge.status == "VERIFIED":
-            user = db.query(User).filter(User.phone == clean_sender).first()
+            user = AuthService.find_user_by_phone(db, clean_sender)
+            if user and user.account_status in {"suspended", "retired", "deactivated"}:
+                return {"status": "account_unavailable", "reply": "This account is unavailable. Please contact municipal support.", "verified": False}
             user_name = user.full_name if user else "Citizen"
             reply = (
                 f"✅ *इकोपल्स AI — मोबाईल नंबर आधीच पडताळला गेला आहे!*\n\n"
@@ -398,7 +401,9 @@ class WhatsAppVerificationService:
 
         if updated_rows == 0:
             # Another concurrent thread or webhook event already claimed and verified this challenge
-            user = db.query(User).filter(User.phone == clean_sender).first()
+            user = AuthService.find_user_by_phone(db, clean_sender)
+            if user and user.account_status in {"suspended", "retired", "deactivated"}:
+                return {"status": "account_unavailable", "reply": "This account is unavailable. Please contact municipal support.", "verified": False}
             user_name = user.full_name if user else "Citizen"
             reply = (
                 f"✅ *इकोपल्स AI — मोबाईल नंबर आधीच पडताळला गेला आहे!*\n\n"
@@ -413,12 +418,28 @@ class WhatsAppVerificationService:
 
         # Create or link canonical User
         profile = challenge.get_profile()
-        full_name = profile.get("full_name") or "Dhule Citizen"
+        full_name = profile.get("full_name")
+        if not isinstance(full_name, str) or len(full_name.strip()) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Registration profile is incomplete. Please restart verification.",
+            )
+        full_name = full_name.strip()
         email = profile.get("email")
         password_hash = profile.get("password_hash")
-        ward = profile.get("ward") or "Ward 12"
+        ward = profile.get("ward")
 
-        user = db.query(User).filter(User.phone == clean_sender).first()
+        user = AuthService.find_user_by_phone(db, clean_sender)
+        if user and (user.role != "citizen" or user.account_status in {"suspended", "retired", "deactivated"} or not user.is_active):
+            challenge.status = "FAILED"
+            challenge.consumed_at = now
+            db.commit()
+            reply = (
+                "⚠️ खाते उपलब्ध नाही. कृपया महानगरपालिका सहाय्याशी संपर्क साधा."
+                if preferred_language == "mr"
+                else "⚠️ This account is unavailable. Please contact municipal support."
+            )
+            return {"status": "account_unavailable", "reply": reply, "verified": False}
         if not user:
             try:
                 user = User(
@@ -428,15 +449,29 @@ class WhatsAppVerificationService:
                     hashed_password=password_hash,
                     role="citizen",
                     ward=ward,
-                    eco_coins=100,
-                    is_active=True
+                    eco_coins=0,
+                    is_active=True,
+                    is_verified=True,
+                    account_status="active",
                 )
                 db.add(user)
                 db.commit()
                 db.refresh(user)
             except IntegrityError:
                 db.rollback()
-                user = db.query(User).filter(User.phone == clean_sender).first()
+                user = AuthService.find_user_by_phone(db, clean_sender)
+
+        if (not user or user.role != "citizen" or not user.is_active or user.is_locked
+                or user.account_status != "active"):
+            challenge.status = "FAILED"
+            challenge.consumed_at = now
+            db.commit()
+            reply = (
+                "⚠️ खाते उपलब्ध नाही. कृपया महानगरपालिका सहाय्याशी संपर्क साधा."
+                if preferred_language == "mr"
+                else "⚠️ This account is unavailable. Please contact municipal support."
+            )
+            return {"status": "account_unavailable", "reply": reply, "verified": False}
 
         if user:
             challenge.user_id = user.id
@@ -566,21 +601,29 @@ class WhatsAppVerificationService:
             if challenge.user_id:
                 user = db.query(User).filter(User.id == challenge.user_id).first()
             if not user:
-                user = db.query(User).filter(User.phone == challenge.phone).first()
+                user = AuthService.find_user_by_phone(db, challenge.phone)
 
             if not user:
                 # Fallback: create user if webhook verified but user creation was delayed
                 profile = challenge.get_profile()
+                full_name = profile.get("full_name")
+                if not isinstance(full_name, str) or len(full_name.strip()) < 2:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Registration profile is incomplete. Please restart verification.",
+                    )
                 try:
                     user = User(
-                        full_name=profile.get("full_name") or "Dhule Citizen",
+                        full_name=full_name.strip(),
                         phone=challenge.phone,
                         email=profile.get("email"),
                         hashed_password=profile.get("password_hash"),
                         role="citizen",
-                        ward=profile.get("ward") or "Ward 12",
-                        eco_coins=100,
-                        is_active=True
+                        ward=profile.get("ward"),
+                        eco_coins=0,
+                        is_active=True,
+                        is_verified=True,
+                        account_status="active",
                     )
                     db.add(user)
                     db.commit()
@@ -588,14 +631,22 @@ class WhatsAppVerificationService:
                     challenge.user_id = user.id
                 except IntegrityError:
                     db.rollback()
-                    user = db.query(User).filter(User.phone == challenge.phone).first()
+                    user = AuthService.find_user_by_phone(db, challenge.phone)
+
+            if (not user or user.role != "citizen" or not user.is_active or user.is_locked
+                    or user.account_status != "active"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This account is not eligible for session creation.",
+                )
 
             session_id = f"sess_{user.id}_{int(time.time())}"
             access_token = create_access_token({
                 "sub": user.email or user.phone,
                 "role": user.role,
                 "id": user.id,
-                "sid": session_id
+                "sid": session_id,
+                "sv": user.session_version or 0,
             })
 
             return {
@@ -616,7 +667,9 @@ class WhatsAppVerificationService:
                     ward=user.ward,
                     phone=user.phone,
                     employee_id=user.employee_id,
-                    eco_coins=user.eco_coins or 100
+                    eco_coins=user.eco_coins if user.eco_coins is not None else 0,
+                    is_super_admin=bool(user.is_super_admin),
+                    account_status=user.account_status,
                 ),
                 "message": "Mobile number successfully verified via WhatsApp."
             }

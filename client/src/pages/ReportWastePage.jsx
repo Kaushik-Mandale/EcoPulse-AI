@@ -5,30 +5,23 @@ import {
   Camera, MapPin, CheckCircle2, Sparkles, Send, 
   Crosshair, ArrowLeft, MessageSquare
 } from 'lucide-react';
-import { createComplaint } from '../services/complaintService';
-
-const PRESET_LOCATIONS = [
-  { name: 'Green Park, Plot 45, Ward 12, Dhule', ward: 'Ward 12', lat: 21.352, lng: 74.881 },
-  { name: 'Sai Nagar, Market Road, Ward 12, Dhule', ward: 'Ward 12', lat: 21.355, lng: 74.884 },
-  { name: 'Nimzari Naka, Ward 8, Dhule', ward: 'Ward 8', lat: 21.349, lng: 74.876 },
-  { name: 'Subhash Chowk, Main Bazaar, Ward 4, Dhule', ward: 'Ward 4', lat: 21.357, lng: 74.887 },
-  { name: 'Karwand Naka, Ward 10, Dhule', ward: 'Ward 10', lat: 21.361, lng: 74.891 }
-];
+import { createComplaint, uploadComplaintImage } from '../services/complaintService';
 
 export default function ReportWastePage() {
   const [formData, setFormData] = useState({
     location: '',
     type: 'Plastic Waste',
-    ward: 'Ward 12',
+    ward: '',
     description: '',
-    lat: 21.352,
-    lng: 74.881,
-    image_url: ''
+    lat: null,
+    lng: null
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdComplaint, setCreatedComplaint] = useState(null);
+  const [submissionError, setSubmissionError] = useState('');
   const [locating, setLocating] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
+  const [imageFile, setImageFile] = useState(null);
   const fileInputRef = useRef(null);
 
   const handleCaptureGPS = () => {
@@ -40,22 +33,18 @@ export default function ReportWastePage() {
             ...prev,
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
-            location: `GPS: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)} (Ward 12, Dhule)`
+            location: `GPS: ${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`
           }));
           setLocating(false);
         },
         () => {
-          setFormData(prev => ({
-            ...prev,
-            lat: 21.352,
-            lng: 74.881,
-            location: 'Main Road, Ward 12, Dhule'
-          }));
+          setSubmissionError('Unable to access your location. Enter a landmark or try GPS again.');
           setLocating(false);
         },
         { timeout: 5000 }
       );
     } else {
+      setSubmissionError('Location access is not supported by this browser.');
       setLocating(false);
     }
   };
@@ -66,7 +55,7 @@ export default function ReportWastePage() {
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreviewImage(reader.result);
-        setFormData(prev => ({ ...prev, image_url: reader.result }));
+        setImageFile(file);
       };
       reader.readAsDataURL(file);
     }
@@ -75,27 +64,23 @@ export default function ReportWastePage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setSubmissionError('');
     try {
+      const imageUrl = imageFile ? await uploadComplaintImage(imageFile) : null;
       const payload = {
-        location: formData.location || 'Green Park, Ward 12, Dhule',
+        location: formData.location.trim(),
         type: formData.type,
-        ward: formData.ward || 'Ward 12',
-        description: formData.description || 'Reported via EcoPulse AI Web Portal',
-        latitude: formData.lat || 21.352,
-        longitude: formData.lng || 74.881,
-        image_url: formData.image_url || 'https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=600'
+        ward: formData.ward.trim() || null,
+        description: formData.description.trim() || null,
+        latitude: formData.lat,
+        longitude: formData.lng,
+        image_url: imageUrl
       };
       const res = await createComplaint(payload);
       setCreatedComplaint(res);
     } catch (err) {
-      setCreatedComplaint({
-        id: Math.floor(Math.random() * 9000) + 1000,
-        tracking_number: `EP-2026-${Math.floor(Math.random() * 89999) + 10000}`,
-        location: formData.location || 'Ward 12, Dhule',
-        type: formData.type,
-        status: 'In Progress',
-        assigned_driver_name: 'Ramesh Y. (Vehicle MH-18-BQ-4512)'
-      });
+      const detail = err?.response?.data?.detail;
+      setSubmissionError(typeof detail === 'string' ? detail : 'Unable to submit the report. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -131,6 +116,11 @@ export default function ReportWastePage() {
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-8">
+        {submissionError && (
+          <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+            {submissionError}
+          </p>
+        )}
         {createdComplaint ? (
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
@@ -141,47 +131,33 @@ export default function ReportWastePage() {
               <CheckCircle2 className="w-10 h-10" />
             </div>
             <span className="inline-block bg-emerald-100 text-emerald-800 text-xs font-black px-3 py-1 rounded-full uppercase tracking-wider mb-2">
-              AI Verified & Created
+              Report submitted
             </span>
             <h2 className="text-2xl sm:text-3xl font-black text-slate-900">Complaint Successfully Logged!</h2>
             <p className="text-sm text-slate-600 font-medium max-w-md mx-auto mt-2">
-              Our AI vision pipeline validated the waste image and automatically dispatched a task to the on-duty municipal driver.
+              Your report was submitted to the municipality. It will remain pending until reviewed and assigned.
             </p>
 
             <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-4 my-6 text-left max-w-md mx-auto space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-slate-500 font-semibold">Complaint ID:</span>
-                <span className="font-black text-[#005C2B] font-mono text-base">{createdComplaint.tracking_number}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 font-semibold">Assigned Driver:</span>
-                <span className="font-bold text-slate-800">{createdComplaint.assigned_driver_name || 'Ramesh Y.'}</span>
+                <span className="font-black text-[#005C2B] font-mono text-base">{createdComplaint.id}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500 font-semibold">Status:</span>
-                <span className="font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">In Progress</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 font-semibold">EcoCoins Earned:</span>
-                <span className="font-black text-amber-600">+25 Coins ⭐</span>
+                <span className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">{createdComplaint.status}</span>
               </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-3">
               <Link 
-                to={`/track/${createdComplaint.tracking_number}`}
+                to={`/track/${createdComplaint.id}${createdComplaint.tracking_token ? `#token=${encodeURIComponent(createdComplaint.tracking_token)}` : ''}`}
                 className="bg-[#005C2B] text-white px-6 py-3 rounded-xl font-bold text-sm shadow-md hover:bg-[#004a22] transition-colors"
               >
-                Track Live Status
-              </Link>
-              <Link 
-                to="/map"
-                className="border border-slate-300 text-slate-700 px-6 py-3 rounded-xl font-bold text-sm hover:bg-slate-50 transition-colors"
-              >
-                View on Municipal Map
+                Open Secure Tracking Link
               </Link>
               <button 
-                onClick={() => { setCreatedComplaint(null); setPreviewImage(null); }}
+                onClick={() => { setCreatedComplaint(null); setPreviewImage(null); setImageFile(null); }}
                 className="text-xs text-slate-500 font-bold hover:underline block w-full mt-2 cursor-pointer"
               >
                 Report Another Incident
@@ -192,8 +168,7 @@ export default function ReportWastePage() {
           <form onSubmit={handleSubmit} className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
             <div>
               <label className="block text-sm font-extrabold text-slate-900 mb-1 flex items-center justify-between">
-                <span>1. Upload Waste Photo (AI Verified)</span>
-                <span className="text-xs font-bold text-emerald-700">Auto Image Analysis</span>
+                <span>1. Upload Waste Photo (Optional)</span>
               </label>
               <div 
                 onClick={() => fileInputRef.current?.click()}
@@ -210,7 +185,7 @@ export default function ReportWastePage() {
                   <div className="relative w-full max-h-60 flex justify-center">
                     <img src={previewImage} alt="Preview" className="rounded-xl max-h-56 object-contain shadow-sm" />
                     <div className="absolute bottom-2 right-2 bg-black/70 text-white text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1">
-                      <Sparkles className="w-3 h-3 text-emerald-400" /> AI Ready
+                      <Sparkles className="w-3 h-3 text-emerald-400" /> Selected
                     </div>
                   </div>
                 ) : (
@@ -219,7 +194,7 @@ export default function ReportWastePage() {
                       <Camera className="w-6 h-6" />
                     </div>
                     <p className="text-sm font-bold text-slate-800">Click to take a photo or upload from device</p>
-                    <p className="text-xs text-slate-500">Supports JPG, PNG • AI automatically estimates waste severity and type</p>
+                    <p className="text-xs text-slate-500">Supports JPG, PNG, and WebP image files</p>
                   </div>
                 )}
               </div>
@@ -243,17 +218,13 @@ export default function ReportWastePage() {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">Municipal Ward</label>
-                <select 
+                <input
+                  type="text"
                   value={formData.ward}
                   onChange={(e) => setFormData(prev => ({ ...prev, ward: e.target.value }))}
+                  placeholder="Enter ward if known"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold focus:outline-none focus:border-[#005C2B] focus:bg-white"
-                >
-                  <option value="Ward 12">Ward 12 (Dhule Central)</option>
-                  <option value="Ward 8">Ward 8 (Nimzari / Market)</option>
-                  <option value="Ward 4">Ward 4 (Subhash Chowk)</option>
-                  <option value="Ward 10">Ward 10 (Karwand Naka)</option>
-                  <option value="Ward 15">Ward 15 (East Sector)</option>
-                </select>
+                />
               </div>
             </div>
 
@@ -275,26 +246,13 @@ export default function ReportWastePage() {
                   type="text"
                   value={formData.location}
                   onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
-                  placeholder="e.g. Near Community Hall, Green Park, Ward 12"
+                  placeholder="Enter the actual location or landmark"
                   required
                   className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold focus:outline-none focus:border-[#005C2B] focus:bg-white"
                 />
                 <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               </div>
               
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                <span className="text-[11px] font-bold text-slate-400 py-0.5">Presets:</span>
-                {PRESET_LOCATIONS.map((loc, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => setFormData(prev => ({ ...prev, location: loc.name, ward: loc.ward, lat: loc.lat, lng: loc.lng }))}
-                    className="text-[11px] bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-800 px-2 py-0.5 rounded-md font-semibold transition-colors cursor-pointer"
-                  >
-                    {loc.name.split(',')[0]}
-                  </button>
-                ))}
-              </div>
             </div>
 
             <div>
@@ -310,11 +268,11 @@ export default function ReportWastePage() {
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !formData.location.trim()}
               className="w-full py-3.5 rounded-2xl bg-[#005C2B] hover:bg-[#004a22] text-white font-extrabold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75"
             >
               {isSubmitting ? (
-                <span>Submitting & Verifying with AI...</span>
+                <span>Submitting report...</span>
               ) : (
                 <>
                   <Send className="w-4 h-4" />
@@ -322,6 +280,11 @@ export default function ReportWastePage() {
                 </>
               )}
             </button>
+              {submissionError && (
+                <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+                  {submissionError}
+                </p>
+              )}
           </form>
         )}
       </main>

@@ -27,6 +27,7 @@ def _create_user(db, email: str, role: str = "citizen", phone: str = None) -> Us
         role=role,
         phone=phone,
         is_active=True,
+        is_verified=True,
         eco_coins=100
     )
     db.add(user)

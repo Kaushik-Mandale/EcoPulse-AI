@@ -36,7 +36,7 @@ const RolesSection = () => {
         {/* Section Header */}
         <div className="text-center mb-12 flex items-center justify-center gap-2">
           <h2 className="text-2xl md:text-3xl lg:text-4xl font-extrabold text-[#101828] tracking-tight">
-            One Platform. Three Roles. Infinite Impact.
+            One Platform. Three Civic Portals.
           </h2>
         </div>
 
@@ -53,7 +53,7 @@ const RolesSection = () => {
                 </div>
                 <div>
                   <h3 className="text-xl font-black text-gray-900 leading-tight">Citizen</h3>
-                  <p className="text-xs font-semibold text-gray-500">Report • Track • Earn Rewards</p>
+                  <p className="text-xs font-semibold text-gray-500">Report • Track • Get Updates</p>
                 </div>
               </div>
 
@@ -69,11 +69,11 @@ const RolesSection = () => {
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">✓</span>
-                  <span>Earn EcoCoins & rewards</span>
+                  <span>Use WhatsApp reporting</span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">✓</span>
-                  <span>AI-powered assistance</span>
+                  <span>Manage your citizen profile</span>
                 </li>
               </ul>
             </div>
@@ -108,7 +108,7 @@ const RolesSection = () => {
                 </div>
                 <div>
                   <h3 className="text-xl font-black text-gray-900 leading-tight">Driver</h3>
-                  <p className="text-xs font-semibold text-gray-500">Manage • Navigate • Complete</p>
+                  <p className="text-xs font-semibold text-gray-500">View • Update • Complete</p>
                 </div>
               </div>
 
@@ -120,7 +120,7 @@ const RolesSection = () => {
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">✓</span>
-                  <span>Smart route navigation</span>
+                  <span>View assigned complaint details</span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">✓</span>
@@ -128,7 +128,7 @@ const RolesSection = () => {
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">✓</span>
-                  <span>Upload proof instantly</span>
+                  <span>Update task status</span>
                 </li>
               </ul>
             </div>
@@ -171,7 +171,7 @@ const RolesSection = () => {
               <ul className="space-y-3 my-6 text-xs font-bold text-gray-700">
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">✓</span>
-                  <span>Municipal telemetry & GIS tracking</span>
+                  <span>Review submitted complaints</span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">✓</span>
@@ -183,7 +183,7 @@ const RolesSection = () => {
                 </li>
                 <li className="flex items-center gap-2.5">
                   <span className="w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">✓</span>
-                  <span>Track city-wide performance</span>
+                  <span>Review available service metrics</span>
                 </li>
               </ul>
             </div>

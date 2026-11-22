@@ -9,11 +9,17 @@ import logging
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from server.database.db import engine, Base, SessionLocal, ensure_complaints_schema, ensure_users_schema
+from server.database.db import engine, SessionLocal
+from server.database.initialization import (
+    initialize_database,
+    resynchronize_sequences,
+    schema_mutation_allowed,
+)
+from server.database.target_policy import validate_development_target
 import server.models  # Import all SQLAlchemy models to register them with Base.metadata
-from server.routes import health, item, auth, complaint, driver, admin, uploads, whatsapp
+from server.routes import health, item, auth, complaint, driver, admin, collector, uploads, whatsapp
 from server.services.auth_service import AuthService
-from server.utils.config import config, normalize_environment
+from server.utils.config import config, normalize_environment, get_environment
 
 from contextlib import asynccontextmanager
 
@@ -24,54 +30,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-config.validate_production_settings()
-
-# Create database tables automatically if they don't exist
-Base.metadata.create_all(bind=engine)
-
-# Apply idempotent startup migrations for tables added after initial schema creation
-from server.models.whatsapp_session import ensure_whatsapp_processed_messages_schema, ensure_whatsapp_citizens_schema
-ensure_whatsapp_processed_messages_schema(engine)
-ensure_whatsapp_citizens_schema(engine)
-ensure_complaints_schema(engine)
-ensure_users_schema(engine)
+# ---------------------------------------------------------------------------
+# Fail-closed ENV validation — must happen before application startup.
+# Raises RuntimeError if ENV is unset, unknown, or if ENV/ENVIRONMENT conflict.
+# Note: Zero database operations or connections occur at module import time.
+# ---------------------------------------------------------------------------
+try:
+    _startup_environment = get_environment()
+except RuntimeError as _env_err:
+    raise RuntimeError(
+        f"[STARTUP] Environment configuration rejected: {_env_err}"
+    ) from _env_err
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config.reload()
-    env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", config.ENV)))
-    from server.database.db import safe_database_url_for_logging, SQLALCHEMY_DATABASE_URL
+    # Read the validated environment dynamically so that test monkeypatching
+    # is accurately reflected during application lifespan execution.
+    try:
+        env = get_environment()
+    except RuntimeError:
+        env = normalize_environment(os.getenv("ENV") or os.getenv("ENVIRONMENT") or _startup_environment)
+
+    from server.database.db import (
+        safe_database_url_for_logging,
+        SQLALCHEMY_DATABASE_URL,
+        validate_database_connection,
+    )
+    # Reject a mismatched development environment/database URL before even the
+    # startup connectivity probe. Production/staging keep the read-only path.
+    if schema_mutation_allowed(env):
+        validate_development_target(engine, env)
     logger.info(
         "[STARTUP] EcoPulse AI starting | env=%s | db=%s",
         env,
         safe_database_url_for_logging(SQLALCHEMY_DATABASE_URL),
     )
+
+    # 1. Explicit database connectivity validation (startup operation, never at import time)
+    validate_database_connection(engine)
+
+    # 2. Production settings validation
     if env == "production":
         config.validate_production_settings()
 
-    # Read-only schema compatibility validation for Phase 2 OTP delivery observability
-    # and website-generated WhatsApp registration verification
-    # (Does NOT mutate database or execute ALTER TABLE at runtime)
-    from server.models.mobile_otp import check_mobile_otp_tokens_schema
-    from server.models.whatsapp_registration_challenge import check_whatsapp_registration_challenges_schema
-    check_mobile_otp_tokens_schema(engine)
-    check_whatsapp_registration_challenges_schema(engine)
+    # 3. Database initialization policy (runs exactly once during lifespan startup):
+    # - development/dev/local/test/testing: create/patch schema from ORM models.
+    # - production/staging: verification-only read check; fails fast if objects missing.
+    initialize_database(engine, env)
 
+    # 4. Development demo seeding and sequence resynchronization
     db = SessionLocal()
     try:
         if AuthService.should_seed_demo_users():
             AuthService.seed_demo_users(db)
-        from sqlalchemy import text
-        tables = ['tasks', 'complaints', 'users', 'items', 'notifications', 'fuel_logs', 'whatsapp_citizens', 'whatsapp_processed_messages']
-        for t in tables:
-            try:
-                seq = db.execute(text(f"SELECT pg_get_serial_sequence('{t}', 'id')")).scalar()
-                if seq:
-                    max_id = db.execute(text(f"SELECT COALESCE(MAX(id), 0) FROM {t}")).scalar()
-                    db.execute(text(f"SELECT setval('{seq}', {max_id + 1}, false)"))
-            except Exception:
-                pass
-        db.commit()
+        resynchronize_sequences(db, env)
     finally:
         db.close()
     yield
@@ -112,6 +125,7 @@ app.include_router(auth.router)
 app.include_router(complaint.router)
 app.include_router(driver.router)
 app.include_router(admin.router)
+app.include_router(collector.router)
 app.include_router(item.router)
 app.include_router(uploads.router)
 app.include_router(whatsapp.router, prefix="/api/whatsapp", tags=["WhatsApp"])
@@ -131,7 +145,11 @@ def get_my_current_user(current_user: User = Depends(get_current_user)):
         ward=current_user.ward,
         phone=current_user.phone,
         employee_id=current_user.employee_id,
-        eco_coins=current_user.eco_coins or 100
+        login_id=current_user.login_id,
+        eco_coins=current_user.eco_coins if current_user.eco_coins is not None else 0,
+        is_super_admin=bool(current_user.is_super_admin),
+        account_status=current_user.account_status,
+        mfa_enabled=bool(current_user.mfa_enabled),
     )
 
 @app.get("/")

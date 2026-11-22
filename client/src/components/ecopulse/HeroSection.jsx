@@ -22,9 +22,9 @@ const HeroSection = () => {
           
           {/* Top Pill Badge */}
           <div className="inline-flex items-center gap-2 bg-secondary-container/90 backdrop-blur-xs px-4 py-1.5 rounded-full text-xs font-bold text-primary tracking-wide border border-secondary-container">
-            <span>AI-Powered</span>
+            <span>Citizen Reporting</span>
             <span className="text-primary font-bold">•</span>
-            <span>Smart</span>
+            <span>Municipal Operations</span>
             <span className="text-primary font-bold">•</span>
             <span>Sustainable</span>
           </div>
@@ -38,7 +38,7 @@ const HeroSection = () => {
 
           {/* Subtitle */}
           <p className="text-gray-700 text-sm md:text-[15px] leading-relaxed max-w-lg font-semibold">
-            EcoPulse AI connects Citizens, Drivers, Collectors and Municipalities on one intelligent platform to make waste management efficient, transparent and sustainable. Piloting for 27 wards of Cities Municipal Corp.
+            EcoPulse AI brings citizen waste reporting, complaint tracking, and municipal operations together in one platform.
           </p>
 
           {/* Action CTAs */}
@@ -57,15 +57,15 @@ const HeroSection = () => {
               Chat with AI on WhatsApp
             </a>
 
-            {/* Request Demo */}
-            <Link 
-              to="/demo" 
+            {/* Sign in */}
+            <Link
+              to="/login"
               className="flex items-center gap-2 bg-white/95 backdrop-blur-xs hover:bg-emerald-50 text-gray-800 hover:text-primary border border-gray-300 px-5 py-3 rounded-xl font-semibold text-sm shadow-2xs transition-all cursor-pointer"
             >
               <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold">
                 <Sparkles className="w-3 h-3" />
               </div>
-              Launch Demo Sandbox
+              Sign in to EcoPulse
             </Link>
 
             {/* Live City GIS Map */}
@@ -76,7 +76,7 @@ const HeroSection = () => {
               <div className="w-5 h-5 rounded-full bg-emerald-600 flex items-center justify-center text-white text-[10px] font-bold">
                 <MapPin className="w-3 h-3" />
               </div>
-              Live City GIS
+              View Reported Locations
             </Link>
           </div>
 
@@ -93,14 +93,14 @@ const HeroSection = () => {
               <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-700">
                 <ShieldCheck className="w-4 h-4" />
               </div>
-              <span>AI Verified</span>
+              <span>Reports for Review</span>
             </div>
 
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-700">
                 <MapPin className="w-4 h-4" />
               </div>
-              <span>Real-time Tracking</span>
+              <span>Complaint Status</span>
             </div>
 
             <div className="flex items-center gap-2">
@@ -118,9 +118,9 @@ const HeroSection = () => {
           
           {/* Floating Circle Badge */}
           <div className="absolute -top-3 right-0 z-30 bg-white/95 backdrop-blur-xs border border-gray-200 shadow-md rounded-full w-32 h-32 p-3 flex flex-col items-center justify-center text-center">
-            <span className="text-[10px] text-gray-500 font-medium">Piloting for</span>
+            <span className="text-[10px] text-gray-500 font-medium">Citizen & municipal</span>
             <span className="text-[12px] font-extrabold text-primary leading-tight">
-              Cities Municipal <br /> Corp.
+              Waste <br /> Operations
             </span>
           </div>
 

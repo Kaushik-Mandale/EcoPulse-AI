@@ -10,14 +10,74 @@ def normalize_environment(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
+# Environments that may mutate the database schema during application startup.
+_MUTATION_ALLOWED_ENVS: frozenset[str] = frozenset(
+    {"development", "dev", "local", "test", "testing"}
+)
+
+# All recognized environments. Any value outside this set is unknown/misconfigured.
+_RECOGNIZED_ENVS: frozenset[str] = frozenset(
+    {"development", "dev", "local", "test", "testing", "staging", "production"}
+)
+
+
+def get_environment() -> str:
+    """Return the normalized, validated application environment.
+
+    Deterministic conflict validation and fail-closed policy:
+    - If only ENV is set, validate ENV.
+    - If only ENVIRONMENT is set, validate ENVIRONMENT.
+    - If neither is set (or both empty), raise RuntimeError.
+    - If both are set and disagree after normalization, raise RuntimeError.
+    - If both are set and agree after normalization, accept the value.
+    - Unknown/unrecognized values always raise RuntimeError.
+    """
+    raw_env = os.getenv("ENV")
+    raw_environment = os.getenv("ENVIRONMENT")
+
+    norm_env = normalize_environment(raw_env)
+    norm_environment = normalize_environment(raw_environment)
+
+    if not norm_env and not norm_environment:
+        raise RuntimeError(
+            "CONFIGURATION ERROR: Neither ENV nor ENVIRONMENT is set. "
+            f"Set ENV to one of: {', '.join(sorted(_RECOGNIZED_ENVS))}."
+        )
+
+    if norm_env and norm_environment and norm_env != norm_environment:
+        raise RuntimeError(
+            f"CONFIGURATION CONFLICT: ENV={raw_env!r} and ENVIRONMENT={raw_environment!r} disagree. "
+            "Set both to matching values or configure only ENV."
+        )
+
+    chosen_raw = raw_env if norm_env else raw_environment
+    chosen_norm = norm_env if norm_env else norm_environment
+
+    if chosen_norm not in _RECOGNIZED_ENVS:
+        raise RuntimeError(
+            f"CONFIGURATION ERROR: ENV={chosen_raw!r} is not a recognized environment. "
+            f"Allowed values: {sorted(_RECOGNIZED_ENVS)}. "
+            "An unknown environment is never treated as development."
+        )
+    return chosen_norm
+
+
 def is_production_environment(value: str | None = None) -> bool:
-    env_value = value if value is not None else os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
-    return normalize_environment(env_value) == "production"
+    if value is not None:
+        return normalize_environment(value) == "production"
+    try:
+        return get_environment() == "production"
+    except RuntimeError:
+        return False
 
 
 def is_local_or_test_environment(value: str | None = None) -> bool:
-    env_value = value if value is not None else os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
-    return normalize_environment(env_value) in {"development", "test", "testing", "local"}
+    if value is not None:
+        return normalize_environment(value) in _MUTATION_ALLOWED_ENVS
+    try:
+        return get_environment() in _MUTATION_ALLOWED_ENVS
+    except RuntimeError:
+        return False
 
 
 def is_insecure_secret(value: str | None) -> bool:
@@ -59,9 +119,16 @@ class Config:
     def reload(self):
         self.PROJECT_NAME: str = os.getenv("PROJECT_NAME", "EcoPulse AI")
         self.VERSION: str = os.getenv("VERSION", os.getenv("PROJECT_VERSION", "1.0.0"))
-        self.ENV: str = normalize_environment(
-            os.getenv("ENV", os.getenv("ENVIRONMENT", "development"))
-        )
+        # Use get_environment() for fail-closed validation.  If ENV is unset
+        # (e.g. during unit-test module import before the test fixture sets it)
+        # we fall back to an empty string so that schema_mutation_allowed() returns
+        # False and production guards are always triggered correctly.
+        try:
+            self.ENV: str = get_environment()
+        except RuntimeError:
+            # Unset or unknown ENV: expose the raw normalized value so callers
+            # can inspect it, but do NOT default it to "development".
+            self.ENV = normalize_environment(os.getenv("ENV") or os.getenv("ENVIRONMENT") or "")
         self.SECRET_KEY: str = (os.getenv("SECRET_KEY", "") or "").strip()
         self.PORT: int = int(os.getenv("PORT", 8000))
         self.WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta").strip().lower()
@@ -118,13 +185,23 @@ class Config:
         self.META_OTP_TEMPLATE_HAS_URL_BUTTON: bool = (
             os.getenv("META_OTP_TEMPLATE_HAS_URL_BUTTON", "true").strip().lower() == "true"
         )
+        # For OTP delivery: production must use meta_whatsapp; non-production
+        # (dev/test) defaults to "development" (mock); unknown/unset ENV defaults
+        # to "development" so the mock provider is never accidentally activated in
+        # production (production guard in validate_production_settings enforces this).
+        _env_is_mutation_allowed = self.ENV in _MUTATION_ALLOWED_ENVS
         self.OTP_DELIVERY_PROVIDER: str = os.getenv(
             "OTP_DELIVERY_PROVIDER",
-            "meta_whatsapp" if self.ENV == "production" else "development"
+            "meta_whatsapp" if self.ENV == "production" else (
+                "development" if _env_is_mutation_allowed else "disabled"
+            )
         ).strip().lower()
 
         # SMS Gateway & Mobile OTP configuration (Indian DLT-compliant gateway)
-        self.SMS_PROVIDER: str = os.getenv("SMS_PROVIDER", "mock" if self.ENV != "production" else "msg91").strip().lower()
+        self.SMS_PROVIDER: str = os.getenv(
+            "SMS_PROVIDER",
+            "msg91" if self.ENV == "production" else ("mock" if _env_is_mutation_allowed else "disabled")
+        ).strip().lower()
         self.SMS_API_KEY: str = (os.getenv("SMS_API_KEY", "") or "").strip()
         self.SMS_SENDER_ID: str = (os.getenv("SMS_SENDER_ID", "ECPULS") or "ECPULS").strip()
         self.SMS_TEMPLATE_ID: str = (os.getenv("SMS_TEMPLATE_ID", "") or "").strip()
@@ -136,6 +213,14 @@ class Config:
         self.MUNICIPALITY_NAME_MR: str = os.getenv("MUNICIPALITY_NAME_MR", "धुळे महानगरपालिका स्वच्छता व्यवस्थापन")
         self.FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://ecopulse-ai-frontend.onrender.com/").rstrip("/") + "/"
         self.TRACKING_PREFIX: str = os.getenv("TRACKING_PREFIX", "DHL-")
+
+        # Gemini Conversational Intelligence (Phase 1)
+        self.GEMINI_API_KEY: str = (os.getenv("GEMINI_API_KEY", "") or "").strip()
+        self.GEMINI_MODEL: str = (os.getenv("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash").strip()
+        try:
+            self.GEMINI_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "4.0"))
+        except (ValueError, TypeError):
+            self.GEMINI_TIMEOUT_SECONDS = 4.0
 
     @property
     def CORS_ORIGINS(self) -> list[str]:
@@ -175,6 +260,46 @@ class Config:
         if any("localhost" in origin.lower() or "127.0.0.1" in origin.lower() for origin in cors_origins):
             raise RuntimeError("CRITICAL CONFIGURATION ERROR: localhost development origins are not permitted in production CORS configuration.")
 
+        storage_backend = (os.getenv("MEDIA_STORAGE_BACKEND") or self.MEDIA_STORAGE_BACKEND or "local").strip().lower()
+        if storage_backend in ("r2", "s3", "cloudflare"):
+            missing_r2 = []
+            if not (os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET") or self.R2_BUCKET_NAME):
+                missing_r2.append("R2_BUCKET_NAME")
+            if not (os.getenv("R2_ACCESS_KEY_ID") or self.R2_ACCESS_KEY_ID):
+                missing_r2.append("R2_ACCESS_KEY_ID")
+            if not (os.getenv("R2_SECRET_ACCESS_KEY") or self.R2_SECRET_ACCESS_KEY):
+                missing_r2.append("R2_SECRET_ACCESS_KEY")
+            if not (os.getenv("R2_ENDPOINT_URL") or self.R2_ENDPOINT_URL) and not (os.getenv("R2_ACCOUNT_ID") or self.R2_ACCOUNT_ID):
+                missing_r2.append("R2_ACCOUNT_ID (or R2_ENDPOINT_URL)")
+            if missing_r2:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION ERROR: Cloudflare R2 storage settings are incomplete: "
+                    + ", ".join(missing_r2)
+                )
+
+        if storage_backend == "supabase":
+            missing_sb = []
+            if not (os.getenv("SUPABASE_URL") or self.SUPABASE_URL):
+                missing_sb.append("SUPABASE_URL")
+            if not (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or self.SUPABASE_SERVICE_ROLE_KEY):
+                missing_sb.append("SUPABASE_SERVICE_ROLE_KEY")
+            if not (os.getenv("SUPABASE_STORAGE_BUCKET") or self.SUPABASE_STORAGE_BUCKET):
+                missing_sb.append("SUPABASE_STORAGE_BUCKET")
+            if missing_sb:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION ERROR: Supabase storage settings are incomplete: "
+                    + ", ".join(missing_sb)
+                )
+
+        mfa_encryption_key = (os.getenv("MFA_ENCRYPTION_KEY") or "").strip()
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(mfa_encryption_key.encode("ascii"))
+        except (ValueError, UnicodeEncodeError):
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION ERROR: MFA_ENCRYPTION_KEY must be a valid Fernet key in production."
+            ) from None
+
         provider = (os.getenv("WHATSAPP_PROVIDER") or "").strip().lower()
         if provider == "meta":
             missing = [
@@ -212,37 +337,6 @@ class Config:
                     + ", ".join(missing_otp)
                 )
 
-        storage_backend = (os.getenv("MEDIA_STORAGE_BACKEND") or self.MEDIA_STORAGE_BACKEND or "local").strip().lower()
-        if storage_backend in ("r2", "s3", "cloudflare"):
-            missing_r2 = []
-            if not (os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET") or self.R2_BUCKET_NAME):
-                missing_r2.append("R2_BUCKET_NAME")
-            if not (os.getenv("R2_ACCESS_KEY_ID") or self.R2_ACCESS_KEY_ID):
-                missing_r2.append("R2_ACCESS_KEY_ID")
-            if not (os.getenv("R2_SECRET_ACCESS_KEY") or self.R2_SECRET_ACCESS_KEY):
-                missing_r2.append("R2_SECRET_ACCESS_KEY")
-            if not (os.getenv("R2_ENDPOINT_URL") or self.R2_ENDPOINT_URL) and not (os.getenv("R2_ACCOUNT_ID") or self.R2_ACCOUNT_ID):
-                missing_r2.append("R2_ACCOUNT_ID (or R2_ENDPOINT_URL)")
-            if missing_r2:
-                raise RuntimeError(
-                    "CRITICAL CONFIGURATION ERROR: Cloudflare R2 storage settings are incomplete: "
-                    + ", ".join(missing_r2)
-                )
-
-        if storage_backend == "supabase":
-            missing_sb = []
-            if not (os.getenv("SUPABASE_URL") or self.SUPABASE_URL):
-                missing_sb.append("SUPABASE_URL")
-            if not (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or self.SUPABASE_SERVICE_ROLE_KEY):
-                missing_sb.append("SUPABASE_SERVICE_ROLE_KEY")
-            if not (os.getenv("SUPABASE_STORAGE_BUCKET") or self.SUPABASE_STORAGE_BUCKET):
-                missing_sb.append("SUPABASE_STORAGE_BUCKET")
-            if missing_sb:
-                raise RuntimeError(
-                    "CRITICAL CONFIGURATION ERROR: Supabase storage settings are incomplete: "
-                    + ", ".join(missing_sb)
-                )
 
 
 config = Config()
-
