@@ -427,7 +427,7 @@ def test_runner_applies_real_migrations_on_postgresql(pg_engine):
     assert recorded == ["000"]
 
     applied = apply_pending(pg_engine, migrations)
-    assert applied == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010"]
+    assert applied == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"]
 
     state = status(pg_engine, migrations)
     assert state["baseline"] is True
@@ -437,14 +437,14 @@ def test_runner_applies_real_migrations_on_postgresql(pg_engine):
         rows = connection.execute(
             text(f"SELECT version, method FROM {HISTORY_TABLE} ORDER BY version")
         ).fetchall()
-    assert [row[0] for row in rows] == ["000", "001", "002", "003", "004", "005", "006", "007", "008", "009", "010"]
+    assert [row[0] for row in rows] == ["000", "001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"]
     assert {row[1] for row in rows[1:]} == {"applied"}
 
 
 def test_runner_rerun_is_a_noop_on_postgresql(pg_engine):
     migrations = discover_migrations()
     _reset_with_baseline(pg_engine)
-    assert apply_pending(pg_engine, migrations) == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010"]
+    assert apply_pending(pg_engine, migrations) == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"]
 
     assert apply_pending(pg_engine, migrations) == []
     assert status(pg_engine, migrations)["pending"] == []
@@ -563,7 +563,7 @@ def test_lock_releases_after_successful_run(pg_engine):
 
     applied = apply_pending(pg_engine, discover_migrations())
 
-    assert applied == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010"]
+    assert applied == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"]
     assert _probe_lock() is True
     assert _advisory_lock_count(pg_engine) == 0
 
@@ -610,7 +610,7 @@ def test_lock_does_not_leak_into_pooled_connections(pg_engine):
             assert _advisory_lock_count(pg_engine) == 1
         assert _advisory_lock_count(pg_engine) == 0
 
-    assert apply_pending(pg_engine, migrations) == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010"]
+    assert apply_pending(pg_engine, migrations) == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"]
     assert _probe_lock() is True
     assert _advisory_lock_count(pg_engine) == 0
 
@@ -795,13 +795,13 @@ def test_postgres_fresh_orm_schema_matches_migration_sentinels(pg_engine):
     _reset_to_current_models(pg_engine)
 
     migrations = discover_migrations()
-    for version in ("001", "002", "003", "004", "005", "006", "007", "008", "009", "010"):
+    for version in ("001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"):
         assert _missing_objects(pg_engine, version) == []
 
     # The supported fresh setup is ORM create_all; verify the migration runner
-    # accepts its complete 001-010 sentinel contract without applying DDL.
-    assert adopt_existing(pg_engine, migrations, through_version="010") == [
-        "000", "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
+    # accepts its complete 001-012 sentinel contract without applying DDL.
+    assert adopt_existing(pg_engine, migrations, through_version="012") == [
+        "000", "001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012",
     ]
     assert status(pg_engine, migrations)["pending"] == []
 
@@ -908,4 +908,115 @@ def test_postgres_index_in_an_unrelated_schema_cannot_satisfy_adoption(pg_engine
     finally:
         with pg_engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{decoy_schema}" CASCADE'))
+
+
+def test_postgres_011_012_apply_and_safe_empty_rollback(pg_engine):
+    """Applying 001-012, rolling back empty 012 and 011, then re-applying succeeds."""
+    _reset_with_baseline(pg_engine)
+    applied = apply_pending(pg_engine, discover_migrations())
+    assert applied == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012"]
+
+    tables_before = set(inspect(pg_engine).get_table_names())
+    assert "event_reports" in tables_before
+    assert "wards" in tables_before
+    assert "municipalities" in tables_before
+
+    # 1. Roll back 012 when empty
+    _run_migration_file(pg_engine, "012_whatsapp_event_reports_down.sql")
+    tables_after_012 = set(inspect(pg_engine).get_table_names())
+    assert "event_reports" not in tables_after_012
+    assert "wards" in tables_after_012
+
+    # 2. Roll back 011 after 012 reversed
+    _run_migration_file(pg_engine, "011_centralized_ward_registry_down.sql")
+    tables_after_011 = set(inspect(pg_engine).get_table_names())
+    assert "wards" not in tables_after_011
+    assert "municipalities" not in tables_after_011
+    user_columns = {c["name"] for c in inspect(pg_engine).get_columns("users")}
+    assert "ward_id" not in user_columns
+    assert "municipality_id" not in user_columns
+
+    # 3. Idempotent re-run of rollback scripts is safe
+    _run_migration_file(pg_engine, "012_whatsapp_event_reports_down.sql")
+    _run_migration_file(pg_engine, "011_centralized_ward_registry_down.sql")
+
+    # 4. Re-applying 011 and 012 forward works cleanly
+    _run_migration_file(pg_engine, "011_centralized_ward_registry.sql")
+    _run_migration_file(pg_engine, "012_whatsapp_event_reports.sql")
+    tables_reapplied = set(inspect(pg_engine).get_table_names())
+    assert "event_reports" in tables_reapplied
+    assert "wards" in tables_reapplied
+    assert "municipalities" in tables_reapplied
+
+
+def test_postgres_012_rollback_refused_when_reports_exist(pg_engine):
+    """Rollback of 012 aborts transaction and preserves all data if reports exist."""
+    _reset_with_baseline(pg_engine)
+    apply_pending(pg_engine, discover_migrations())
+
+    with pg_engine.begin() as connection:
+        user_id = connection.execute(text(
+            "INSERT INTO users (full_name, role) VALUES ('Citizen Reporter', 'citizen') RETURNING id"
+        )).scalar_one()
+        wa_id = connection.execute(text(
+            "INSERT INTO whatsapp_citizens (phone_number, user_id) VALUES ('919999900001', :uid) RETURNING id"
+        ), {"uid": user_id}).scalar_one()
+        connection.execute(text(
+            "INSERT INTO event_reports (reference_id, citizen_id, whatsapp_citizen_id, category, event_date, event_time, location_address) "
+            "VALUES ('EVT-TEST-001', :uid, :wid, 'dead_animal', CURRENT_DATE, '10:00:00', 'Ward 1 Market')"
+        ), {"uid": user_id, "wid": wa_id})
+
+    # Attempt rollback: must raise an error and abort
+    with pytest.raises(psycopg2.Error) as excinfo:
+        _run_migration_file(pg_engine, "012_whatsapp_event_reports_down.sql")
+    assert "Cannot downgrade 012 while event reports exist" in str(excinfo.value)
+
+    # Verify table and report remain completely intact
+    tables = set(inspect(pg_engine).get_table_names())
+    assert "event_reports" in tables
+    with pg_engine.connect() as connection:
+        report_ref = connection.execute(
+            text("SELECT reference_id FROM event_reports WHERE reference_id = 'EVT-TEST-001'")
+        ).scalar_one()
+        assert report_ref == "EVT-TEST-001"
+
+
+def test_postgres_011_rollback_preserves_legacy_ward_data(pg_engine):
+    """Rollback of 011 preserves ward display_name into users.ward."""
+    _reset_with_baseline(pg_engine)
+    apply_pending(pg_engine, discover_migrations())
+
+    with pg_engine.begin() as connection:
+        ward_row = connection.execute(text("SELECT id, display_name FROM wards LIMIT 1")).one()
+        ward_id, display_name = ward_row[0], ward_row[1]
+        user_id = connection.execute(text(
+            "INSERT INTO users (full_name, role, ward_id, ward) "
+            "VALUES ('Ward Staff Member', 'driver', :wid, NULL) RETURNING id"
+        ), {"wid": ward_id}).scalar_one()
+
+    # Roll back 012 (empty) then 011
+    _run_migration_file(pg_engine, "012_whatsapp_event_reports_down.sql")
+    _run_migration_file(pg_engine, "011_centralized_ward_registry_down.sql")
+
+    # Assert users.ward has the preserved display name
+    with pg_engine.connect() as connection:
+        user_ward = connection.execute(
+            text("SELECT ward FROM users WHERE id = :uid"), {"uid": user_id}
+        ).scalar_one()
+        assert user_ward == display_name
+
+
+def test_postgres_011_rollback_refused_if_012_not_reversed(pg_engine):
+    """Rollback of 011 fails closed if migration 012 has not been reversed first."""
+    _reset_with_baseline(pg_engine)
+    apply_pending(pg_engine, discover_migrations())
+
+    with pytest.raises(psycopg2.Error) as excinfo:
+        _run_migration_file(pg_engine, "011_centralized_ward_registry_down.sql")
+    assert "Roll back 012 first" in str(excinfo.value)
+
+    # Verify wards and municipalities remain intact
+    tables = set(inspect(pg_engine).get_table_names())
+    assert "wards" in tables
+    assert "municipalities" in tables
 
