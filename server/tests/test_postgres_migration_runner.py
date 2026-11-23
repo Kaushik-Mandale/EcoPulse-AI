@@ -136,7 +136,9 @@ def _reset_to_pre_009_user_schema(engine) -> tuple[int, int]:
                 deactivated_at TIMESTAMPTZ,
                 mfa_enrolled_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                municipality_id INTEGER,
+                ward_id INTEGER
             )
         """))
         connection.execute(text(
@@ -199,7 +201,7 @@ def _reset_to_pre_009_user_schema(engine) -> tuple[int, int]:
             FROM users WHERE employee_id = 'LEGACY-DRV-01'
         """))
         ids = connection.execute(text(
-            "SELECT id, (SELECT id FROM users WHERE employee_id = 'LEGACY-ADM-01') "
+            "SELECT id, (SELECT id FROM users WHERE employee_id = 'LEGACY-DRV-01') "
             "FROM users WHERE email = 'legacy-citizen@example.test'"
         )).one()
     return int(ids[0]), int(ids[1])
@@ -838,27 +840,15 @@ def test_postgres_adopts_legacy_schema_with_migration_partial_indexes(pg_engine)
 
 def test_postgres_adoption_rejects_invalid_index(pg_engine):
     _reset_to_current_models(pg_engine)
+    # Mark the existing unique index as invalid by directly updating pg_index.
+    # This reliably produces an invalid index on all PostgreSQL 16 CI runners
+    # without depending on a failed CONCURRENTLY build (which may be cleaned up
+    # automatically by the backend before the adoption check runs).
     with pg_engine.begin() as connection:
-        connection.execute(text("DROP INDEX uq_whatsapp_citizens_user_id_notnull"))
-        user_id = connection.execute(
-            text("INSERT INTO users (full_name, role) VALUES ('Index Probe', 'citizen') RETURNING id")
-        ).scalar_one()
-        connection.execute(
-            text("INSERT INTO whatsapp_citizens (phone_number, user_id) VALUES "
-                 "('15550000001', :user_id), ('15550000002', :user_id)"),
-            {"user_id": user_id},
-        )
-    raw = pg_engine.raw_connection()
-    try:
-        raw.autocommit = True
-        with raw.cursor() as cursor:
-            with pytest.raises(psycopg2.Error):
-                cursor.execute(
-                    "CREATE UNIQUE INDEX CONCURRENTLY uq_whatsapp_citizens_user_id_notnull "
-                    "ON whatsapp_citizens (user_id) WHERE user_id IS NOT NULL"
-                )
-    finally:
-        raw.close()
+        connection.execute(text(
+            "UPDATE pg_index SET indisvalid = FALSE "
+            "WHERE indexrelid = 'uq_whatsapp_citizens_user_id_notnull'::regclass"
+        ))
 
     with pytest.raises(PrerequisiteError) as excinfo:
         adopt_existing(pg_engine, discover_migrations(), through_version="003")
