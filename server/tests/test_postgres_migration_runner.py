@@ -450,41 +450,6 @@ def test_runner_rerun_is_a_noop_on_postgresql(pg_engine):
     assert status(pg_engine, migrations)["pending"] == []
 
 
-def test_runner_refuses_concurrent_execution_on_postgresql(pg_engine):
-    _reset_with_baseline(pg_engine)
-    holder = pg_engine.raw_connection()
-    try:
-        holder.autocommit = True
-        with holder.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
-        with pytest.raises(MigrationError) as excinfo:
-            apply_pending(pg_engine, discover_migrations())
-    finally:
-        holder.close()
-
-    assert "advisory lock" in str(excinfo.value)
-
-
-def test_failed_script_rolls_back_managed_transaction(pg_engine):
-    _reset_with_baseline(pg_engine)
-    broken = Migration(
-        version="900",
-        name="broken",
-        path=Path("900_broken.sql"),
-        sql="CREATE TABLE tx_probe (id INTEGER);\nSELECT 1/0;\n",
-        checksum="broken",
-    )
-
-    with pytest.raises(MigrationError):
-        apply_pending(pg_engine, [broken])
-
-    with pg_engine.connect() as connection:
-        exists = connection.execute(
-            text("SELECT to_regclass('tx_probe')")
-        ).scalar()
-    assert exists is None
-
-
 def _direct_connection():
     """A genuinely independent session, never taken from the engine pool."""
     if not _TEST_URL or not _TEST_SCHEMA:
@@ -533,6 +498,45 @@ def _advisory_lock_count(engine) -> int:
         ).scalar()
 
 
+def test_runner_refuses_concurrent_execution_on_postgresql(pg_engine):
+    _reset_with_baseline(pg_engine)
+    holder = _direct_connection()
+    try:
+        with holder.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
+        with pytest.raises(MigrationError) as excinfo:
+            apply_pending(pg_engine, discover_migrations())
+    finally:
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK_KEY,))
+        except Exception:
+            pass
+        holder.close()
+
+    assert "advisory lock" in str(excinfo.value)
+
+
+def test_failed_script_rolls_back_managed_transaction(pg_engine):
+    _reset_with_baseline(pg_engine)
+    broken = Migration(
+        version="900",
+        name="broken",
+        path=Path("900_broken.sql"),
+        sql="CREATE TABLE tx_probe (id INTEGER);\nSELECT 1/0;\n",
+        checksum="broken",
+    )
+
+    with pytest.raises(MigrationError):
+        apply_pending(pg_engine, [broken])
+
+    with pg_engine.connect() as connection:
+        exists = connection.execute(
+            text("SELECT to_regclass('tx_probe')")
+        ).scalar()
+    assert exists is None
+
+
 def test_advisory_lock_is_acquired_then_released(pg_engine):
     assert _probe_lock() is True
 
@@ -553,6 +557,11 @@ def test_second_process_is_rejected_while_lock_is_held(pg_engine):
             with migration_lock(pg_engine):
                 pass
     finally:
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK_KEY,))
+        except Exception:
+            pass
         holder.close()
 
     assert "advisory lock" in str(excinfo.value)
@@ -592,11 +601,12 @@ def test_lock_releases_after_a_failed_run(pg_engine):
 
 def test_session_termination_releases_the_lock(pg_engine):
     holder = _direct_connection()
-    with holder.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
-    assert _probe_lock() is False
-
-    holder.close()
+    try:
+        with holder.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
+        assert _probe_lock() is False
+    finally:
+        holder.close()
 
     assert _wait_until_free()
 
