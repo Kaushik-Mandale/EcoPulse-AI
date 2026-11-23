@@ -565,16 +565,42 @@ def test_13_jwt_validation_against_me_endpoint(cleanup_test_state):
 
 
 def test_14_existing_password_login_backward_compatibility():
-    """14. Existing password authentication for demo / admin users remains functional."""
-    res = client.post("/api/auth/login", json={
-        "email": "priya@cityswap.io",
-        "password": "Password123!",
-        "role": "citizen"
-    })
-    assert res.status_code == 200
-    data = res.json()
-    assert "access_token" in data
-    assert data["user"]["role"] == "citizen"
+    """Citizen password login remains compatible alongside WhatsApp OTP."""
+    from uuid import uuid4
+    from server.utils.security import hash_password
+
+    user_id = None
+    db = SessionLocal()
+    try:
+        run_id = uuid4().hex[:8]
+        user = User(
+            full_name="Password Login Citizen",
+            email=f"citizen_{run_id}@example.test",
+            phone=f"987{uuid4().int % 10**7:07d}",
+            role="citizen",
+            hashed_password=hash_password("CitizenPassword123!"),
+            is_active=True,
+            is_verified=True,
+            account_status="active",
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        user_id = user.id
+
+        res = client.post("/api/auth/login", json={
+            "email": user.email,
+            "password": "CitizenPassword123!",
+            "role": "citizen"
+        })
+        assert res.status_code == 200
+        assert res.json()["user"]["role"] == "citizen"
+        assert res.json()["access_token"]
+    finally:
+        if user_id:
+            db.query(User).filter(User.id == user_id).delete()
+            db.commit()
+        db.close()
 
 
 def test_15_citizen_cannot_access_driver_or_admin_routes(cleanup_test_state):
@@ -742,13 +768,20 @@ def test_24_purpose_binding_prevents_cross_use(cleanup_test_state):
     assert "purpose mismatch" in res_bad.json()["detail"].lower()
 
 
-def test_25_whatsapp_account_linking_preserved():
+def test_25_whatsapp_account_linking_preserved(cleanup_test_state):
     """25. Existing WhatsApp account linking tokens and identity mapping remain intact."""
-    login_res = client.post("/api/auth/login", json={
-        "email": "priya@cityswap.io",
-        "password": "Password123!",
-        "role": "citizen"
+    otp_res = client.post("/api/auth/otp/send", json={
+        "phone": "9876543210",
+        "purpose": "login",
     })
+    assert otp_res.status_code == 200
+    login_res = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": cleanup_test_state.last_sent_otp,
+        "challenge_id": otp_res.json()["challenge_id"],
+        "role": "citizen",
+    })
+    assert login_res.status_code == 200
     token = login_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -784,17 +817,23 @@ def test_26_complaint_ownership_foreign_key_intact():
     db.close()
 
 
-def test_27_existing_user_ids_remain_unchanged():
+def test_27_existing_user_ids_remain_unchanged(cleanup_test_state):
     """27. Canonical user IDs remain stable across logins."""
     db = SessionLocal()
     user_before = db.query(User).filter(User.email == "priya@cityswap.io").first()
     expected_id = user_before.id
     db.close()
 
-    res = client.post("/api/auth/login", json={
-        "email": "priya@cityswap.io",
-        "password": "Password123!",
-        "role": "citizen"
+    otp_res = client.post("/api/auth/otp/send", json={
+        "phone": "9876543210",
+        "purpose": "login",
+    })
+    assert otp_res.status_code == 200
+    res = client.post("/api/auth/login/otp", json={
+        "phone": "9876543210",
+        "otp": cleanup_test_state.last_sent_otp,
+        "challenge_id": otp_res.json()["challenge_id"],
+        "role": "citizen",
     })
     assert res.status_code == 200
     assert res.json()["user"]["id"] == expected_id

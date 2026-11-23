@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from server.database.db import get_db
 from server.utils.config import config, normalize_environment
-from server.utils.security import get_current_admin_user, get_current_user
+from server.utils.security import get_current_admin_user, get_current_user, require_municipal_admin
 from server.services.whatsapp_service import WhatsAppService
 from server.services.auth_service import AuthService
 from server.services.whatsapp_link_service import WhatsAppLinkService
@@ -139,6 +139,8 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                 media_url = ""
                 latitude = None
                 longitude = None
+                location_name = None
+                location_address = None
 
                 # Idempotency and atomic message-claim engine
                 if msg_id:
@@ -216,6 +218,8 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                     loc = msg.get("location", {})
                     latitude = loc.get("latitude")
                     longitude = loc.get("longitude")
+                    location_name = loc.get("name")
+                    location_address = loc.get("address")
 
                 try:
                     await run_in_threadpool(
@@ -228,6 +232,8 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                         media_id=media_id,
                         latitude=latitude,
                         longitude=longitude,
+                        location_name=location_name,
+                        location_address=location_address,
                         message_id=msg_id
                     )
 
@@ -468,6 +474,7 @@ def generate_household_qr(
     Protected: Accessible exclusively by authorized municipal administrators.
     Example payload: {"ward": 12, "household_number": 1042}
     """
+    require_municipal_admin(current_admin)
     ward = payload.get("ward", 12)
     house_num = payload.get("household_number", 1001)
     code = f"SHP-W{ward}-H{house_num}"
@@ -496,6 +503,7 @@ def list_whatsapp_citizens(
     List registered WhatsApp citizen households in Dhule.
     Protected: Accessible exclusively by authorized municipal administrators.
     """
+    require_municipal_admin(current_admin)
     citizens = db.query(WhatsAppCitizen).order_by(WhatsAppCitizen.id.desc()).all()
     return [
         {
@@ -539,6 +547,8 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
     media_id = payload.get("media_id", "")
     lat = payload.get("latitude")
     lng = payload.get("longitude")
+    loc_name = payload.get("location_name") or payload.get("name")
+    loc_addr = payload.get("location_address") or payload.get("address")
 
     res = WhatsAppService.handle_incoming_message(
         db=db,
@@ -548,6 +558,8 @@ def simulate_whatsapp_incoming(payload: dict, db: Session = Depends(get_db)):
         media_url=media_url,
         media_id=media_id,
         latitude=lat,
-        longitude=lng
+        longitude=lng,
+        location_name=loc_name,
+        location_address=loc_addr
     )
     return res

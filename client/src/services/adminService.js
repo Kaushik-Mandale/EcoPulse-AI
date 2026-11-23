@@ -5,28 +5,8 @@ import api from './api';
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAdminMetrics = async () => {
-  try {
-    const response = await api.get('/admin/metrics');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching admin metrics:', error.message);
-    return {
-      total_complaints: 4,
-      pending_complaints: 2,
-      in_progress_complaints: 1,
-      completed_complaints: 1,
-      resolution_rate: 50.0,
-      active_trucks: 6,
-      total_drivers: 4,
-      total_citizens: 2,
-      top_wards: [
-        { name: 'Ward 12', percent: 92 },
-        { name: 'Ward 8', percent: 85 },
-        { name: 'Ward 4', percent: 76 },
-        { name: 'Ward 10', percent: 66 }
-      ]
-    };
-  }
+  const response = await api.get('/admin/metrics');
+  return response.data;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -34,14 +14,12 @@ export const fetchAdminMetrics = async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAdminComplaints = async () => {
-  try {
-    const response = await api.get('/admin/complaints');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching admin complaints:', error.message);
-    return [];
-  }
+  const response = await api.get('/admin/complaints');
+  return response.data;
 };
+
+export const fetchComplaintOperations = async (complaintId) =>
+  (await api.get(`/admin/complaints/${complaintId}/operations`)).data;
 
 export const assignDriverTask = async (complaintDbId, driverName) => {
   try {
@@ -68,6 +46,12 @@ export const updateComplaintStatus = async (complaintDbId, newStatus) => {
   }
 };
 
+export const fetchTasksForVerification = async (status = 'Pending Verification') =>
+  (await api.get('/admin/tasks/verification', { params: { status_filter: status } })).data;
+export const fetchTaskVerification = async (taskId) => (await api.get(`/admin/tasks/${taskId}/verification`)).data;
+export const approveTaskEvidence = async (taskId) => (await api.post(`/admin/tasks/${taskId}/approve`)).data;
+export const rejectTaskEvidence = async (taskId, reason) => (await api.post(`/admin/tasks/${taskId}/reject`, { reason })).data;
+
 export const downloadAdminExportCSV = async () => {
   try {
     const response = await api.get('/admin/export-csv', { responseType: 'blob' });
@@ -80,6 +64,7 @@ export const downloadAdminExportCSV = async () => {
     link.remove();
   } catch (error) {
     console.error('Error downloading CSV report:', error);
+    throw error;
   }
 };
 
@@ -88,28 +73,18 @@ export const downloadAdminExportCSV = async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAdminDrivers = async () => {
-  try {
-    const response = await api.get('/admin/drivers');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching admin drivers:', error.message);
-    // Fallback drivers for offline/demo mode
-    return [
-      { id: 1, full_name: 'Ramesh Yadav', email: 'ramesh@cityswap.io', employee_id: 'EMP-DRIVER-01', ward: 'Ward 12', phone: '9876543211', role: 'driver', is_active: true, eco_coins: 850, tasks_completed: 42, tasks_in_progress: 1, tasks_pending: 3 },
-      { id: 2, full_name: 'Suresh Kumar', email: 'suresh@cityswap.io', employee_id: 'EMP-DRIVER-02', ward: 'Ward 8', phone: '9876543214', role: 'driver', is_active: true, eco_coins: 620, tasks_completed: 35, tasks_in_progress: 2, tasks_pending: 1 },
-    ];
-  }
+  const response = await api.get('/admin/drivers');
+  return response.data;
 };
 
-export const registerAdminDriver = async (driverData) => {
-  try {
-    const response = await api.post('/admin/drivers', driverData);
-    return response.data;
-  } catch (error) {
-    console.error('Error registering driver:', error);
-    throw error;
-  }
-};
+export const createStaffAccount = async (payload) =>
+  (await api.post('/admin/staff', payload)).data;
+
+export const issueStaffTemporaryPassword = async (userId) =>
+  (await api.post(`/admin/accounts/${userId}/temporary-password`)).data;
+
+export const updateStaffAccountStatus = async (userId, account_status, reason) =>
+  (await api.patch(`/admin/accounts/${userId}/status`, { account_status, reason })).data;
 
 export const toggleDriverStatus = async (driverId, isActive) => {
   try {
@@ -126,26 +101,8 @@ export const toggleDriverStatus = async (driverId, isActive) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAdminBins = async () => {
-  try {
-    const response = await api.get('/admin/bins');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching bin telemetry:', error.message);
-    // Fallback bin data for offline/demo mode
-    return {
-      total_bins: 4,
-      critical_bins: 1,
-      warning_bins: 1,
-      normal_bins: 2,
-      avg_fill_level: 62.5,
-      bins: [
-        { id: 1, bin_code: 'BIN-101', location_name: 'Green Park, Plot 45', ward: 'Ward 12', bin_type: 'General Waste', capacity_liters: 240, fill_level_pct: 92, is_active: true },
-        { id: 2, bin_code: 'BIN-102', location_name: 'Sai Nagar, Main Road', ward: 'Ward 12', bin_type: 'Recyclable', capacity_liters: 120, fill_level_pct: 68, is_active: true },
-        { id: 3, bin_code: 'BIN-103', location_name: 'Shanti Apartment, Block B', ward: 'Ward 8', bin_type: 'General Waste', capacity_liters: 360, fill_level_pct: 45, is_active: true },
-        { id: 4, bin_code: 'BIN-104', location_name: 'Market Area, Gate No. 2', ward: 'Ward 8', bin_type: 'Organic', capacity_liters: 120, fill_level_pct: 85, is_active: true },
-      ]
-    };
-  }
+  const response = await api.get('/admin/bins');
+  return response.data;
 };
 
 export const refreshBinTelemetry = async (binId, fillLevelPct) => {
@@ -163,40 +120,8 @@ export const refreshBinTelemetry = async (binId, fillLevelPct) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAdminAnalytics = async () => {
-  try {
-    const response = await api.get('/admin/analytics');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching admin analytics:', error.message);
-    return {
-      resolution_rate: 72.0,
-      avg_response_hours: 4.2,
-      citizen_satisfaction: 87.3,
-      waste_collected_tonnes: 124.5,
-      ward_breakdown: [
-        { ward: 'Ward 12', total: 45, resolved: 38, pending: 7 },
-        { ward: 'Ward 8', total: 32, resolved: 25, pending: 7 },
-        { ward: 'Ward 4', total: 28, resolved: 22, pending: 6 },
-        { ward: 'Ward 10', total: 20, resolved: 14, pending: 6 },
-      ],
-      monthly_trends: [
-        { month: 'May', complaints: 30, resolved: 22 },
-        { month: 'Jun', complaints: 38, resolved: 30 },
-        { month: 'Jul', complaints: 45, resolved: 35 },
-        { month: 'Aug', complaints: 42, resolved: 38 },
-        { month: 'Sep', complaints: 50, resolved: 44 },
-        { month: 'Oct', complaints: 28, resolved: 24 },
-      ],
-      top_waste_types: [
-        { type: 'Mixed Waste', count: 45 },
-        { type: 'Plastic Waste', count: 30 },
-        { type: 'Garbage Overflow', count: 18 },
-        { type: 'E-Waste', count: 7 },
-      ],
-      active_drivers: 4,
-      total_drivers: 6,
-    };
-  }
+  const response = await api.get('/admin/analytics');
+  return response.data;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,13 +129,8 @@ export const fetchAdminAnalytics = async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAdminNotifications = async () => {
-  try {
-    const response = await api.get('/admin/notifications');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching notifications:', error.message);
-    return [];
-  }
+  const response = await api.get('/admin/notifications');
+  return response.data;
 };
 
 export const sendAdminBroadcast = async (broadcastData) => {
@@ -224,12 +144,8 @@ export const sendAdminBroadcast = async (broadcastData) => {
 };
 
 export const markNotificationRead = async (notificationId) => {
-  try {
-    const response = await api.patch(`/admin/notifications/${notificationId}/read`);
-    return response.data;
-  } catch (error) {
-    console.warn('Error marking notification read:', error.message);
-  }
+  const response = await api.patch(`/admin/notifications/${notificationId}/read`);
+  return response.data;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -237,11 +153,42 @@ export const markNotificationRead = async (notificationId) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fetchAllUsers = async () => {
-  try {
-    const response = await api.get('/admin/users');
-    return response.data;
-  } catch (error) {
-    console.warn('Error fetching all users:', error.message);
-    return [];
-  }
+  const response = await api.get('/admin/users');
+  return response.data;
 };
+
+export const fetchAdministrators = async () => {
+  const response = await api.get('/admin/admins');
+  return response.data;
+};
+
+export const updateAccountStatus = async (userId, account_status, reason) => {
+  const response = await api.patch(`/admin/accounts/${userId}/status`, { account_status, reason });
+  return response.data;
+};
+
+export const fetchAccountDetails = async (userId) => (await api.get(`/admin/accounts/${userId}`)).data;
+export const fetchAccountHistory = async (userId) => (await api.get(`/admin/accounts/${userId}/history`)).data;
+
+export const fetchSecurityAudit = async (limit = 250) => {
+  const response = await api.get('/admin/audit', { params: { limit } });
+  return response.data;
+};
+
+export const fetchGovernanceCitizens = async () =>
+  (await api.get('/admin/super-admin/citizens')).data;
+
+export const fetchGovernanceCitizenComplaints = async (citizenId) =>
+  (await api.get(`/admin/super-admin/citizens/${citizenId}/complaints`)).data;
+
+export const fetchGovernanceTasks = async (status = 'all') =>
+  (await api.get('/admin/super-admin/tasks', { params: { status_filter: status } })).data;
+
+export const fetchWardMunicipalities = async () => (await api.get('/admin/wards/municipalities')).data;
+export const fetchWards = async ({ municipalityId, active, q } = {}) => (await api.get('/admin/wards', {
+  params: { municipality_id: municipalityId, active, q },
+})).data;
+export const createWardMunicipality = async (payload) => (await api.post('/admin/wards/municipalities', payload)).data;
+export const createWard = async (payload) => (await api.post('/admin/wards', payload)).data;
+export const updateWard = async (wardId, payload) => (await api.patch(`/admin/wards/${wardId}`, payload)).data;
+export const assignStaffWard = async (userId, ward_id) => (await api.patch(`/admin/staff/${userId}/ward`, { ward_id })).data;

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from typing import Literal, Optional
 import re
 
 class LoginRequest(BaseModel):
@@ -7,6 +7,7 @@ class LoginRequest(BaseModel):
     password: str
     role: Optional[str] = "citizen"
     rememberMe: Optional[bool] = True
+    mfa_code: Optional[str] = None
 
     @field_validator("email")
     @classmethod
@@ -31,7 +32,7 @@ class SignupRequest(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
     role: Optional[str] = "citizen"
-    ward: Optional[str] = "Ward 12"
+    ward: Optional[str] = None
     phone: str
     otp: Optional[str] = None
     employeeId: Optional[str] = None
@@ -73,7 +74,7 @@ class RegisterRequest(BaseModel):
     challenge_id: Optional[str] = None
     email: Optional[str] = None
     role: Optional[str] = "citizen"
-    ward: Optional[str] = "Ward 12"
+    ward: Optional[str] = None
     password: Optional[str] = None
 
     @field_validator("full_name")
@@ -212,12 +213,67 @@ class UserResponse(BaseModel):
     ward: Optional[str] = None
     phone: Optional[str] = None
     employee_id: Optional[str] = None
-    eco_coins: int = 100
+    login_id: Optional[str] = None
+    eco_coins: int = 0
+    is_super_admin: bool = False
+    account_status: Optional[str] = None
+    mfa_enabled: Optional[bool] = None
 
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+class MfaEnrollmentConfirmRequest(BaseModel):
+    employee_id: str
+    password: str
+    code: str
+
+
+class MfaEnrollmentStartRequest(BaseModel):
+    employee_id: str
+    password: str
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class InitialPasswordChangeRequest(BaseModel):
+    login_id: str = Field(min_length=1, max_length=50)
+    current_password: str
+    new_password: str
+
+
+class StaffPhoneVerificationStartRequest(BaseModel):
+    login_id: str = Field(min_length=1, max_length=50)
+    password: str
+
+
+class StaffPhoneVerificationConfirmRequest(StaffPhoneVerificationStartRequest):
+    otp: str = Field(pattern=r"^\d{6}$")
+    challenge_id: str = Field(min_length=1, max_length=128)
+
+
+class InvitationActivationRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    password: str
+    phone: Optional[str] = None
+    otp: Optional[str] = None
+    challenge_id: Optional[str] = None
+
+
+class InvitationValidationRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
+class InvitationValidationResponse(BaseModel):
+    status: Literal["valid", "invalid", "expired", "revoked", "used"]
+    role: Optional[str] = None
+    employee_id: Optional[str] = None
+
 
 class ForgotPasswordRequest(BaseModel):
     identifier: str

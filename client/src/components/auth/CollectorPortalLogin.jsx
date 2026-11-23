@@ -1,72 +1,146 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Lock, Eye, EyeOff, ChevronRight, Headphones, CheckCircle2, ShieldAlert, Phone, ShieldCheck, Key } from 'lucide-react';
+import { User, Lock, Eye, EyeOff, ChevronRight, Headphones, CheckCircle2, ShieldAlert, Key } from 'lucide-react';
 import { loginUser } from '../../services/authService';
+import api from '../../services/api';
+import { isStrongOnboardingPassword, ONBOARDING_PASSWORD_REQUIREMENTS } from '../../utils/passwordStrength';
+import { createMfaQrDataUrl } from '../../utils/mfaQr';
 
-const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
-  const [loginMode, setLoginMode] = useState('password'); // 'password' | 'otp'
-  const [identifier, setIdentifier] = useState(''); // Employee ID, Email, or Phone
+const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword, defaultRole = 'admin', restrictRole = false, portalTitle = 'Admin Portal' }) => {
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [requestedRole, setRequestedRole] = useState(defaultRole);
   const [showPassword, setShowPassword] = useState(false);
-  const [mobileNumber, setMobileNumber] = useState('');
-  const [otp, setOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
+  const [mfaCode, setMfaCode] = useState('');
+  const [rotationRequired, setRotationRequired] = useState(false);
+  const [passwordRotated, setPasswordRotated] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [mfaSetupSecret, setMfaSetupSecret] = useState('');
+  const [mfaSetupQr, setMfaSetupQr] = useState('');
+  const [mfaSetupBusy, setMfaSetupBusy] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [authSuccess, setAuthSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSendOtp = () => {
-    if (!mobileNumber || mobileNumber.length < 10) {
-      setErrorMsg('Please enter a valid 10-digit mobile number');
+  const startMfaEnrollment = async () => {
+    if (!identifier.trim() || !password) {
+      setErrorMsg('Enter your Employee ID or Super Admin Login ID and password to enroll MFA.');
       return;
     }
+    setMfaSetupBusy(true);
     setErrorMsg('');
-    setOtpSent(true);
+    try {
+      const { data } = await api.post('/auth/mfa/enrollment/start', {
+        employee_id: identifier.trim(), password
+      });
+      setMfaSetupSecret(data.secret);
+      try {
+        setMfaSetupQr(await createMfaQrDataUrl(data.otpauth_uri));
+      } catch {
+        setErrorMsg('QR display failed. Use the manual authenticator key below to continue.');
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (detail?.code === 'PASSWORD_CHANGE_REQUIRED') {
+        setRotationRequired(true);
+        setMfaCode('');
+        setErrorMsg(detail.message || 'Change the initial password before setting up an authenticator.');
+      } else if (detail?.code === 'TEMPORARY_CREDENTIAL_EXPIRED') {
+        setErrorMsg(detail.message || 'This temporary password has expired. Contact your Super Admin for a reset.');
+      } else {
+        setErrorMsg(typeof detail === 'string' ? detail : detail?.message || 'MFA enrollment could not be started.');
+      }
+    } finally {
+      setMfaSetupBusy(false);
+    }
+  };
+
+  const confirmMfaEnrollment = async () => {
+    setMfaSetupBusy(true);
+    setErrorMsg('');
+    try {
+      await api.post('/auth/mfa/enrollment/confirm', {
+        employee_id: identifier.trim(), password, code: mfaCode
+      });
+      setMfaSetupSecret('');
+      setMfaSetupQr('');
+      setMfaCode('');
+      setErrorMsg('Authenticator setup complete. Sign in with a new code.');
+    } catch (error) {
+      if (error.response?.status === 410) {
+        setMfaSetupSecret('');
+        setMfaSetupQr('');
+        setMfaCode('');
+      }
+      setErrorMsg(error.response?.data?.detail || 'Authenticator code could not be verified.');
+    } finally {
+      setMfaSetupBusy(false);
+    }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (loginMode === 'password') {
-      if (!identifier) {
-        setErrorMsg('Employee ID, Email or Mobile Number is required');
-        return;
-      }
-      if (!password) {
-        setErrorMsg('Password is required');
-        return;
-      }
-    } else {
-      if (!mobileNumber) {
-        setErrorMsg('Mobile number is required');
-        return;
-      }
-      if (!otp) {
-        setErrorMsg('Please enter the 6-digit OTP');
-        return;
-      }
+    if (!identifier.trim() || !password) {
+      setErrorMsg('Employee ID or Login ID and password are required');
+      return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const loginPayload = loginMode === 'password'
-        ? { email: identifier, password: password, role: 'collector', rememberMe }
-        : { email: mobileNumber.includes('@') ? mobileNumber : `${mobileNumber}@collector.cityswap.io`, password: 'Password123!', role: 'collector', rememberMe };
-
-      const result = await loginUser(loginPayload);
+      const result = await loginUser({
+        email: identifier.trim(), password, role: requestedRole, mfa_code: mfaCode, rememberMe
+      });
+      if (!result?.user?.role) throw new Error('The authenticated account role could not be verified. Please sign in again.');
       setAuthSuccess(true);
       setTimeout(() => {
         if (onSuccess) {
-          onSuccess(result?.user || { email: identifier, role: 'collector' });
+          onSuccess(result.user);
         }
       }, 700);
     } catch (err) {
+      if (err.code === 'PASSWORD_CHANGE_REQUIRED') {
+        setRotationRequired(true);
+        setMfaCode('');
+        setErrorMsg('Change the initial password before continuing.');
+        return;
+      }
+      if (err.code === 'TEMPORARY_CREDENTIAL_EXPIRED') {
+        setErrorMsg('This temporary password has expired. Contact your Super Admin for a reset.');
+        return;
+      }
       setErrorMsg(err.message || 'Invalid Employee ID/Credentials or Password');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleInitialPasswordChange = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    if (!isStrongOnboardingPassword(newPassword) || newPassword !== confirmNewPassword) {
+      setErrorMsg('Choose a strong password that meets the requirements and confirm it.');
+      return;
+    }
+    setMfaSetupBusy(true);
+    try {
+      await api.post('/auth/initial-password/change', {
+        login_id: identifier.trim(), current_password: password, new_password: newPassword
+      });
+      setPassword(newPassword);
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setRotationRequired(false);
+      setPasswordRotated(true);
+      setErrorMsg('Initial password changed. Set up your authenticator before signing in.');
+    } catch (error) {
+      setErrorMsg(error.response?.data?.detail || 'Initial password change could not be completed.');
+    } finally {
+      setMfaSetupBusy(false);
     }
   };
 
@@ -97,10 +171,10 @@ const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
         {/* Portal Title & Subtitle */}
         <div className="text-center mb-2.5">
           <h3 className="text-xl sm:text-2xl font-extrabold text-[#ea580c] tracking-tight">
-            Admin Portal
+            {portalTitle}
           </h3>
           <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
-            Manage municipal operations, system data and personnel.
+            Municipal employee access requires an authorized account and MFA.
           </p>
         </div>
 
@@ -113,35 +187,6 @@ const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
           />
         </div>
 
-        {/* Auth Mode Toggle Pills */}
-        <div className="flex rounded-xl bg-slate-100 p-1 mb-3 border border-slate-200">
-          <button
-            type="button"
-            onClick={() => { setLoginMode('password'); setErrorMsg(''); }}
-            className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              loginMode === 'password'
-                ? 'bg-white text-[#ea580c] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Key className="w-3.5 h-3.5" />
-            <span>Password Login</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setLoginMode('otp'); setErrorMsg(''); }}
-            className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              loginMode === 'otp'
-                ? 'bg-white text-[#ea580c] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Phone className="w-3.5 h-3.5" />
-            <span>OTP Login</span>
-          </button>
-        </div>
-
         {/* Form Fields */}
         <form onSubmit={handleSubmit} className="space-y-2.5 sm:space-y-3">
           {errorMsg && (
@@ -151,102 +196,85 @@ const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
             </div>
           )}
 
-          {loginMode === 'password' ? (
-            <>
-              {/* Employee ID, Email, or Phone */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Employee ID, Email or Phone Number
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#ea580c] focus-within:ring-2 focus-within:ring-orange-100 transition-all">
-                  <div className="pl-3.5 text-slate-400">
-                    <User className="w-4 h-4" />
-                  </div>
-                  <input
-                    type="text"
-                    value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value)}
-                    placeholder="EMP-COLL-01 or collector@ecopulse.ai"
-                    className="w-full pl-2.5 pr-4 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                </div>
-              </div>
+          {!restrictRole && <div>
+            <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">Municipal account type</label>
+            <select
+              value={requestedRole}
+              onChange={(e) => setRequestedRole(e.target.value)}
+              className="w-full rounded-xl border border-slate-300 bg-slate-50/80 px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-[#ea580c]"
+            >
+              <option value="admin">Administrator</option>
+              <option value="collector">Collector</option>
+            </select>
+          </div>}
 
-              {/* Password Field */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Password
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#ea580c] focus-within:ring-2 focus-within:ring-orange-100 transition-all">
-                  <div className="pl-3.5 text-slate-400">
-                    <Lock className="w-4 h-4" />
-                  </div>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter your password"
-                    className="w-full pl-2.5 pr-10 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+          <div>
+            <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">Employee ID or Super Admin Login ID</label>
+            <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#ea580c] focus-within:ring-2 focus-within:ring-orange-100 transition-all">
+              <div className="pl-3.5 text-slate-400"><User className="w-4 h-4" /></div>
+              <input
+                type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="Enter Employee ID or Login ID" autoComplete="username"
+                className="w-full pl-2.5 pr-4 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">Password</label>
+            <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#ea580c] focus-within:ring-2 focus-within:ring-orange-100 transition-all">
+              <div className="pl-3.5 text-slate-400"><Lock className="w-4 h-4" /></div>
+              <input
+                type={showPassword ? 'text' : 'password'} value={password}
+                onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password"
+                autoComplete="current-password"
+                className="w-full pl-2.5 pr-10 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
+              />
+              <button type="button" onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+          {!rotationRequired && <div>
+            {passwordRotated && <p className="mb-2 text-xs font-semibold text-orange-900">Step 2 of 2 · Complete authenticator enrollment, then sign in with a current code.</p>}
+            <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">Authenticator code</label>
+            <input
+              type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
+              value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+              placeholder="6-digit authenticator code" autoComplete="one-time-code"
+              className="w-full border border-slate-300 rounded-xl bg-slate-50/80 px-3 py-2 sm:py-2.5 text-xs font-semibold outline-none focus:bg-white focus:border-[#ea580c] focus:ring-2 focus:ring-orange-100"
+            />
+            <p className="mt-1 text-[10px] text-slate-500">Municipal employee accounts are provisioned by authorized administrators.</p>
+            {!mfaSetupSecret ? (
+              <button type="button" onClick={startMfaEnrollment} disabled={mfaSetupBusy}
+                className="mt-2 text-[11px] font-bold text-[#ea580c] hover:underline disabled:opacity-50">
+                {mfaSetupBusy ? 'Starting…' : 'Set up authenticator'}
+              </button>
+            ) : (
+              <div className="mt-2 space-y-2 rounded-lg border border-orange-200 bg-orange-50 p-3">
+                <p className="text-[11px] text-orange-900">Scan this QR code in your authenticator app, or enter the manual key below. Then enter its current 6-digit code to confirm.</p>
+                {mfaSetupQr && <img src={mfaSetupQr} alt="Authenticator enrollment QR code" className="mx-auto h-60 w-60 rounded-lg border border-orange-200 bg-white p-2" />}
+                <code className="block break-all rounded bg-white p-2 text-xs font-bold">{mfaSetupSecret}</code>
+                <button type="button" onClick={confirmMfaEnrollment} disabled={mfaSetupBusy || mfaCode.length !== 6}
+                  className="rounded-lg bg-[#ea580c] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+                  Confirm authenticator
+                </button>
               </div>
-            </>
-          ) : (
-            <>
-              {/* Mobile Number Field */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Mobile Number
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#ea580c] focus-within:ring-2 focus-within:ring-orange-100 transition-all overflow-hidden">
-                  <div className="pl-3 pr-2 py-2 sm:py-2.5 flex items-center gap-1 border-r border-slate-200 text-slate-600 font-bold text-xs shrink-0">
-                    <Phone className="w-3.5 h-3.5 text-slate-400" />
-                    <span>+91</span>
-                  </div>
-                  <input
-                    type="tel"
-                    value={mobileNumber}
-                    onChange={(e) => setMobileNumber(e.target.value)}
-                    placeholder="Enter mobile number"
-                    className="w-full px-3 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                </div>
-              </div>
+            )}
+          </div>}
 
-              {/* Enter OTP Field */}
-              <div>
-                <label className="block text-[11px] sm:text-xs font-bold text-slate-700 mb-1">
-                  Enter OTP
-                </label>
-                <div className="relative flex items-center border border-slate-300 rounded-xl bg-slate-50/80 focus-within:bg-white focus-within:border-[#ea580c] focus-within:ring-2 focus-within:ring-orange-100 transition-all overflow-hidden">
-                  <div className="pl-3 text-slate-400 shrink-0">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value)}
-                    placeholder="Enter 6 digit OTP"
-                    className="w-full pl-2.5 pr-20 py-2 sm:py-2.5 text-xs font-semibold outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSendOtp}
-                    className="absolute right-2 px-2.5 py-1 text-xs font-extrabold text-[#ea580c] hover:bg-orange-50 rounded-lg transition-colors cursor-pointer"
-                  >
-                    {otpSent ? 'Resend' : 'Send OTP'}
-                  </button>
-                </div>
-              </div>
-            </>
+          {rotationRequired && (
+            <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-semibold text-amber-900">Step 1 of 2 · Rotate the one-time password before authenticator setup.</p>
+              <input type="password" autoComplete="new-password" value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)} placeholder="New password (12+ characters)"
+                className="w-full border border-slate-300 rounded-xl bg-white px-3 py-2 text-xs" />
+              <p className="text-[11px] text-amber-900">{ONBOARDING_PASSWORD_REQUIREMENTS}</p>
+              <input type="password" autoComplete="new-password" value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)} placeholder="Confirm new password"
+                className="w-full border border-slate-300 rounded-xl bg-white px-3 py-2 text-xs" />
+            </div>
           )}
 
           {/* Checkbox & Forgot Password / Resend OTP */}
@@ -261,30 +289,21 @@ const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
               <span>Remember me</span>
             </label>
 
-            {loginMode === 'password' ? (
-              <button
+            <button
                 type="button"
                 onClick={onOpenForgotPassword}
                 className="font-bold text-[#ea580c] hover:underline cursor-pointer"
               >
                 Forgot Password?
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSendOtp}
-                className="font-bold text-[#ea580c] hover:underline cursor-pointer"
-              >
-                Resend OTP
-              </button>
-            )}
+            </button>
           </div>
 
           {/* Primary Submit Button */}
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
-            type="submit"
+            type={rotationRequired ? 'button' : 'submit'}
+            onClick={rotationRequired ? handleInitialPasswordChange : undefined}
             disabled={isSubmitting || authSuccess}
             className="w-full py-2.5 sm:py-3 px-4 rounded-xl bg-[#ea580c] hover:bg-[#c2410c] text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 disabled:opacity-80 min-h-[42px]"
           >
@@ -297,7 +316,7 @@ const CollectorPortalLogin = ({ onSuccess, onOpenForgotPassword }) => {
               <span>Authenticating...</span>
             ) : (
               <>
-                <span>Login</span>
+                <span>{rotationRequired ? 'Change initial password' : 'Login'}</span>
                 <ChevronRight className="w-4 h-4" />
               </>
             )}

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from fastapi import HTTPException, status
 
 from server.models.user import User
@@ -20,8 +20,25 @@ from server.schemas.auth import (
 from server.utils.security import hash_password, verify_password, create_access_token, get_jwt_secret
 from server.utils.config import config, normalize_environment
 from server.services.otp_delivery import get_otp_delivery_provider
+from server.services.iam_service import (
+    audit, decrypt_mfa_secret, make_access_token, verify_totp,
+)
 
 logger = logging.getLogger(__name__)
+TEMPORARY_PASSWORD_TTL = timedelta(hours=72)
+
+
+def temporary_password_expired(user: User, now: Optional[datetime] = None) -> bool:
+    """Treat missing expiry metadata as expired so onboarding fails closed."""
+    expires_at = getattr(user, "temporary_password_expires_at", None)
+    if expires_at is None:
+        return True
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return expires_at <= current
 
 # Dummy hash used for constant-time comparison to prevent user enumeration attacks
 DUMMY_HASH = "$2b$12$e80yJ/6h/UoK5h45l35vpe4dM8zV9P0b2K5l0Z7o1Z4m2n7l9p2e2"
@@ -86,16 +103,38 @@ class AuthService:
         ).first()
 
     @staticmethod
-    def should_seed_demo_users() -> bool:
-        """Only seed demo users in development/test environments."""
-        env = normalize_environment(os.getenv("ENV", os.getenv("ENVIRONMENT", config.ENV)))
-        return env in ("development", "test")
+    def should_seed_demo_users(db: Optional[Session] = None) -> bool:
+        """Only seed local demo accounts in an explicitly configured development environment.
+
+        Fail-closed: unset, empty, conflicting, or unknown ENV never triggers demo seeding.
+        Only ENV=development (exact match) is allowed.
+        """
+        try:
+            from server.utils.config import get_environment
+            environment = get_environment()
+            if environment != "development":
+                return False
+            if db is None:
+                # Compatibility for callers that only ask whether development
+                # fixtures are configured. Actual writes validate the DB bind.
+                return True
+            from server.database.target_policy import validate_development_target
+            validate_development_target(db.get_bind(), environment)
+            return True
+        except RuntimeError:
+            return False
 
     @staticmethod
     def seed_demo_users(db: Session):
         """Seeds standard demo accounts if they do not exist."""
         if not AuthService.should_seed_demo_users():
             return
+        from server.database.target_policy import validate_development_target
+        from server.utils.config import get_environment
+
+        # Validate before the first query as well as before writes; no direct
+        # caller can seed a production URL by setting ENV=development.
+        validate_development_target(db.get_bind(), get_environment())
         demo_accounts = [
             {
                 "full_name": "Priya Patil",
@@ -152,7 +191,9 @@ class AuthService:
                     ward=acc.get("ward"),
                     phone=acc.get("phone"),
                     eco_coins=150,
-                    is_active=True
+                    is_active=True,
+                    is_verified=True,
+                    account_status="active",
                 )
                 db.add(u)
             else:
@@ -189,11 +230,44 @@ class AuthService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"No account found registered with +91 {clean_phone}. Please sign up first."
                 )
-            if existing_user.is_locked or not existing_user.is_active:
+            if existing_user.role != "citizen":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="WhatsApp OTP login is unavailable for privileged employee accounts."
+                )
+            if existing_user.is_locked or not existing_user.is_active or getattr(existing_user, "account_status", "active") != "active":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Your account is suspended or locked. Please contact municipal support."
                 )
+        elif purpose == "activation":
+            from server.models.account_invitation import AccountInvitation
+            invited = db.query(User).filter(
+                User.phone.in_([clean_phone, f"+91{clean_phone}"]),
+                User.role == "driver",
+                User.is_active.is_(False),
+                User.account_status == "pending",
+            ).join(AccountInvitation, AccountInvitation.user_id == User.id).filter(
+                AccountInvitation.role == "driver",
+                AccountInvitation.consumed_at.is_(None),
+                AccountInvitation.revoked_at.is_(None),
+                AccountInvitation.expires_at > now,
+            ).first()
+            provisioned_driver = db.query(User).filter(
+                User.phone.in_([clean_phone, f"+91{clean_phone}", f"0{clean_phone}"]),
+                User.role == "driver",
+                User.is_active.is_(True),
+                User.is_locked.is_(False),
+                User.is_verified.is_(False),
+                User.must_change_password.is_(False),
+                User.login_id.isnot(None),
+                User.created_by_id.isnot(None),
+                User.account_status == "active",
+            ).first()
+            if not invited and not provisioned_driver:
+                raise HTTPException(status_code=404, detail="No active driver invitation found for this mobile number.")
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported OTP purpose.")
 
         # 1. Resend cooldown check (60 seconds)
         cooldown_window = now - timedelta(seconds=config.SMS_RESEND_COOLDOWN_SECONDS)
@@ -663,25 +737,22 @@ class AuthService:
         # If login flow, locate the user and issue EcoPulse JWT
         user = AuthService.find_user_by_phone(db, clean_phone)
 
-        if purpose == "login" or (purpose != "register" and user is not None):
+        if purpose == "login":
             if not user:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"No account found for mobile number +91 {clean_phone}. Please sign up."
                 )
-            if user.is_locked or not user.is_active:
+            if user.role != "citizen":
+                raise HTTPException(status_code=403, detail="WhatsApp OTP login is unavailable for privileged employee accounts.")
+            if user.is_locked or not user.is_active or getattr(user, "account_status", "active") != "active":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Your account is locked or suspended. Please contact municipal support."
                 )
 
             session_id = f"sess_{user.id}_{int(time.time())}"
-            access_token = create_access_token({
-                "sub": user.email or user.phone,
-                "role": user.role,
-                "id": user.id,
-                "sid": session_id
-            })
+            access_token = make_access_token(user, session_id)
             return AuthResponse(
                 access_token=access_token,
                 user=UserResponse(
@@ -692,7 +763,9 @@ class AuthService:
                     ward=user.ward,
                     phone=user.phone,
                     employee_id=user.employee_id,
-                    eco_coins=user.eco_coins or 100
+                    eco_coins=user.eco_coins if user.eco_coins is not None else 0,
+                    is_super_admin=bool(user.is_super_admin),
+                    account_status=user.account_status,
                 )
             )
 
@@ -703,7 +776,7 @@ class AuthService:
             email=None,
             role="citizen",
             phone=clean_phone,
-            eco_coins=100
+            eco_coins=0
         )
         return AuthResponse(
             access_token="verified_pre_registration",
@@ -847,22 +920,19 @@ class AuthService:
             email=clean_email,
             hashed_password=hashed_pwd,
             role="citizen",
-            ward=getattr(payload, "ward", "Ward 12") or "Ward 12",
+            ward=(getattr(payload, "ward", None) or "").strip() or None,
             employee_id=getattr(payload, "employeeId", None),
-            eco_coins=100,
-            is_active=True
+            eco_coins=0,
+            is_active=True,
+            is_verified=True,
+            account_status="active",
         )
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
 
         session_id = f"sess_{new_user.id}_{int(time.time())}"
-        access_token = create_access_token({
-            "sub": new_user.email or new_user.phone,
-            "role": new_user.role,
-            "id": new_user.id,
-            "sid": session_id
-        })
+        access_token = make_access_token(new_user, session_id)
 
         return AuthResponse(
             access_token=access_token,
@@ -874,7 +944,9 @@ class AuthService:
                 ward=new_user.ward,
                 phone=new_user.phone,
                 employee_id=new_user.employee_id,
-                eco_coins=new_user.eco_coins or 100
+                eco_coins=new_user.eco_coins if new_user.eco_coins is not None else 0,
+                is_super_admin=bool(new_user.is_super_admin),
+                account_status=new_user.account_status,
             )
         )
 
@@ -892,10 +964,10 @@ class AuthService:
     @staticmethod
     def login_user(db: Session, payload: LoginRequest) -> AuthResponse:
         """
-        Legacy/compatibility password-based authentication for existing driver & admin workflows.
+        Password authentication for citizens with an existing password and for privileged employee accounts.
         Identifies user by email, employee_id, or mobile number.
         """
-        if AuthService.should_seed_demo_users():
+        if AuthService.should_seed_demo_users(db):
             AuthService.seed_demo_users(db)
 
         clean_ident = payload.email.strip()
@@ -904,13 +976,35 @@ class AuthService:
         user = db.query(User).filter(
             (func.lower(User.email) == clean_ident.lower()) |
             (func.lower(User.employee_id) == clean_ident.lower()) |
+            (func.lower(User.login_id) == clean_ident.lower()) |
             (User.employee_id == clean_ident) |
             (User.phone == clean_ident) |
             (User.phone == clean_phone)
         ).first()
 
+        requested_role = (payload.role or "citizen").strip().casefold()
+        if user and user.role.casefold() != requested_role:
+            verify_password(payload.password, DUMMY_HASH)
+            audit(db, "login_failed_role_mismatch", target=user)
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+        if user and user.role == "driver" and clean_ident.casefold() not in {
+            (user.employee_id or "").casefold(), (user.login_id or "").casefold()
+        }:
+            verify_password(payload.password, DUMMY_HASH)
+            audit(db, "login_failed_password", target=user)
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Driver login requires Employee ID and password.")
+        if user and user.role in {"admin", "collector"} and clean_ident.casefold() not in {
+            (user.employee_id or "").casefold(), (user.login_id or "").casefold()
+        }:
+            verify_password(payload.password, DUMMY_HASH)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Municipal login requires Employee ID and password.")
+
         if not user or not user.hashed_password:
             verify_password(payload.password, DUMMY_HASH)
+            audit(db, "login_failed_unknown_user", target=user)
+            db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid credentials. Please verify your mobile/email and password."
@@ -920,6 +1014,7 @@ class AuthService:
             user.failed_attempts = (user.failed_attempts or 0) + 1
             if user.failed_attempts >= 5:
                 user.is_locked = True
+            audit(db, "login_failed_password", target=user)
             db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -932,16 +1027,67 @@ class AuthService:
                 detail="Your account is locked or suspended. Please contact municipal support."
             )
 
+        if getattr(user, "account_status", "active") != "active":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account is not active and verified.")
+
+        must_change_password = bool(user.must_change_password)
+        if user.role == "driver" and not getattr(user, "is_verified", False) and not must_change_password:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "PHONE_VERIFICATION_REQUIRED", "message": "Verify your registered mobile number before continuing."},
+            )
+        if not getattr(user, "is_verified", True) and not (user.role == "driver" and must_change_password):
+            raise HTTPException(status_code=403, detail="Your account is not active and verified.")
+
+        if must_change_password:
+            if temporary_password_expired(user):
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "TEMPORARY_CREDENTIAL_EXPIRED", "message": "This temporary password has expired. Contact an authorized administrator for a reset."},
+                )
+            raise HTTPException(
+                status_code=428,
+                detail={"code": "PASSWORD_CHANGE_REQUIRED", "message": "Change the initial password before continuing."},
+            )
+
+        if user.role in {"admin", "collector"}:
+            if not user.mfa_enabled or not user.mfa_secret_enc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="MFA enrollment is required before administrator sign-in. Use the authorized enrollment flow."
+                )
+            try:
+                secret = decrypt_mfa_secret(user.mfa_secret_enc)
+            except RuntimeError as exc:
+                logger.error("MFA configuration error for user id=%s", user.id)
+                raise HTTPException(status_code=503, detail="Administrator MFA is temporarily unavailable.") from exc
+            step = verify_totp(secret, payload.mfa_code or "")
+            updated = 0
+            if step is not None:
+                updated = db.query(User).filter(
+                    User.id == user.id,
+                    User.mfa_enabled.is_(True),
+                    or_(
+                        User.mfa_last_verified_step.is_(None),
+                        User.mfa_last_verified_step < step,
+                    ),
+                ).update(
+                    {"mfa_last_verified_step": step},
+                    synchronize_session=False,
+                )
+            if updated != 1:
+                user.failed_attempts = (user.failed_attempts or 0) + 1
+                if user.failed_attempts >= 5:
+                    user.is_locked = True
+                audit(db, "login_failed_mfa", target=user)
+                db.commit()
+                raise HTTPException(status_code=401, detail="Invalid or already-used MFA code.")
         user.failed_attempts = 0
+        audit(db, "login_succeeded", target=user)
         db.commit()
 
         session_id = f"sess_{user.id}_{int(time.time())}"
-        token = create_access_token({
-            "sub": user.email or user.phone,
-            "role": user.role,
-            "id": user.id,
-            "sid": session_id
-        })
+        token = make_access_token(user, session_id)
         return AuthResponse(
             access_token=token,
             user=UserResponse(
@@ -952,12 +1098,23 @@ class AuthService:
                 ward=user.ward,
                 phone=user.phone,
                 employee_id=user.employee_id,
-                eco_coins=user.eco_coins or 100
+                eco_coins=user.eco_coins if user.eco_coins is not None else 0,
+                is_super_admin=bool(user.is_super_admin),
+                account_status=user.account_status,
             )
         )
 
     @staticmethod
     def update_user_profile(db: Session, current_user: User, payload: UserProfileUpdate) -> UserResponse:
+        if (
+            payload.ward is not None
+            and payload.ward.strip()
+            and current_user.role.casefold() in {"driver", "collector", "admin"}
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Employee ward assignments can only be changed by an authorized administrator.",
+            )
         if payload.full_name is not None and payload.full_name.strip():
             current_user.full_name = payload.full_name.strip()
         if payload.ward is not None and payload.ward.strip():
@@ -986,25 +1143,16 @@ class AuthService:
             ward=current_user.ward,
             phone=current_user.phone,
             employee_id=current_user.employee_id,
-            eco_coins=current_user.eco_coins or 100
+            login_id=current_user.login_id,
+            eco_coins=current_user.eco_coins if current_user.eco_coins is not None else 0,
+            is_super_admin=bool(current_user.is_super_admin),
+            account_status=current_user.account_status,
+            mfa_enabled=bool(current_user.mfa_enabled),
         )
 
     @staticmethod
     def request_password_reset(db: Session, identifier: str, role: str = "citizen") -> dict:
-        clean_ident = identifier.strip()
-        clean_phone = clean_ident.replace("+91", "").replace(" ", "").replace("-", "")
-        user = db.query(User).filter(
-            (func.lower(User.email) == clean_ident.lower()) |
-            (User.phone == clean_ident) |
-            (User.phone == clean_phone)
-        ).first()
-
-        if user:
-            return {
-                "success": True,
-                "message": f"Password reset instructions have been dispatched to registered communication channels for {clean_ident}."
-            }
         return {
             "success": True,
-            "message": f"If an account is associated with {clean_ident}, reset instructions have been dispatched."
+            "message": "If an eligible account exists, password reset instructions will be sent through its registered channel."
         }

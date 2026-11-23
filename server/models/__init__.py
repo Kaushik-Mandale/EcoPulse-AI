@@ -1,4 +1,6 @@
 from server.models.user import User
+from server.models.municipality import Municipality
+from server.models.ward import Ward
 from server.models.complaint import Complaint
 from server.models.task import DriverTask
 from server.models.item import Item
@@ -11,3 +13,8 @@ from server.models.whatsapp_session import WhatsAppCitizen, WhatsAppProcessedMes
 from server.models.whatsapp_link_token import WhatsAppLinkToken
 from server.models.mobile_otp import MobileOtpToken
 from server.models.whatsapp_registration_challenge import WhatsAppRegistrationChallenge
+from server.models.account_invitation import AccountInvitation
+from server.models.security_audit_event import SecurityAuditEvent
+from server.models.task_evidence import TaskEvidence
+from server.models.task_event import TaskEvent
+from server.models.event_report import EventReport

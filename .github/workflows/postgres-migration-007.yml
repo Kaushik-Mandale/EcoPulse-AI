@@ -1,0 +1,120 @@
+name: PostgreSQL 16 and Backend Regression Validation
+
+# Validates explicit PostgreSQL migrations and the complete backend suite on
+# Linux. PostgreSQL is an ephemeral service and tests enforce its disposable,
+# loopback-only target. Never use Neon or production credentials here.
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "migrations/**"
+      - "server/models/**"
+      - "server/database/**"
+      - "server/scripts/**"
+      - "server/services/**"
+      - "server/routes/**"
+      - "server/utils/**"
+      - "server/tests/**"
+      - "server/main.py"
+      - "server/init_db.py"
+      - "server/database/init_db.py"
+      - ".env.example"
+      - "requirements.txt"
+      - "pytest.ini"
+      - ".github/workflows/postgres-migration-007.yml"
+  pull_request:
+    paths:
+      - "migrations/**"
+      - "server/models/**"
+      - "server/database/**"
+      - "server/scripts/**"
+      - "server/services/**"
+      - "server/routes/**"
+      - "server/utils/**"
+      - "server/tests/**"
+      - "server/main.py"
+      - "server/init_db.py"
+      - "server/database/init_db.py"
+      - ".env.example"
+      - "requirements.txt"
+      - "pytest.ini"
+      - ".github/workflows/postgres-migration-007.yml"
+
+jobs:
+  postgres-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # Ephemeral, disposable database created for this job only.
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ecopulse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ecopulse_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Throwaway credentials local to the service container above.
+      # Test modules require this explicit designation, a loopback host and a
+      # disposable database name, then use only uniquely isolated schemas.
+      ECOLPULSE_DISPOSABLE_POSTGRES_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/ecopulse_test
+      ECOLPULSE_DISPOSABLE_POSTGRES_AUTHORIZATION: DISPOSABLE
+      # Keep the application engine off the disposable PG database; the PG test
+      # modules build their own schema on ECOLPULSE_DISPOSABLE_POSTGRES_URL.
+      DATABASE_URL: sqlite:///./ci-harness.db
+      ENV: test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Record resolved backend runtime versions
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import platform
+          import sys
+
+          print(f"Python {sys.version}")
+          print(f"Platform {platform.platform()}")
+          for package in ("fastapi", "starlette", "anyio", "httpx", "pytest", "sqlalchemy", "psycopg2-binary"):
+              print(f"{package} {importlib.metadata.version(package)}")
+          PY
+
+      - name: Run schema policy, CLI safety, read-only status, fail-closed, and migration runner unit tests
+        run: >-
+          python -m pytest
+          server/tests/test_schema_initialization.py
+          server/tests/test_startup_sequences.py
+          server/tests/test_migration_cli_safety.py
+          server/tests/test_migration_status_readonly.py
+          server/tests/test_migration_runner.py
+          server/tests/test_env_failclosed.py
+          -q
+
+      # This includes both PostgreSQL migration modules, so those integrations
+      # execute exactly once in the authoritative job.
+      - name: Run complete backend suite on Linux (PostgreSQL tests once)
+        run: python -m pytest server/tests -q

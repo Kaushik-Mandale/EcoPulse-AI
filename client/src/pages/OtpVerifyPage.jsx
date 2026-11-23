@@ -8,14 +8,14 @@ import api from '../services/api';
 export default function OtpVerifyPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [otp, setOtp] = useState(['', '', '', '']);
-  const [mobile, setMobile] = useState(location.state?.phone || '+91 98765 43210');
+  const [otp, setOtp] = useState(['', '', '', '', '', '']);
+  const [mobile] = useState(location.state?.phone || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   const handleChange = (val, idx) => {
     const newOtp = [...otp];
-    newOtp[idx] = val.slice(-1);
+    newOtp[idx] = val.replace(/\D/g, '').slice(-1);
     setOtp(newOtp);
     if (val && idx < 3) {
       document.getElementById(`otp-input-${idx + 1}`)?.focus();
@@ -27,35 +27,33 @@ export default function OtpVerifyPage() {
     setIsSubmitting(true);
     setErrorMsg('');
     const code = otp.join('');
+    if (!mobile || code.length !== 6) {
+      setErrorMsg('Enter the six-digit code sent to your registered mobile number.');
+      setIsSubmitting(false);
+      return;
+    }
     try {
       const res = await api.post('/auth/verify-otp', {
         phone: mobile,
-        otp: code || '1234',
+        otp: code,
         role: location.state?.role || 'citizen'
       });
       if (res.data?.access_token) {
         localStorage.setItem('ecopulse_token', res.data.access_token);
         localStorage.setItem('ecopulse_user', JSON.stringify(res.data.user));
-        const role = res.data.user?.role;
-        if (role === 'driver') navigate('/driver');
-        else if (role === 'admin' || role === 'collector') navigate('/admin');
-        else navigate('/citizen');
+        const role = res.data.user?.role?.toLowerCase();
+        if (role === 'driver' || role === 'collector') navigate('/field-operations');
+        else if (role === 'admin') navigate(res.data.user?.is_super_admin ? '/super-admin' : '/admin');
+        else if (role === 'citizen') navigate('/citizen');
+        else navigate('/login', { replace: true });
         return;
       }
+      throw new Error('Verification did not return an authenticated session.');
     } catch (err) {
-      console.warn('Backend OTP verification offline fallback:', err);
+      setErrorMsg(err.response?.data?.detail || err.message || 'Verification failed. Request a new code and try again.');
+    } finally {
+      setIsSubmitting(false);
     }
-    // Resilient fallback for demo/offline evaluation
-    const fallbackUser = {
-      id: 1,
-      name: `Citizen User (${mobile.slice(-4)})`,
-      email: `${mobile.replace(/[^0-9]/g, '')}@citizen.ecopulse.ai`,
-      role: location.state?.role || 'citizen',
-      ward: 'Ward 12',
-      eco_coins: 150
-    };
-    localStorage.setItem('ecopulse_user', JSON.stringify(fallbackUser));
-    navigate('/citizen');
   };
 
   return (
@@ -69,7 +67,7 @@ export default function OtpVerifyPage() {
         </div>
         <h2 className="text-2xl font-black text-slate-900">OTP Verification</h2>
         <p className="text-xs text-slate-500 font-semibold mt-1">
-          We sent a 4-digit code to <span className="font-bold text-slate-800">{mobile}</span>
+          {mobile ? <>Enter the six-digit code sent to <span className="font-bold text-slate-800">{mobile}</span></> : 'Open this page from the OTP sign-in flow to continue.'}
         </p>
 
         <form onSubmit={handleVerify} className="mt-6 space-y-4">
@@ -82,10 +80,12 @@ export default function OtpVerifyPage() {
                 maxLength="1"
                 value={digit}
                 onChange={(e) => handleChange(e.target.value, idx)}
+                inputMode="numeric"
                 className="w-12 h-14 text-center font-mono text-xl font-extrabold rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:border-[#005C2B] focus:bg-white"
               />
             ))}
           </div>
+          {errorMsg && <p role="alert" className="text-xs font-semibold text-red-700">{errorMsg}</p>}
           <button
             type="submit"
             disabled={isSubmitting}

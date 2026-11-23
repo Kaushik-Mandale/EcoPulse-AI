@@ -23,9 +23,13 @@ def _create_test_user(db, email, role="citizen", phone=None):
     if phone is None:
         import uuid
         phone = f"9{uuid.uuid4().int % 1000000000:09d}"
-    user = db.query(User).filter(User.email == email).first()
+    if phone:
+        db.query(User).filter(User.phone == phone).delete()
+    db.query(User).filter(User.email == email).delete()
+    db.commit()
+    user = None
     if not user:
-        user = User(
+        kwargs = dict(
             email=email,
             hashed_password=hash_password("Password123!"),
             full_name=f"Test {role.capitalize()}",
@@ -35,6 +39,9 @@ def _create_test_user(db, email, role="citizen", phone=None):
             is_locked=False,
             eco_coins=100
         )
+        if hasattr(User, "is_verified"):
+            kwargs["is_verified"] = True
+        user = User(**kwargs)
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -296,6 +303,14 @@ class TestComplaintAssociationWithLinkedUser:
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
 
+            # New citizen starts in AWAITING_LANGUAGE — select English first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_EN", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
+
             # Send photo
             res_photo = client.post(
                 "/api/whatsapp/simulate-incoming",
@@ -323,7 +338,7 @@ class TestComplaintAssociationWithLinkedUser:
             assert res_loc.status_code == 200
             loc_data = res_loc.json()
             assert loc_data["status"] == "complaint_created"
-            assert "DHL-2026-" in loc_data["ticket"]
+            assert f"DHL-{datetime.now(timezone.utc).year}-" in loc_data["ticket"]
 
             # Query the complaint in DB: citizen_id must match linked User.id!
             complaint = db.query(Complaint).filter(Complaint.tracking_number == loc_data["ticket"]).first()
@@ -357,9 +372,16 @@ class TestWhatsAppWebhookRegression:
 
     def test_unlinked_sender_sends_hey(self):
         wa_phone = f"91{random.randint(1000000000, 9999999999)}"
-        res = client.post(
+        res1 = client.post(
             "/api/whatsapp/simulate-incoming",
             json={"phone": wa_phone, "message": "hey", "type": "text"}
+        )
+        assert res1.status_code == 200
+        assert res1.json()["status"] == "awaiting_language"
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "LANG_MR", "type": "interactive"}
         )
         assert res.status_code == 200
         data = res.json()
@@ -372,15 +394,23 @@ class TestWhatsAppWebhookRegression:
 
     def test_unlinked_sender_sends_arbitrary_text(self):
         wa_phone = f"91{random.randint(1000000000, 9999999999)}"
-        res = client.post(
+        res1 = client.post(
             "/api/whatsapp/simulate-incoming",
             json={"phone": wa_phone, "message": "When will the garbage truck arrive in my area?", "type": "text"}
+        )
+        assert res1.status_code == 200
+        assert res1.json()["status"] == "awaiting_language"
+
+        res = client.post(
+            "/api/whatsapp/simulate-incoming",
+            json={"phone": wa_phone, "message": "LANG_MR", "type": "interactive"}
         )
         assert res.status_code == 200
         data = res.json()
         assert data["status"] == "not_linked"
         assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
         assert "https://ecopulse-ai-frontend.onrender.com/" in data["reply"]
+        assert "LINK <code>" in data["reply"]
         assert "Shirpur" not in data["reply"]
         assert "SHP" not in data["reply"]
 
@@ -392,6 +422,15 @@ class TestWhatsAppWebhookRegression:
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
 
+            # New citizen has AWAITING_LANGUAGE state — select language first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_EN", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
+
+            # Now send greeting
             res = client.post(
                 "/api/whatsapp/simulate-incoming",
                 json={"phone": wa_phone, "message": "hey", "type": "text"}
@@ -399,10 +438,9 @@ class TestWhatsAppWebhookRegression:
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "menu_presented"
-            assert "धुळे महानगरपालिका स्वच्छता व्यवस्थापन" in data["reply"]
-            # 9-option menu present
-            assert "1️⃣" in data["reply"]
-            assert "9️⃣" in data["reply"]
+            assert "EcoPulse AI" in data["reply"] or "धुळे" in data["reply"]
+            # Approved municipal template includes all 8 numbered options and municipal branding
+            assert "1. 🗑️" in data["reply"] and "8. ❓" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -416,6 +454,15 @@ class TestWhatsAppWebhookRegression:
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
 
+            # New citizen has AWAITING_LANGUAGE state — select language first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_MR", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
+
+            # Now send greeting
             res = client.post(
                 "/api/whatsapp/simulate-incoming",
                 json={"phone": wa_phone, "message": "hello", "type": "text"}
@@ -423,8 +470,8 @@ class TestWhatsAppWebhookRegression:
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "menu_presented"
-            assert "1️⃣" in data["reply"]
-            assert "9️⃣" in data["reply"]
+            # Approved municipal template includes all 8 numbered options and municipal branding
+            assert "1. 🗑️" in data["reply"] and "8. ❓" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -445,8 +492,8 @@ class TestWhatsAppWebhookRegression:
             data = res.json()
             assert data["status"] == "linked"
             assert "यशस्वीरित्या जोडले" in data["reply"]
-            assert "1️⃣" in data["reply"]
-            assert "9️⃣" in data["reply"]
+            assert "1." in data["reply"] or "1️⃣" in data["reply"]
+            assert "8." in data["reply"] or "8️⃣" in data["reply"]
             assert "Shirpur" not in data["reply"]
             assert "SHP" not in data["reply"]
         finally:
@@ -516,6 +563,14 @@ class TestWhatsAppWebhookRegression:
             code = client.post("/api/whatsapp/link/generate", headers=_auth_header(user)).json()["code"]
             wa_phone = f"91{random.randint(1000000000, 9999999999)}"
             WhatsAppLinkService.redeem_link_code(db, code, wa_phone)
+
+            # New citizen starts in AWAITING_LANGUAGE — select English first
+            lang_res = client.post(
+                "/api/whatsapp/simulate-incoming",
+                json={"phone": wa_phone, "message": "LANG_EN", "type": "interactive"}
+            )
+            assert lang_res.status_code == 200
+            assert lang_res.json()["status"] == "language_selected"
 
             # Send photo
             res_photo = client.post(

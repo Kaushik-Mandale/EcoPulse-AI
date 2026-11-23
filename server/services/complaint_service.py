@@ -9,11 +9,18 @@ import string
 import logging
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 from typing import List, Optional
 from server.models.complaint import Complaint
 from server.models.task import DriverTask
 from server.models.user import User
-from server.schemas.complaint import ComplaintCreate, ComplaintResponse
+from server.schemas.complaint import (
+    CitizenComplaintResponse,
+    ComplaintCreate,
+    ComplaintResponse,
+    ComplaintSubmissionResponse,
+    PublicComplaintTrackingResponse,
+)
 from server.services.ai_service import AIService
 
 logger = logging.getLogger(__name__)
@@ -93,15 +100,18 @@ class ComplaintService:
     @staticmethod
     def get_all_complaints(db: Session) -> List[ComplaintResponse]:
         complaints = db.query(Complaint).order_by(Complaint.id.desc()).all()
-        if not complaints:
-            # Seed default complaints matching CITIZEN.png & ADMIN DASHBOARD.png
-            ComplaintService.seed_default_complaints(db)
-            complaints = db.query(Complaint).order_by(Complaint.id.desc()).all()
-
         return [ComplaintService._to_response(c) for c in complaints]
 
     @staticmethod
-    def get_user_complaints(db: Session, user_id: Optional[int]) -> List[ComplaintResponse]:
+    def get_complaints_for_ward(db: Session, ward: str) -> List[ComplaintResponse]:
+        """Return complaints only from a collector's authenticated ward."""
+        complaints = db.query(Complaint).filter(
+            Complaint.ward == ward
+        ).order_by(Complaint.id.desc()).all()
+        return [ComplaintService._to_response(c) for c in complaints]
+
+    @staticmethod
+    def get_user_complaints(db: Session, user_id: Optional[int]) -> List[CitizenComplaintResponse]:
         """Returns complaints submitted by a specific user.
         If user_id is None or the user has no complaints, returns an empty list
         to prevent leaking other citizens' complaints.
@@ -109,17 +119,65 @@ class ComplaintService:
         if not user_id:
             return []
         complaints = db.query(Complaint).filter(Complaint.citizen_id == user_id).order_by(Complaint.id.desc()).all()
+        return [ComplaintService._to_citizen_response(c) for c in complaints]
+
+    @staticmethod
+    def get_driver_complaints(db: Session, driver_id: int) -> List[ComplaintResponse]:
+        task_complaint_ids = db.query(DriverTask.complaint_id).filter(
+            DriverTask.driver_id == driver_id,
+            DriverTask.complaint_id.is_not(None),
+        )
+        complaints = db.query(Complaint).filter(
+            or_(
+                Complaint.assigned_driver_id == driver_id,
+                Complaint.id.in_(task_complaint_ids),
+            )
+        ).order_by(Complaint.id.desc()).all()
         return [ComplaintService._to_response(c) for c in complaints]
 
     @staticmethod
-    def get_complaint_by_tracking_or_id(db: Session, identifier: str) -> Optional[ComplaintResponse]:
-        clean_id = identifier.strip()
-        # Try finding by tracking number (legacy EP-2026-NNNNN and new EP-2026-XXXXXXXXX both matched)
-        complaint = db.query(Complaint).filter(Complaint.tracking_number.ilike(clean_id)).first()
-        if not complaint and clean_id.isdigit():
-            complaint = db.query(Complaint).filter(Complaint.id == int(clean_id)).first()
-        if complaint:
-            return ComplaintService._to_response(complaint)
+    def get_complaint_for_tracking(
+        db: Session,
+        identifier: str,
+        current_user: Optional[User] = None,
+        tracking_token: Optional[str] = None,
+    ) -> Optional[PublicComplaintTrackingResponse]:
+        clean_id = (identifier or "").strip().upper()
+        if not clean_id or clean_id.isdigit():
+            return None
+        complaint = db.query(Complaint).filter(
+            Complaint.tracking_number == clean_id
+        ).first()
+        if not complaint:
+            return None
+
+        if current_user:
+            role = (current_user.role or "").casefold()
+            if role == "admin":
+                return ComplaintService._to_public_tracking_response(complaint)
+            if role == "collector":
+                ward = (current_user.ward or "").strip()
+                if ward and complaint.ward == ward:
+                    return ComplaintService._to_public_tracking_response(complaint)
+                return None
+            if role == "driver":
+                assigned = complaint.assigned_driver_id == current_user.id or db.query(DriverTask).filter(
+                    DriverTask.complaint_id == complaint.id,
+                    DriverTask.driver_id == current_user.id,
+                ).first() is not None
+                if assigned:
+                    return ComplaintService._to_public_tracking_response(complaint)
+                return None
+            if role == "citizen" and complaint.citizen_id == current_user.id:
+                return ComplaintService._to_public_tracking_response(complaint)
+
+        if ComplaintService.verify_tracking_token(
+            complaint.id,
+            complaint.tracking_number,
+            tracking_token,
+            getattr(complaint, "tracking_secret", None),
+        ):
+            return ComplaintService._to_public_tracking_response(complaint)
         return None
 
     @staticmethod
@@ -132,12 +190,32 @@ class ComplaintService:
         return hmac.new(secret, msg, hashlib.sha256).hexdigest()
 
     @staticmethod
-    def verify_tracking_token(complaint_id: int, tracking_number: str, token: Optional[str]) -> bool:
-        """Verifies a tracking token in constant time."""
+    def generate_tracking_secret() -> str:
+        """Create a 256-bit opaque bearer capability for anonymous tracking."""
+        return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def hash_tracking_secret(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def verify_tracking_token(
+        complaint_id: int,
+        tracking_number: str,
+        token: Optional[str],
+        stored_hash: Optional[str] = None,
+    ) -> bool:
+        """Verify a stored token hash, retaining deterministic HMAC links issued before this change."""
         if not token or not token.strip():
             return False
+        token = token.strip()
+        if stored_hash:
+            supplied_hash = ComplaintService.hash_tracking_secret(token)
+            return hmac.compare_digest(supplied_hash, stored_hash)
+        # Backward compatibility for previously issued links, which used an HMAC
+        # derived from SECRET_KEY and were never stored in tracking_secret.
         expected = ComplaintService.generate_tracking_token(complaint_id, tracking_number)
-        return hmac.compare_digest(token.strip(), expected)
+        return hmac.compare_digest(token, expected)
 
     @staticmethod
     def authorize_and_resolve_image(
@@ -149,16 +227,25 @@ class ComplaintService:
         """Enforces backend-mediated authorization before generating a signed image URL.
 
         Authorization rules:
-        - Admin / Collector: full access to all complaint images.
+        - Admin: full access to all complaint images.
+        - Collector: access only within their assigned ward.
         - Assigned Driver: access to images for complaints linked to their tasks.
         - Citizen: access strictly to their own submitted complaint images.
         - Anonymous Citizen Tracking: requires high-entropy tracking token.
         - Arbitrary client storage keys are NEVER trusted as proof of access.
         """
         clean_id = (complaint_id or "").strip()
-        complaint = db.query(Complaint).filter(Complaint.tracking_number.ilike(clean_id)).first()
-        if not complaint and clean_id.isdigit():
-            complaint = db.query(Complaint).filter(Complaint.id == int(clean_id)).first()
+        complaint = db.query(Complaint).filter(
+            Complaint.tracking_number == clean_id.upper()
+        ).first()
+        # Internal callers may continue to use a database ID only after a
+        # verified principal is present; the role/ownership/scope checks below
+        # remain the authorization decision. Anonymous callers must use the
+        # opaque tracking reference and its separate capability.
+        if not complaint and clean_id.isdigit() and current_user is not None:
+            complaint = db.query(Complaint).filter(
+                Complaint.id == int(clean_id)
+            ).first()
 
         if not complaint:
             raise HTTPException(
@@ -172,8 +259,18 @@ class ComplaintService:
                 detail="Complaint does not have an associated image."
             )
 
-        # 1. Admin or Collector: full administrative visibility
-        if current_user and current_user.role.lower() in ("admin", "collector"):
+        # 1. Admin: full administrative visibility
+        if current_user and current_user.role.lower() == "admin":
+            return ComplaintService._format_resolved_image(complaint)
+
+        # 2. Collectors are limited to their canonical assigned ward.
+        if current_user and current_user.role.lower() == "collector":
+            ward = (current_user.ward or "").strip()
+            if not ward or complaint.ward != ward:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: complaint is outside your assigned ward.",
+                )
             return ComplaintService._format_resolved_image(complaint)
 
         # 2. Driver: authorized only if assigned to this complaint
@@ -212,10 +309,12 @@ class ComplaintService:
                 headers={"WWW-Authenticate": "Bearer"}
             )
 
-        is_valid = ComplaintService.verify_tracking_token(complaint.id, complaint.tracking_number, token)
-        # Check optional stored tracking_secret if column exists
-        if not is_valid and getattr(complaint, "tracking_secret", None):
-            is_valid = hmac.compare_digest(token, getattr(complaint, "tracking_secret"))
+        is_valid = ComplaintService.verify_tracking_token(
+            complaint.id,
+            complaint.tracking_number,
+            token,
+            getattr(complaint, "tracking_secret", None),
+        )
 
         if not is_valid:
             raise HTTPException(
@@ -241,8 +340,12 @@ class ComplaintService:
         }
 
     @staticmethod
-    def create_complaint(db: Session, payload: ComplaintCreate, user: Optional[User] = None) -> ComplaintResponse:
+    def create_complaint(
+        db: Session, payload: ComplaintCreate, user: Optional[User] = None
+    ) -> ComplaintSubmissionResponse:
         ai_res = AIService.verify_waste_image(payload.image_url, payload.type)
+        tracking_token = ComplaintService.generate_tracking_secret()
+        tracking_secret_hash = ComplaintService.hash_tracking_secret(tracking_token)
 
         new_complaint = None
         for attempt in range(_MAX_RETRIES):
@@ -250,8 +353,9 @@ class ComplaintService:
             try:
                 new_complaint = Complaint(
                     tracking_number=tracking_num,
+                    tracking_secret=tracking_secret_hash,
                     citizen_id=user.id if user else None,
-                    ward=payload.ward or "Ward 12",
+                    ward=payload.ward.strip() if payload.ward and payload.ward.strip() else "Unassigned",
                     location_address=payload.location,
                     latitude=payload.latitude,
                     longitude=payload.longitude,
@@ -260,8 +364,7 @@ class ComplaintService:
                     image_url=payload.image_url,
                     ai_status=ai_res["status"],
                     ai_confidence=ai_res["confidence"],
-                    status="In Progress",
-                    assigned_driver_name="Ramesh Y."
+                    status="Pending",
                 )
                 db.add(new_complaint)
                 db.flush()
@@ -288,70 +391,78 @@ class ComplaintService:
         db.commit()
         db.refresh(new_complaint)
 
-        # Automatically create driver task for collection
-        new_task = DriverTask(
-            complaint_id=new_complaint.id,
-            location_name=f"{new_complaint.location_address}",
-            status="Pending"
-        )
-        db.add(new_task)
-        db.commit()
-
-        # Reward citizen with EcoCoins
-        if user:
-            user.eco_coins = (user.eco_coins or 100) + 25
-            db.commit()
-
-        is_anonymous = user is None
-        return ComplaintService._to_response(new_complaint, include_tracking_token=is_anonymous)
+        return ComplaintService._to_submission_response(new_complaint, tracking_token)
 
     @staticmethod
-    def assign_driver(db: Session, complaint_id: int, driver_name: str) -> ComplaintResponse:
-        complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-        if complaint:
-            complaint.assigned_driver_name = driver_name
-            complaint.status = "In Progress"
-            db.commit()
-            db.refresh(complaint)
-            return ComplaintService._to_response(complaint)
-        raise Exception(f"Complaint {complaint_id} not found")
-
-    @staticmethod
-    def seed_default_complaints(db: Session):
-        seeds = [
-            Complaint(
-                tracking_number="EP-2026-00123",
-                ward="Ward 12",
-                location_address="Green Park, Ward 12",
-                waste_type="Mixed Waste",
-                status="In Progress",
-                assigned_driver_name="Ramesh Y.",
-                ai_status="Verified",
-                ai_confidence=0.98
-            ),
-            Complaint(
-                tracking_number="EP-2026-00122",
-                ward="Ward 8",
-                location_address="Sai Nagar, Ward 8",
-                waste_type="Garbage Overflow",
-                status="Pending",
-                assigned_driver_name="Suresh K.",
-                ai_status="Verified",
-                ai_confidence=0.94
-            ),
-            Complaint(
-                tracking_number="EP-2026-00121",
-                ward="Ward 4",
-                location_address="Market Area, Ward 4",
-                waste_type="Plastic Waste",
-                status="Completed",
-                assigned_driver_name="Ajay P.",
-                ai_status="Verified",
-                ai_confidence=0.99
+    def assign_driver(
+        db: Session, complaint_id: int, driver_name: str, *, ward_scope: Optional[str] = None
+    ) -> ComplaintResponse:
+        complaint_query = db.query(Complaint).filter(Complaint.id == complaint_id)
+        if ward_scope is not None:
+            complaint_query = complaint_query.filter(Complaint.ward == ward_scope)
+        complaint = complaint_query.first()
+        if not complaint:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Complaint {complaint_id} not found",
             )
-        ]
-        db.add_all(seeds)
+
+        driver_query = db.query(User).filter(
+            User.role == "driver",
+            User.is_active.is_(True),
+            User.is_verified.is_(True),
+            or_(User.employee_id == driver_name, User.full_name == driver_name),
+        )
+        if ward_scope is not None:
+            driver_query = driver_query.filter(User.ward == ward_scope)
+        driver_matches = driver_query.all()
+        if not driver_matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No active, verified driver matches the requested employee",
+            )
+        if len(driver_matches) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Driver name is ambiguous; assign by employee ID",
+            )
+
+        driver = driver_matches[0]
+        driver_ward = (driver.ward or "").strip()
+        complaint_ward = (complaint.ward or "").strip()
+        if not driver_ward:
+            raise HTTPException(status_code=409, detail="The selected Driver has no valid ward assignment.")
+        if complaint_ward.casefold() not in {"", "unassigned"} and driver_ward.casefold() != complaint_ward.casefold():
+            raise HTTPException(status_code=409, detail="The selected Driver is assigned to a different municipal ward.")
+        if complaint.status == "Completed":
+            raise HTTPException(status_code=409, detail="A completed complaint cannot be assigned again.")
+
+        task = db.query(DriverTask).filter(
+            DriverTask.complaint_id == complaint.id
+        ).order_by(DriverTask.id.desc()).first()
+        if task and task.status in {"Completed", "Pending Verification"}:
+            raise HTTPException(status_code=409, detail="This task is complete or awaiting verification and cannot be reassigned.")
+        if task and task.status != "Cancelled":
+            if task.status != "Pending" and task.driver_id != driver.id:
+                raise HTTPException(status_code=409, detail="A task that has started or entered review cannot be reassigned.")
+            if task.status == "Pending":
+                task.driver_id = driver.id
+                task.location_name = complaint.location_address
+        else:
+            db.add(DriverTask(
+                driver_id=driver.id,
+                complaint_id=complaint.id,
+                location_name=complaint.location_address,
+                status="Pending",
+            ))
+
+        complaint.assigned_driver_id = driver.id
+        complaint.assigned_driver_name = driver.full_name
+        complaint.status = "In Progress"
+
         db.commit()
+        db.refresh(complaint)
+        return ComplaintService._to_response(complaint)
 
     @staticmethod
     def _resolve_image_url(raw_url: Optional[str], tracking_number: Optional[str] = None) -> Optional[str]:
@@ -372,16 +483,18 @@ class ComplaintService:
         return raw_url
 
     @staticmethod
-    def _to_response(c: Complaint, include_tracking_token: bool = False) -> ComplaintResponse:
+    def _status_color(c: Complaint) -> str:
         status_color = "bg-emerald-100 text-emerald-800 border-emerald-300"
         if c.status == "Pending":
             status_color = "bg-red-100 text-red-800 border-red-300"
         elif c.status == "In Progress":
             status_color = "bg-yellow-100 text-yellow-800 border-yellow-300"
 
-        tracking_token = None
-        if include_tracking_token:
-            tracking_token = ComplaintService.generate_tracking_token(c.id, c.tracking_number)
+        return status_color
+
+    @staticmethod
+    def _to_response(c: Complaint) -> ComplaintResponse:
+        status_color = ComplaintService._status_color(c)
 
         return ComplaintResponse(
             id=c.tracking_number,
@@ -391,10 +504,53 @@ class ComplaintService:
             ward=c.ward,
             status=c.status,
             assignedTo=c.assigned_driver_name or "Unassigned",
-            time="10 mins ago" if c.status == "In Progress" else ("25 mins ago" if c.status == "Pending" else "1 hour ago"),
+            time=c.created_at.isoformat() if c.created_at else None,
             statusColor=status_color,
             image_url=ComplaintService._resolve_image_url(c.image_url, c.tracking_number),
-            ai_status=c.ai_status or "Verified",
-            ai_confidence=c.ai_confidence or 0.95,
+            ai_status=c.ai_status,
+            ai_confidence=c.ai_confidence,
+            created_at=c.created_at,
+            latitude=c.latitude,
+            longitude=c.longitude,
+        )
+
+    @staticmethod
+    def _to_citizen_response(c: Complaint) -> CitizenComplaintResponse:
+        return CitizenComplaintResponse(
+            id=c.tracking_number,
+            location=c.location_address,
+            type=c.waste_type,
+            ward=c.ward,
+            status=c.status,
+            time=c.created_at.isoformat() if c.created_at else None,
+            statusColor=ComplaintService._status_color(c),
+            has_image=bool(c.image_url),
+            created_at=c.created_at,
+        )
+
+    @staticmethod
+    def _to_public_tracking_response(c: Complaint) -> PublicComplaintTrackingResponse:
+        return PublicComplaintTrackingResponse(
+            id=c.tracking_number,
+            location=c.location_address,
+            type=c.waste_type,
+            ward=c.ward,
+            status=c.status,
+            time=c.created_at.isoformat() if c.created_at else None,
+            statusColor=ComplaintService._status_color(c),
+            created_at=c.created_at,
+        )
+
+    @staticmethod
+    def _to_submission_response(
+        c: Complaint, tracking_token: Optional[str]
+    ) -> ComplaintSubmissionResponse:
+        return ComplaintSubmissionResponse(
+            id=c.tracking_number,
+            location=c.location_address,
+            type=c.waste_type,
+            ward=c.ward,
+            status=c.status,
+            created_at=c.created_at,
             tracking_token=tracking_token,
         )

@@ -12,7 +12,7 @@ class WhatsAppVerificationGenerateRequest(BaseModel):
     fullName: Optional[str] = None
     email: Optional[str] = None
     password: Optional[str] = None
-    ward: Optional[str] = "Ward 12"
+    ward: Optional[str] = None
 
     @field_validator("phone")
     @classmethod

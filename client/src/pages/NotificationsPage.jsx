@@ -3,30 +3,23 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, Bell, CheckCircle2, AlertTriangle, Info, Truck } from 'lucide-react';
 import api from '../services/api';
 
-const BROADCASTS = [
-  { id: 1, type: 'urgent', title: 'Ward 12 Intensive Cleanliness Drive Active', desc: '4 additional compactors deployed near Green Park and Nimzari Naka.', date: 'Today, 07:00 AM' },
-  { id: 2, type: 'info', title: 'Monsoon Waste Segregation Advisory', desc: 'Please ensure separate wet waste containers to prevent drain clogs during rainfall.', date: 'Yesterday' },
-  { id: 3, type: 'success', title: 'Simulated Ward Clearance Demonstration Hits 92% SLA', desc: 'Pilot scenario: 42 tonnes of simulated segregated solid waste logged on schedule.', date: '08 Sep 2026' },
-];
-
 export default function NotificationsPage() {
-  const [alerts, setAlerts] = useState(BROADCASTS);
+  const [alerts, setAlerts] = useState([]);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     api.get('/notifications')
       .then(res => {
-        if (Array.isArray(res.data) && res.data.length > 0) {
-          const mapped = res.data.map(n => ({
-            id: n.id,
-            type: n.priority?.toLowerCase().includes('emergency') ? 'urgent' : 'info',
-            title: n.title,
-            desc: n.message,
-            date: n.created_at ? new Date(n.created_at).toLocaleDateString() : 'Recent'
-          }));
-          setAlerts([...mapped, ...BROADCASTS]);
-        }
+        const mapped = res.data.map(n => ({
+          id: n.id,
+          type: n.priority?.toLowerCase().includes('emergency') ? 'urgent' : 'info',
+          title: n.title,
+          desc: n.message,
+          date: n.created_at ? new Date(n.created_at).toLocaleDateString() : 'Recent'
+        }));
+        setAlerts(mapped);
       })
-      .catch(err => console.warn('Could not load live alerts:', err));
+      .catch(err => setErrorMsg(err.response?.data?.detail || 'Notices are currently unavailable.'));
   }, []);
   return (
     <div className="min-h-screen bg-[#f8faf9] text-slate-800 font-sans selection:bg-[#005C2B] selection:text-white">
@@ -46,6 +39,8 @@ export default function NotificationsPage() {
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-8 space-y-4">
+        {errorMsg && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs font-semibold text-amber-900">{errorMsg}</p>}
+        {!errorMsg && alerts.length === 0 && <p className="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600">There are no current municipal notices.</p>}
         {alerts.map((item) => (
           <div key={item.id} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs flex items-start gap-4">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${

@@ -21,7 +21,7 @@ const Navbar = ({ onOpenLogin, onOpenSignup }) => {
               EcoPulse AI
             </div>
             <div className="text-[10px] font-bold text-emerald-700 tracking-wide mt-1">
-              Smart Civic Waste Platform • Dhule Pilot
+              Smart Civic & Sustainability Ecosystem
             </div>
           </div>
         </Link>
@@ -39,9 +39,6 @@ const Navbar = ({ onOpenLogin, onOpenSignup }) => {
           </Link>
           <Link to="/map" className="hover:text-[#005C2B] flex items-center gap-1 transition-colors">
             <MapPin className="w-3.5 h-3.5 text-emerald-600" /> City GIS
-          </Link>
-          <Link to="/demo" className="text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors">
-            <Building2 className="w-3.5 h-3.5 text-amber-600" /> Demo Sandbox
           </Link>
           <a href="#how-it-works" className="hover:text-[#005C2B] transition-colors">
             How It Works
@@ -63,10 +60,10 @@ const Navbar = ({ onOpenLogin, onOpenSignup }) => {
             Login
           </Link>
           <Link 
-            to="/demo"
+            to="/login"
             className="px-4 py-2 rounded-xl bg-[#005C2B] text-white text-xs font-extrabold shadow-xs hover:bg-[#004a22] transition-all cursor-pointer inline-flex items-center justify-center gap-1"
           >
-            <span>Explore Demo</span>
+            <span>Sign in</span>
           </Link>
 
           {/* Mobile Menu Toggle */}
@@ -105,15 +102,7 @@ const Navbar = ({ onOpenLogin, onOpenSignup }) => {
             onClick={() => setMobileMenuOpen(false)}
             className="flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 text-slate-800"
           >
-            <span className="flex items-center gap-2"><MapPin className="w-4 h-4" /> City GIS & Live Fleet</span>
-            <ChevronRight className="w-4 h-4" />
-          </Link>
-          <Link 
-            to="/demo" 
-            onClick={() => setMobileMenuOpen(false)}
-            className="flex items-center justify-between p-2.5 rounded-xl bg-amber-50 text-amber-900 border border-amber-200"
-          >
-            <span className="flex items-center gap-2"><Building2 className="w-4 h-4 text-amber-700" /> Municipal Demo Sandbox</span>
+            <span className="flex items-center gap-2"><MapPin className="w-4 h-4" /> Reported Locations</span>
             <ChevronRight className="w-4 h-4" />
           </Link>
           <Link 
@@ -121,7 +110,7 @@ const Navbar = ({ onOpenLogin, onOpenSignup }) => {
             onClick={() => setMobileMenuOpen(false)}
             className="flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 text-slate-800"
           >
-            <span>⭐ EcoCoin Rewards Wallet</span>
+            <span>Wallet Status</span>
             <ChevronRight className="w-4 h-4" />
           </Link>
           <Link 

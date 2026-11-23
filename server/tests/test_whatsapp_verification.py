@@ -485,6 +485,13 @@ def test_complaints_and_whatsapp_menu_regression(db_session):
         message_type="text",
         text_body="Hello EcoPulse"
     )
+    if res_unlinked["status"] == "awaiting_language":
+        res_unlinked = WhatsAppService.handle_incoming_message(
+            db=db_session,
+            sender_phone=f"91{phone}",
+            message_type="interactive",
+            text_body="LANG_MR"
+        )
     assert res_unlinked["status"] == "not_linked"
     assert "वेबसाइटवर नागरिक म्हणून नोंदणी करा" in res_unlinked["reply"] or "first register" in res_unlinked["reply"]
 

@@ -1,9 +1,10 @@
 import csv
 import io
 import datetime
+from fastapi import HTTPException
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from server.models.complaint import Complaint
 from server.models.user import User
@@ -16,32 +17,45 @@ from server.schemas.admin import (
     AnalyticsResponse, WardComplaintBar, MonthlyTrend,
     NotificationResponse
 )
-from server.utils.security import hash_password
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: derive task stats for a driver
 # ─────────────────────────────────────────────────────────────────────────────
-def _task_stats(db: Session, driver_id: int):
-    tasks = db.query(DriverTask).filter(DriverTask.driver_id == driver_id).all()
+def _task_stats(db: Session, driver_id: int, ward_scope: Optional[str] = None):
+    query = db.query(DriverTask).filter(DriverTask.driver_id == driver_id)
+    if ward_scope is not None:
+        query = query.join(Complaint, DriverTask.complaint_id == Complaint.id).filter(
+            Complaint.ward == ward_scope
+        )
+    tasks = query.all()
     completed = sum(1 for t in tasks if t.status == "Completed")
     in_progress = sum(1 for t in tasks if t.status == "In Progress")
     pending = sum(1 for t in tasks if t.status == "Pending")
     return completed, in_progress, pending
 
 
-def _driver_to_response(driver: User, db: Session) -> AdminDriverResponse:
-    completed, in_progress, pending = _task_stats(db, driver.id)
+def _driver_to_response(
+    driver: User, db: Session, ward_scope: Optional[str] = None
+) -> AdminDriverResponse:
+    completed, in_progress, pending = _task_stats(db, driver.id, ward_scope=ward_scope)
     return AdminDriverResponse(
         id=driver.id,
         full_name=driver.full_name,
         email=driver.email,
         employee_id=driver.employee_id,
+        login_id=driver.login_id,
         ward=driver.ward,
+        ward_id=driver.ward_id,
+        municipality_id=driver.municipality_id,
         phone=driver.phone,
         role=driver.role,
         is_active=driver.is_active,
-        eco_coins=driver.eco_coins or 100,
+        is_verified=driver.is_verified,
+        mfa_enabled=bool(driver.mfa_enabled),
+        account_status=driver.account_status,
+        vehicle_assignment=driver.vehicle_assignment,
+        eco_coins=driver.eco_coins if driver.eco_coins is not None else 0,
         tasks_completed=completed,
         tasks_in_progress=in_progress,
         tasks_pending=pending,
@@ -49,39 +63,61 @@ def _driver_to_response(driver: User, db: Session) -> AdminDriverResponse:
     )
 
 
+def _driver_response(driver: User, db: Session) -> AdminDriverResponse:
+    return _driver_to_response(driver, db)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 class AdminService:
+    driver_to_response = staticmethod(_driver_response)
 
     # ── Dashboard Metrics ──────────────────────────────────────────────────
     @staticmethod
-    def get_dashboard_metrics(db: Session) -> AdminMetricsResponse:
-        total = db.query(Complaint).count()
-        pending = db.query(Complaint).filter(Complaint.status == "Pending").count()
-        in_progress = db.query(Complaint).filter(Complaint.status == "In Progress").count()
-        completed = db.query(Complaint).filter(Complaint.status == "Completed").count()
+    def get_dashboard_metrics(db: Session, ward_scope: Optional[str] = None) -> AdminMetricsResponse:
+        complaints = db.query(Complaint)
+        if ward_scope is not None:
+            complaints = complaints.filter(Complaint.ward == ward_scope)
+        total = complaints.count()
+        pending = complaints.filter(Complaint.status == "Pending").count()
+        in_progress = complaints.filter(Complaint.status == "In Progress").count()
+        completed = complaints.filter(Complaint.status == "Completed").count()
 
-        active_drivers = db.query(User).filter(User.role == "driver", User.is_active == True).count()
-        total_drivers = db.query(User).filter(User.role == "driver").count()
-        total_citizens = db.query(User).filter(User.role == "citizen").count()
-        active_trucks = active_drivers if active_drivers > 0 else 24
+        drivers = db.query(User).filter(User.role == "driver")
+        if ward_scope is not None:
+            drivers = drivers.filter(User.ward == ward_scope)
+        active_drivers = drivers.filter(User.is_active.is_(True)).count()
+        total_drivers = drivers.count()
+        total_citizens = 0 if ward_scope is not None else db.query(User).filter(User.role == "citizen").count()
+        truck_query = db.query(func.count(func.distinct(User.vehicle_assignment))).filter(
+            User.role == "driver",
+            User.is_active.is_(True),
+            User.vehicle_assignment.isnot(None),
+            User.vehicle_assignment != "",
+        )
+        if ward_scope is not None:
+            truck_query = truck_query.filter(User.ward == ward_scope)
+        active_trucks = truck_query.scalar() or 0
 
-        total_count = total if total > 0 else 1
-        resolution_rate = round((completed / total_count) * 100, 1)
+        resolution_rate = round((completed / total) * 100, 1) if total else 0
 
-        # Dynamic ward resolution aggregation
-        known_wards = ["Ward 12", "Ward 8", "Ward 4", "Ward 10", "Ward 3", "Ward 6"]
-        top_wards = []
-        for w in known_wards:
-            w_total = db.query(Complaint).filter(Complaint.ward == w).count()
-            w_comp = db.query(Complaint).filter(Complaint.ward == w, Complaint.status == "Completed").count()
-            w_in_prog = db.query(Complaint).filter(Complaint.ward == w, Complaint.status == "In Progress").count()
-            if w_total > 0:
-                pct = round(((w_comp + (w_in_prog * 0.5)) / w_total) * 100)
-            else:
-                pct = 85
-            top_wards.append(WardPerformance(name=w, percent=pct))
-
-        # Sort by percent descending, take top 4
+        ward_query = db.query(
+            Complaint.ward,
+            func.count(Complaint.id),
+            func.sum(case((Complaint.status == "Completed", 1), else_=0)),
+        ).filter(
+            Complaint.ward.isnot(None),
+            Complaint.ward != "",
+        )
+        if ward_scope is not None:
+            ward_query = ward_query.filter(Complaint.ward == ward_scope)
+        ward_rows = ward_query.group_by(Complaint.ward).all()
+        top_wards = [
+            WardPerformance(
+                name=ward,
+                percent=round((completed_count / count) * 100),
+            )
+            for ward, count, completed_count in ward_rows
+        ]
         top_wards.sort(key=lambda x: x.percent, reverse=True)
         top_wards = top_wards[:4]
 
@@ -115,120 +151,107 @@ class AdminService:
                 c.waste_type,
                 c.status,
                 c.assigned_driver_name or "Unassigned",
-                c.ai_status or "Verified",
-                f"{int((c.ai_confidence or 0.95) * 100)}%",
+                c.ai_status or "",
+                f"{int(c.ai_confidence * 100)}%" if c.ai_confidence is not None else "",
                 c.created_at.strftime("%Y-%m-%d %H:%M:%S") if c.created_at else "N/A"
             ])
         return output.getvalue()
 
     # ── Driver Management ─────────────────────────────────────────────────
     @staticmethod
-    def get_all_drivers(db: Session) -> List[AdminDriverResponse]:
-        drivers = db.query(User).filter(User.role.in_(["driver", "collector"])).order_by(User.created_at.desc()).all()
-        return [_driver_to_response(d, db) for d in drivers]
+    def get_all_drivers(db: Session, ward_scope: Optional[str] = None, include_collectors: bool = False,
+                        ward_id: Optional[int] = None, municipality_id: Optional[int] = None) -> List[AdminDriverResponse]:
+        from datetime import datetime, timezone
+        from server.models.account_invitation import AccountInvitation
+        roles = ("driver", "collector") if ward_scope is None or include_collectors else ("driver",)
+        query = db.query(User).filter(User.role.in_(roles))
+        if ward_scope is not None:
+            query = query.filter(func.lower(func.trim(User.ward)) == ward_scope.strip().casefold())
+        if ward_id is not None:
+            query = query.filter(User.ward_id == ward_id)
+        if municipality_id is not None:
+            query = query.filter(User.municipality_id == municipality_id)
+        drivers = query.order_by(User.created_at.desc()).all()
+        if not drivers:
+            return []
+        invitations = db.query(AccountInvitation).filter(
+            AccountInvitation.user_id.in_([driver.id for driver in drivers]),
+            AccountInvitation.role.in_(roles),
+        ).order_by(AccountInvitation.created_at.desc(), AccountInvitation.id.desc()).all()
+        latest = {}
+        for invitation in invitations:
+            latest.setdefault(invitation.user_id, invitation)
+        now = datetime.now(timezone.utc)
+        result = []
+        for driver in drivers:
+            invitation = latest.get(driver.id)
+            state = "not_invited"
+            if invitation:
+                expires = invitation.expires_at
+                if expires and expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if invitation.revoked_at:
+                    state = "revoked"
+                elif invitation.consumed_at:
+                    state = "used"
+                elif expires is None or expires <= now:
+                    state = "expired"
+                else:
+                    state = "pending"
+            item = _driver_to_response(driver, db, ward_scope=ward_scope)
+            item.activated_at = driver.activated_at
+            item.invitation_status = state
+            item.invitation_expires_at = invitation.expires_at if invitation else None
+            result.append(item)
+        return result
 
     @staticmethod
     def create_driver(db: Session, payload) -> AdminDriverResponse:
-        from fastapi import HTTPException, status as http_status
-        existing = db.query(User).filter(User.email == payload.email).first()
-        if existing:
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered."
-            )
-        new_driver = User(
-            full_name=payload.full_name,
-            email=payload.email,
-            phone=payload.phone,
-            employee_id=payload.employee_id or f"EMP-DRV-{db.query(User).count() + 1:03d}",
-            hashed_password=hash_password(payload.password),
-            role="driver",
-            ward=payload.ward or "Ward 12",
-            is_active=True
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="Driver accounts must be provisioned through the authorized invitation workflow.",
         )
-        db.add(new_driver)
-        db.commit()
-        db.refresh(new_driver)
-        return _driver_to_response(new_driver, db)
 
     @staticmethod
     def update_driver_status(db: Session, driver_id: int, is_active: bool) -> AdminDriverResponse:
-        from fastapi import HTTPException, status as http_status
-        driver = db.query(User).filter(User.id == driver_id, User.role.in_(["driver", "collector"])).first()
-        if not driver:
-            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Driver not found.")
-        driver.is_active = is_active
-        db.commit()
-        db.refresh(driver)
-        return _driver_to_response(driver, db)
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=409,
+            detail="Use the authorized account lifecycle endpoint so actor, scope, reason, and audit requirements are enforced.",
+        )
 
     # ── Complaint Status Update ────────────────────────────────────────────
     @staticmethod
-    def update_complaint_status(db: Session, complaint_db_id: int, new_status: str) -> Complaint:
+    def update_complaint_status(
+        db: Session, complaint_db_id: int, new_status: str, *, ward_scope: Optional[str] = None
+    ) -> Complaint:
+        if new_status == "Completed":
+            raise HTTPException(status_code=409, detail="Complaint completion requires approved Driver evidence through task verification.")
         from fastapi import HTTPException, status as http_status
-        complaint = db.query(Complaint).filter(Complaint.id == complaint_db_id).first()
+        query = db.query(Complaint).filter(Complaint.id == complaint_db_id)
+        if ward_scope is not None:
+            query = query.filter(Complaint.ward == ward_scope)
+        complaint = query.first()
         if not complaint:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Complaint not found.")
+        if complaint.status == "Completed" and new_status != "Completed":
+            raise HTTPException(status_code=409, detail="A verified complaint cannot be reopened through status editing.")
+        linked_task = db.query(DriverTask).filter(DriverTask.complaint_id == complaint.id).order_by(DriverTask.id.desc()).first()
+        if linked_task and new_status != complaint.status:
+            raise HTTPException(status_code=409, detail="Complaint status is managed by its assigned task lifecycle.")
         complaint.status = new_status
-        # If resolved, award eco_coins to citizen
-        if new_status == "Completed" and complaint.citizen_id:
-            citizen = db.query(User).filter(User.id == complaint.citizen_id).first()
-            if citizen:
-                citizen.eco_coins = (citizen.eco_coins or 100) + 25
         db.commit()
         db.refresh(complaint)
         return complaint
 
     # ── Smart Bin Telemetry ────────────────────────────────────────────────
     @staticmethod
-    def _seed_default_bins(db: Session):
-        seeds = [
-            SmartBin(bin_code="BIN-101", location_name="Green Park, Plot 45, Sector 4", ward="Ward 12",
-                     bin_type="General Waste", capacity_liters=240, fill_level_pct=92,
-                     latitude=18.525, longitude=73.855),
-            SmartBin(bin_code="BIN-102", location_name="Sai Nagar, Main Road Junction", ward="Ward 12",
-                     bin_type="Recyclable", capacity_liters=120, fill_level_pct=68,
-                     latitude=18.528, longitude=73.848),
-            SmartBin(bin_code="BIN-103", location_name="Shanti Apartment Complex, Block B", ward="Ward 8",
-                     bin_type="General Waste", capacity_liters=360, fill_level_pct=45,
-                     latitude=18.521, longitude=73.861),
-            SmartBin(bin_code="BIN-104", location_name="Market Area, Gate No. 2", ward="Ward 8",
-                     bin_type="Organic", capacity_liters=120, fill_level_pct=85,
-                     latitude=18.523, longitude=73.858),
-            SmartBin(bin_code="BIN-105", location_name="Rose Garden, Near Entrance", ward="Ward 4",
-                     bin_type="E-Waste", capacity_liters=80, fill_level_pct=30,
-                     latitude=18.519, longitude=73.844),
-            SmartBin(bin_code="BIN-106", location_name="Bus Stand, Platform 3", ward="Ward 4",
-                     bin_type="General Waste", capacity_liters=240, fill_level_pct=78,
-                     latitude=18.531, longitude=73.851),
-            SmartBin(bin_code="BIN-107", location_name="City Hospital, Outpatient Gate", ward="Ward 10",
-                     bin_type="General Waste", capacity_liters=360, fill_level_pct=55,
-                     latitude=18.516, longitude=73.866),
-            SmartBin(bin_code="BIN-108", location_name="Industrial Area, Zone C", ward="Ward 10",
-                     bin_type="Recyclable", capacity_liters=500, fill_level_pct=20,
-                     latitude=18.534, longitude=73.870),
-            SmartBin(bin_code="BIN-109", location_name="School Campus, Main Gate", ward="Ward 3",
-                     bin_type="General Waste", capacity_liters=120, fill_level_pct=62,
-                     latitude=18.512, longitude=73.840),
-            SmartBin(bin_code="BIN-110", location_name="Sports Complex, East Entrance", ward="Ward 6",
-                     bin_type="Organic", capacity_liters=240, fill_level_pct=40,
-                     latitude=18.540, longitude=73.860),
-            SmartBin(bin_code="BIN-111", location_name="Riverside Park, Gate 1", ward="Ward 12",
-                     bin_type="Recyclable", capacity_liters=120, fill_level_pct=98,
-                     latitude=18.527, longitude=73.853),
-            SmartBin(bin_code="BIN-112", location_name="Commercial Complex, Level 2", ward="Ward 8",
-                     bin_type="General Waste", capacity_liters=360, fill_level_pct=15,
-                     latitude=18.522, longitude=73.856),
-        ]
-        db.add_all(seeds)
-        db.commit()
-
-    @staticmethod
-    def get_bin_telemetry(db: Session) -> BinTelemetrySummary:
-        bins = db.query(SmartBin).all()
-        if not bins:
-            AdminService._seed_default_bins(db)
-            bins = db.query(SmartBin).all()
+    def get_bin_telemetry(db: Session, ward_scope: Optional[str] = None) -> BinTelemetrySummary:
+        query = db.query(SmartBin)
+        if ward_scope is not None:
+            query = query.filter(SmartBin.ward == ward_scope)
+        bins = query.all()
 
         critical = [b for b in bins if b.fill_level_pct >= 80]
         warning = [b for b in bins if 60 <= b.fill_level_pct < 80]
@@ -245,9 +268,15 @@ class AdminService:
         )
 
     @staticmethod
-    def update_bin_fill(db: Session, bin_id: int, fill_level_pct: int, is_active: Optional[bool] = None) -> BinResponse:
+    def update_bin_fill(
+        db: Session, bin_id: int, fill_level_pct: int, is_active: Optional[bool] = None,
+        *, ward_scope: Optional[str] = None,
+    ) -> BinResponse:
         from fastapi import HTTPException, status as http_status
-        smart_bin = db.query(SmartBin).filter(SmartBin.id == bin_id).first()
+        query = db.query(SmartBin).filter(SmartBin.id == bin_id)
+        if ward_scope is not None:
+            query = query.filter(SmartBin.ward == ward_scope)
+        smart_bin = query.first()
         if not smart_bin:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Bin not found.")
         smart_bin.fill_level_pct = fill_level_pct
@@ -261,23 +290,32 @@ class AdminService:
 
     # ── Analytics ─────────────────────────────────────────────────────────
     @staticmethod
-    def get_analytics(db: Session) -> AnalyticsResponse:
-        total = db.query(Complaint).count()
-        completed = db.query(Complaint).filter(Complaint.status == "Completed").count()
-        pending = db.query(Complaint).filter(Complaint.status == "Pending").count()
+    def get_analytics(db: Session, ward_scope: Optional[str] = None) -> AnalyticsResponse:
+        complaints = db.query(Complaint)
+        if ward_scope is not None:
+            complaints = complaints.filter(Complaint.ward == ward_scope)
+        total = complaints.count()
+        completed = complaints.filter(Complaint.status == "Completed").count()
+        pending = complaints.filter(Complaint.status == "Pending").count()
 
         resolution_rate = round((completed / total * 100), 1) if total > 0 else 0.0
 
-        # Ward breakdown
-        wards = ["Ward 12", "Ward 8", "Ward 4", "Ward 10", "Ward 3", "Ward 6"]
-        ward_breakdown = []
-        for w in wards:
-            w_total = db.query(Complaint).filter(Complaint.ward == w).count()
-            w_resolved = db.query(Complaint).filter(Complaint.ward == w, Complaint.status == "Completed").count()
-            w_pending = db.query(Complaint).filter(Complaint.ward == w, Complaint.status == "Pending").count()
-            ward_breakdown.append(WardComplaintBar(
-                ward=w, total=w_total, resolved=w_resolved, pending=w_pending
-            ))
+        ward_query = db.query(
+            Complaint.ward,
+            func.count(Complaint.id),
+            func.sum(case((Complaint.status == "Completed", 1), else_=0)),
+            func.sum(case((Complaint.status == "Pending", 1), else_=0)),
+        ).filter(
+            Complaint.ward.isnot(None),
+            Complaint.ward != "",
+        )
+        if ward_scope is not None:
+            ward_query = ward_query.filter(Complaint.ward == ward_scope)
+        ward_rows = ward_query.group_by(Complaint.ward).all()
+        ward_breakdown = [
+            WardComplaintBar(ward=ward, total=count, resolved=resolved, pending=pending)
+            for ward, count, resolved, pending in ward_rows
+        ]
 
         # Monthly trends from real data
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -287,39 +325,42 @@ class AdminService:
             m_label = target.strftime("%b")
             month_start = target.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             next_month = (month_start + datetime.timedelta(days=32)).replace(day=1)
-            m_total = db.query(Complaint).filter(
+            month_query = db.query(Complaint).filter(
                 Complaint.created_at >= month_start,
                 Complaint.created_at < next_month
-            ).count()
-            m_resolved = db.query(Complaint).filter(
+            )
+            resolved_query = db.query(Complaint).filter(
                 Complaint.created_at >= month_start,
                 Complaint.created_at < next_month,
                 Complaint.status == "Completed"
-            ).count()
+            )
+            if ward_scope is not None:
+                month_query = month_query.filter(Complaint.ward == ward_scope)
+                resolved_query = resolved_query.filter(Complaint.ward == ward_scope)
+            m_total = month_query.count()
+            m_resolved = resolved_query.count()
             months.append(MonthlyTrend(month=m_label, complaints=m_total, resolved=m_resolved))
 
         # Waste type distribution
         waste_types_query = db.query(
             Complaint.waste_type,
             func.count(Complaint.id).label("count")
-        ).group_by(Complaint.waste_type).all()
+        )
+        if ward_scope is not None:
+            waste_types_query = waste_types_query.filter(Complaint.ward == ward_scope)
+        waste_types_query = waste_types_query.group_by(Complaint.waste_type).all()
         top_waste = [{"type": wt, "count": cnt} for wt, cnt in waste_types_query]
-        if not top_waste:
-            top_waste = [
-                {"type": "Mixed Waste", "count": 45},
-                {"type": "Plastic Waste", "count": 30},
-                {"type": "Garbage Overflow", "count": 18},
-                {"type": "E-Waste", "count": 7},
-            ]
-
-        active_drivers = db.query(User).filter(User.role == "driver", User.is_active == True).count()
-        total_drivers = db.query(User).filter(User.role == "driver").count()
+        drivers = db.query(User).filter(User.role == "driver")
+        if ward_scope is not None:
+            drivers = drivers.filter(User.ward == ward_scope)
+        active_drivers = drivers.filter(User.is_active.is_(True)).count()
+        total_drivers = drivers.count()
 
         return AnalyticsResponse(
             resolution_rate=resolution_rate,
-            avg_response_hours=4.2,        # business logic constant
-            citizen_satisfaction=87.3,     # computed from resolved/total ratio
-            waste_collected_tonnes=round(completed * 0.85, 1),
+            avg_response_hours=None,
+            citizen_satisfaction=None,
+            waste_collected_tonnes=None,
             ward_breakdown=ward_breakdown,
             monthly_trends=months,
             top_waste_types=top_waste,
@@ -329,54 +370,8 @@ class AdminService:
 
     # ── Notifications ─────────────────────────────────────────────────────
     @staticmethod
-    def _seed_default_notifications(db: Session):
-        seeds = [
-            Notification(
-                title="Bin #111 reaching max capacity",
-                message="Ward A sensor reading at 98%. Immediate dispatch required to prevent overflow.",
-                notification_type="Critical",
-                audience="All",
-                priority="Emergency",
-                icon="delete_forever",
-                is_broadcast=False,
-            ),
-            Notification(
-                title="Driver Ramesh Yadav completed shift",
-                message="Vehicle GJ-01-XX-1234 logged off. Total collections: 42. Distance: 34km.",
-                notification_type="Info",
-                audience="All",
-                priority="Standard",
-                icon="check_circle",
-                is_broadcast=False,
-            ),
-            Notification(
-                title="Route Deviation Detected",
-                message="Truck #45 (Driver: S. Patel) deviated from planned route in Ward C. Delay expected.",
-                notification_type="Warning",
-                audience="All",
-                priority="High",
-                icon="route",
-                is_broadcast=False,
-            ),
-            Notification(
-                title="New Citizen Complaint Registered",
-                message="Complaint #CMP-8892 logged for missed collection in Sector 4.",
-                notification_type="Info",
-                audience="All",
-                priority="Standard",
-                icon="forum",
-                is_broadcast=False,
-            ),
-        ]
-        db.add_all(seeds)
-        db.commit()
-
-    @staticmethod
     def get_notifications(db: Session) -> List[NotificationResponse]:
         notifications = db.query(Notification).order_by(Notification.created_at.desc()).all()
-        if not notifications:
-            AdminService._seed_default_notifications(db)
-            notifications = db.query(Notification).order_by(Notification.created_at.desc()).all()
         return [NotificationResponse.model_validate(n) for n in notifications]
 
     @staticmethod
@@ -431,7 +426,10 @@ class AdminService:
                 ward=u.ward,
                 phone=u.phone,
                 employee_id=u.employee_id,
-                eco_coins=u.eco_coins or 100,
+                  login_id=u.login_id,
+                  account_status=u.account_status,
+                  is_verified=bool(u.is_verified),
+                eco_coins=u.eco_coins if u.eco_coins is not None else 0,
                 is_active=u.is_active,
                 created_at=u.created_at
             )

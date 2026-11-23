@@ -1,11 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { fetchMyComplaints } from '../services/complaintService';
-import { BACKEND_BASE_URL } from '../services/api';
+import { fetchMyComplaints, resolveComplaintImage } from '../services/complaintService';
 import { getCurrentUser, logoutUser, updateUserProfile } from '../services/authService';
 import ProfileModal from '../components/ProfileModal';
 import ReportWasteModal from '../components/ReportWasteModal';
-import InteractiveMap from '../components/InteractiveMap';
 import WhatsAppLinkCard from '../components/WhatsAppLinkCard';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -34,6 +32,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState(initialTab);
   const [user, setUser] = useState(null);
+  const [userLoading, setUserLoading] = useState(true);
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -41,20 +40,22 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
   const [complaintsError, setComplaintsError] = useState(null);
   const [complaintsLoading, setComplaintsLoading] = useState(true);
   const [selectedComplaint, setSelectedComplaint] = useState(null);
+  const [selectedComplaintImageUrl, setSelectedComplaintImageUrl] = useState(null);
   const [complaintFilter, setComplaintFilter] = useState('All');
 
   useEffect(() => {
     // Validate session with backend and load real user profile.
     // ProtectedRoute already verified the token; this refreshes the data.
-    getCurrentUser().then((userData) => {
-      if (userData) {
-        setUser(userData);
-      } else {
-        // Token invalidated between ProtectedRoute and render.
-        // The 401 interceptor in api.js redirects to /login automatically.
-        navigate('/login', { replace: true });
-      }
-    });
+    getCurrentUser()
+      .then((userData) => {
+        if (userData) {
+          setUser(userData);
+        } else {
+          navigate('/login', { replace: true });
+        }
+      })
+      .catch(() => setUser(null))
+      .finally(() => setUserLoading(false));
 
     // Load real complaints — no fabricated fallback data
     setComplaintsLoading(true);
@@ -76,8 +77,20 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
       .finally(() => setComplaintsLoading(false));
   }, []);
 
-  const handleLogout = () => {
-    logoutUser();
+  useEffect(() => {
+    let cancelled = false;
+    setSelectedComplaintImageUrl(null);
+    if (!selectedComplaint?.has_image) return () => { cancelled = true; };
+
+    resolveComplaintImage(selectedComplaint.id)
+      .then((url) => { if (!cancelled) setSelectedComplaintImageUrl(url); })
+      .catch(() => { if (!cancelled) setSelectedComplaintImageUrl(''); });
+
+    return () => { cancelled = true; };
+  }, [selectedComplaint]);
+
+  const handleLogout = async () => {
+    await logoutUser();
     navigate('/login');
   };
 
@@ -93,11 +106,9 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
     setUser(updatedUser);
   };
 
-  // Compute live real-time statistics
+  // Compute statistics from the currently loaded complaint records.
   const totalComplaintsCount = recentComplaints.length;
   const inProgressCount = recentComplaints.filter((c) => c.status === 'In Progress').length;
-  const ecoCoinsCount = user?.eco_coins || 150;
-
   // How it works steps matching CITIZEN.png
   const steps = [
     {
@@ -106,18 +117,18 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
       icon: Camera
     },
     {
-      title: 'AI Verify',
-      description: 'We verify & create complaint',
+      title: 'Review',
+      description: 'The submitted report is reviewed by the municipality',
       icon: Cpu
     },
     {
       title: 'Assigned',
-      description: 'Task assigned to driver or collector',
+      description: 'A driver may be assigned by municipal staff',
       icon: Truck
     },
     {
       title: 'Resolved',
-      description: 'You get notified & earn EcoCoins',
+      description: 'Check the complaint status for updates',
       icon: CheckCircle2
     }
   ];
@@ -255,7 +266,9 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
           </div>
           <div className="flex flex-col">
             <span className="text-white text-xs font-bold">{user?.name || user?.full_name || 'Citizen'}</span>
-            <span className="text-emerald-300 text-[10px] font-semibold">{user?.ward || 'Ward 12'} • Active Citizen</span>
+            <span className="text-emerald-300 text-[10px] font-semibold">
+              {user?.ward || 'Ward unavailable'} • Active Citizen
+            </span>
           </div>
         </div>
 
@@ -331,7 +344,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                 Citizen Dashboard
               </h1>
               <p className="text-[11px] font-semibold text-slate-500 hidden sm:block">
-                Clean City • Ward 12 Municipal Portal
+                Municipal Citizen Portal
               </p>
             </div>
           </div>
@@ -371,7 +384,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                 <div>
                   <h2 className="text-2xl font-black text-slate-900">My Complaints</h2>
                   <p className="text-xs font-semibold text-slate-500 mt-1">
-                    Track and manage your reported waste issues in real-time.
+                    Review status from the latest complaint data request.
                   </p>
                 </div>
                 <button
@@ -512,7 +525,7 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                                 </div>
                               </div>
                               <div className="text-[10px] text-slate-400 font-bold">
-                                Registered live
+                                Recently submitted
                               </div>
                             </div>
                           ))}
@@ -533,68 +546,22 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
               <div>
                 <h2 className="text-2xl font-black text-slate-900">Track Waste Truck</h2>
                 <p className="text-xs font-semibold text-slate-500 mt-1">
-                  Live GPS mapping of waste collection vehicles in your ward.
+                  Vehicle location data is not available in this portal.
                 </p>
               </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Tracker Info Card */}
-                <div className="lg:col-span-4 bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col gap-6 shadow-xs">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="text-lg font-black text-slate-900 mb-1">Unit #402</h3>
-                      <p className="text-xs font-bold text-emerald-600 flex items-center gap-1.5">
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        Active Route: Sector 7
-                      </p>
-                    </div>
-                    <span className="px-2.5 py-1 bg-slate-100 border border-slate-200 text-slate-800 text-[10px] font-black rounded uppercase">
-                      General Waste
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 text-center">
-                      <p className="text-[10px] font-black text-slate-400 uppercase">Est. Arrival</p>
-                      <p className="text-3xl font-black text-primary mt-1">14<span className="text-sm font-bold text-primary/70">min</span></p>
-                    </div>
-                    <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 text-center">
-                      <p className="text-[10px] font-black text-slate-400 uppercase">Distance Left</p>
-                      <p className="text-3xl font-black text-primary mt-1">3.2<span className="text-sm font-bold text-primary/70">km</span></p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3.5 border-t border-slate-100 pt-4 text-xs font-semibold">
-                    <div className="flex items-start gap-2.5">
-                      <span className="text-slate-400 text-sm">👤</span>
-                      <div>
-                        <p className="text-slate-400 text-[10px]">Crew Assigned</p>
-                        <p className="text-slate-800">Ajay Patel (Driver) & Vikram Singh</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-2.5">
-                      <span className="text-slate-400 text-sm">📍</span>
-                      <div>
-                        <p className="text-slate-400 text-[10px]">Next Stop</p>
-                        <p className="text-slate-800">Sector 7, Lane B</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 border-t border-slate-100 pt-4 mt-auto">
-                    <button className="flex-1 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold rounded-xl text-xs flex justify-center items-center gap-2">
-                      📞 Call Crew
-                    </button>
-                    <button className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs flex justify-center items-center gap-2">
-                      💬 Message
-                    </button>
-                  </div>
-                </div>
-
-                {/* Map Panel */}
-                <div className="lg:col-span-8 h-[500px] rounded-2xl border border-slate-200 overflow-hidden relative shadow-xs bg-slate-100">
-                  <InteractiveMap center={[18.5204, 73.8567]} zoom={14} driverLocation={[18.524, 73.852]} />
-                </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
+                <Truck className="mx-auto h-10 w-10 text-slate-400" />
+                <h3 className="mt-3 text-base font-extrabold text-slate-900">Vehicle tracking unavailable</h3>
+                <p className="mx-auto mt-2 max-w-lg text-sm font-medium text-slate-600">
+                  Driver location data is not connected. You can still view the latest status of your submitted complaints.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('My Complaints')}
+                  className="mt-5 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white"
+                >
+                  View My Complaints
+                </button>
               </div>
             </motion.div>
           ) : activeTab === 'EcoCoins Rewards' || activeTab === 'Redeem Coupons' ? (
@@ -607,118 +574,17 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
               <div>
                 <h2 className="text-2xl font-black text-slate-900">EcoCoins Rewards</h2>
                 <p className="text-xs font-semibold text-slate-500 mt-1">
-                  Earn points by contributing to a cleaner city and redeem them for exclusive local benefits.
+                  Reward balance, history, and redemption are unavailable.
                 </p>
               </div>
-
-              {/* Balance Banner & Stats Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                <div className="lg:col-span-8 bg-white border border-slate-200/90 rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between min-h-[220px] shadow-xs">
-                  <div className="absolute -right-20 -top-20 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
-                  
-                  <div className="relative z-10">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                      🪙 Total Available Balance
-                    </span>
-                    <div className="mt-3 flex items-baseline gap-2">
-                      <span className="text-5xl font-black text-primary tracking-tight">{ecoCoinsCount}</span>
-                      <span className="text-base font-bold text-primary/70">EcoCoins</span>
-                    </div>
-                    <div className="mt-3 inline-flex items-center px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-[10px] font-black">
-                      📈 +350 points this month
-                    </div>
-                  </div>
-
-                  <div className="relative z-10 mt-6 grid grid-cols-3 gap-4 border-t border-slate-100 pt-4 text-xs font-semibold text-slate-500">
-                    <div>
-                      <span className="block text-[10px] text-slate-400">Lifetime Earned</span>
-                      <span className="font-black text-slate-800 text-sm">{ecoCoinsCount + 300}</span>
-                    </div>
-                    <div>
-                      <span className="block text-[10px] text-slate-400">Complaints Resolved</span>
-                      <span className="font-black text-slate-800 text-sm">{totalComplaintsCount}</span>
-                    </div>
-                    <div>
-                      <span className="block text-[10px] text-slate-400">Next Tier</span>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="font-black text-slate-800 text-sm">Gold</span>
-                        <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-primary w-2/3 rounded-full"></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Redeem CTA Box */}
-                <div className="lg:col-span-4 bg-primary text-white rounded-2xl p-5 flex flex-col justify-between min-h-[220px] shadow-xs">
-                  <div>
-                    <h3 className="text-lg font-black mb-1.5">Ready to Redeem?</h3>
-                    <p className="text-xs text-white/80 font-semibold leading-relaxed">
-                      Explore active offers from local partners and city services to use your EcoCoins.
-                    </p>
-                  </div>
-                  <div className="mt-4 bg-white/10 rounded-xl p-3 border border-white/20">
-                    <span className="block text-[9px] text-white/60 uppercase font-black tracking-wide mb-1">Featured Offer</span>
-                    <div className="flex items-center justify-between text-xs font-bold">
-                      <span>20% Water Bill Discount</span>
-                      <span className="bg-white text-primary px-1.5 py-0.5 rounded text-[10px] font-black">2,000 EC</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Coupons List */}
-              <div className="space-y-4">
-                <h3 className="text-base font-extrabold text-slate-900">Available Coupons & Benefits</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {[
-                    { id: 1, title: '20% Water Bill Discount', cost: 2000, brand: 'Municipal Services', desc: 'Get 20% off on your quarterly water supply utility bill.' },
-                    { id: 2, title: 'Free Bus Pass (10 Rides)', cost: 1000, brand: 'City Transport', desc: 'Valid for all city routes on smart electric buses.' },
-                    { id: 3, title: 'Organic Compost Pack (5kg)', cost: 300, brand: 'Green City Labs', desc: '100% natural organic compost made from wet waste.' },
-                    { id: 4, title: 'Reusable Canvas Tote Bag', cost: 100, brand: 'EcoPulse Store', desc: 'Durable, zero-waste cotton tote for shopping.' },
-                    { id: 5, title: 'Free Parking Voucher (2 Hours)', cost: 500, brand: 'Smart Parking', desc: 'Valid at any municipal parking lot in central area.' }
-                  ].map(coupon => {
-                    const canAfford = ecoCoinsCount >= coupon.cost;
-                    return (
-                      <div 
-                        key={coupon.id}
-                        className="bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col justify-between shadow-2xs hover:border-primary/45 transition-colors"
-                      >
-                        <div>
-                          <div className="flex justify-between items-start gap-2 mb-2">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wide">{coupon.brand}</span>
-                            <span className="text-xs font-black text-primary bg-primary/5 px-2 py-0.5 rounded border border-primary/10">{coupon.cost} EC</span>
-                          </div>
-                          <h4 className="text-sm font-extrabold text-slate-900 mb-1">{coupon.title}</h4>
-                          <p className="text-xs text-slate-500 font-semibold leading-relaxed mb-4">{coupon.desc}</p>
-                        </div>
-                        <button
-                          disabled={!canAfford}
-                          onClick={async () => {
-                            if (user) {
-                              const updatedCoins = user.eco_coins - coupon.cost;
-                              try {
-                                const updated = await updateUserProfile({ eco_coins: updatedCoins });
-                                setUser(updated);
-                                alert(`Successfully redeemed: ${coupon.title}! ${coupon.cost} EcoCoins deducted.`);
-                              } catch (err) {
-                                console.error('Failed to redeem coupon:', err);
-                              }
-                            }
-                          }}
-                          className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                            canAfford 
-                              ? 'bg-primary text-white hover:bg-primary-container shadow-xs'
-                              : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
-                          }`}
-                        >
-                          {canAfford ? 'Redeem Coupon' : 'Insufficient Coins'}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-6">
+                <span className="text-xs font-black uppercase tracking-wide text-slate-500">EcoCoins balance</span>
+                <p className="mt-2 text-4xl font-black text-primary">
+                  {userLoading ? 'Loading…' : 'Unavailable'}
+                </p>
+                <p className="mt-3 text-sm font-medium text-slate-600">
+                  Reward transactions and redemption are not currently supported. No rewards are issued automatically.
+                </p>
               </div>
             </motion.div>
           ) : activeTab === 'Help & Support' ? (
@@ -731,21 +597,21 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
               <div>
                 <h2 className="text-2xl font-black text-slate-900">Help & Support</h2>
                 <p className="text-xs font-semibold text-slate-500 mt-1">
-                  Get instant support for waste management queries and chat with our AI agent.
+                  Use WhatsApp to submit a report and review the available civic options.
                 </p>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Chatbot Banner */}
                 <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col justify-between items-center text-center shadow-xs">
-                  <h3 className="text-base font-extrabold text-slate-900 mb-2 w-full text-left">AI Chat Support</h3>
+                  <h3 className="text-base font-extrabold text-slate-900 mb-2 w-full text-left">WhatsApp Help</h3>
                   
                   <div className="w-32 h-32 my-4 rounded-full bg-emerald-50 border border-emerald-100 flex items-center justify-center text-5xl select-none shadow-2xs">
                     💬
                   </div>
 
                   <p className="text-xs font-semibold text-slate-600 leading-relaxed max-w-xs mb-6">
-                    Connect with our WhatsApp AI Chatbot to report issues, track trucks, or get instant civic answers.
+                    Use WhatsApp to submit reports and check the available complaint options.
                   </p>
 
                   <button
@@ -761,9 +627,9 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                   <h3 className="text-base font-extrabold text-slate-900 mb-2">Frequently Asked Questions</h3>
                   <div className="divide-y divide-slate-100 space-y-3.5">
                     {[
-                      { q: 'How do I earn EcoCoins?', a: 'You earn EcoCoins automatically whenever you report waste issues in the city that get verified and successfully resolved by the municipal collectors crew. Extra points are awarded for plastic sorting and hazardous waste alerts.' },
-                      { q: 'How long does a complaint resolution take?', a: 'Standard complaints (like overflowing bins or missed garbage collection) are resolved within 12 to 24 hours. Urgent or hazardous waste complaints are given high priority and resolved within 4 to 6 hours.' },
-                      { q: 'What is the ward limitation?', a: 'Your citizen portal allows reporting across any municipal ward. However, route updates, rewards collection packages, and community leaderboards are optimized for your registered ward area.' }
+                      { q: 'Are EcoCoins rewards available?', a: 'Reward balances and transactions are not currently supported. No rewards are issued automatically.' },
+                      { q: 'How long does a complaint resolution take?', a: 'Resolution times vary. Check the status in My Complaints or follow updates from the municipality.' },
+                      { q: 'How is my complaint assigned to a ward?', a: 'The municipality reviews the location and details submitted with your complaint.' }
                     ].map((faq, idx) => (
                       <div key={idx} className="pt-3.5 first:pt-0">
                         <h4 className="text-sm font-extrabold text-slate-900 mb-1">{faq.q}</h4>
@@ -830,15 +696,14 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                   </div>
                   <div>
                     <label className="block text-xs font-extrabold text-slate-600 mb-1.5 uppercase">Registered Ward</label>
-                    <select 
+                    <input
                       name="ward"
-                      defaultValue={user?.ward || 'Ward 12'}
+                      type="text"
+                      defaultValue={user?.ward || ''}
+                      placeholder="Ward not assigned"
+                      readOnly
                       className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold bg-white focus:outline-none focus:border-primary"
-                    >
-                      <option value="Ward 12">Ward 12 - Central District</option>
-                      <option value="Ward 14">Ward 14 - North District</option>
-                      <option value="Ward 08">Ward 08 - South District</option>
-                    </select>
+                    />
                   </div>
                   <div className="pt-2 border-t border-slate-100 flex justify-end">
                     <button 
@@ -881,14 +746,9 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
 
                     {/* Stat 3: EcoCoins */}
                     <motion.div whileHover={{ y: -2 }} className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/90 shadow-2xs">
-                      <div className="text-xs font-bold text-slate-500">EcoCoins</div>
+                      <div className="text-xs font-bold text-slate-500">Rewards balance</div>
                       <div className="flex items-center justify-between mt-2">
-                        <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                          {ecoCoinsCount}
-                        </span>
-                        <div className="w-7 h-7 rounded-full bg-amber-400 text-amber-950 flex items-center justify-center font-bold text-xs shadow-xs border border-amber-300">
-                          🪙
-                        </div>
+                        <span className="text-sm font-bold text-slate-500">Unavailable</span>
                       </div>
                     </motion.div>
 
@@ -1083,13 +943,17 @@ const DashboardPage = ({ initialTab = 'Dashboard' }) => {
                 <p className="text-xs text-slate-600 font-semibold leading-relaxed mb-4">
                   {selectedComplaint.description || 'No additional details provided. Waste has been reported at the location specified.'}
                 </p>
-                {selectedComplaint.image_url && (
+                {selectedComplaint.has_image && (
                   <div className="flex gap-2">
-                    <img 
-                      alt="Evidence" 
-                      className="w-24 h-24 object-cover rounded-xl border border-slate-200" 
-                      src={selectedComplaint.image_url.startsWith('http') ? selectedComplaint.image_url : `${BACKEND_BASE_URL}${selectedComplaint.image_url}`} 
-                    />
+                    {selectedComplaintImageUrl ? (
+                      <img
+                        alt="Complaint evidence"
+                        className="w-24 h-24 object-cover rounded-xl border border-slate-200"
+                        src={selectedComplaintImageUrl}
+                      />
+                    ) : (
+                      <p className="text-xs text-slate-500">{selectedComplaintImageUrl === '' ? 'Evidence is unavailable.' : 'Loading authorized evidence…'}</p>
+                    )}
                   </div>
                 )}
               </div>

@@ -9,14 +9,42 @@ import sys
 # Ensure server module path is importable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from server.database.db import engine, Base, SessionLocal
-from server.models.user import User
-from server.models.complaint import Complaint
-from server.models.task import DriverTask
-from server.models.item import Item
-from server.utils.security import hash_password
+from server.utils.config import get_environment, is_local_or_test_environment
+
+
+def _guard_initialization_environment() -> str:
+    """Fail closed: only explicitly authorized development/test environments may initialize/seed."""
+    try:
+        env = get_environment()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Database initialization rejected: {exc}"
+        ) from exc
+    if not is_local_or_test_environment(env):
+        raise RuntimeError(
+            f"Database initialization and demo seeding is strictly prohibited in environment {env!r}. "
+            "Only explicit development or test environments may execute this script."
+        )
+    return env
+
 
 def init_and_seed_db():
+    _guard_initialization_environment()
+
+    # Lazy imports after environment guard verification:
+    from server.database.db import engine, Base, SessionLocal
+    from server.models.user import User
+    from server.models.complaint import Complaint
+    from server.models.task import DriverTask
+    from server.models.item import Item
+    from server.utils.security import hash_password
+    from server.database.target_policy import validate_development_target
+
+    # This script inserts demo identities and sample listings; validate the
+    # resolved target before table creation or any inspection/mutation.
+    from server.utils.config import get_environment
+    validate_development_target(engine, get_environment())
+
     print("Creating all database tables...")
     Base.metadata.create_all(bind=engine)
     
@@ -96,7 +124,10 @@ def init_and_seed_db():
                     hashed_password=hash_password(udata["password"]),
                     role=udata["role"],
                     ward=udata["ward"],
-                    eco_coins=udata["eco_coins"]
+                    eco_coins=udata["eco_coins"],
+                    is_active=True,
+                    is_verified=True,
+                    account_status="active",
                 )
                 db.add(usr)
                 db.commit()
@@ -247,4 +278,5 @@ def init_and_seed_db():
         db.close()
 
 if __name__ == "__main__":
+    _guard_initialization_environment()
     init_and_seed_db()

@@ -142,6 +142,94 @@ export const loginUser = async (credentials) => {
     return response.data;
   } catch (error) {
     if (error.response?.data?.detail) {
+      const detail = error.response.data.detail;
+      const loginError = new Error(typeof detail === 'string' ? detail : detail.message || 'Sign in failed.');
+      loginError.code = typeof detail === 'object' ? detail.code : undefined;
+      throw loginError;
+    }
+    throw error;
+  }
+};
+
+export const validateInvitation = async (token) => {
+  try {
+    const response = await api.post('/auth/invitations/validate', { token });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const activateDriverAccount = async ({ token, phone, otp, challengeId, password }) => {
+  try {
+    const response = await api.post('/auth/drivers/activate', {
+      token,
+      phone,
+      otp,
+      challenge_id: challengeId,
+      password
+    });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const activateAdministratorAccount = async ({ token, password }) => {
+  try {
+    const response = await api.post('/auth/admins/activate', { token, password });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const activateCollectorAccount = async ({ token, password }) => {
+  try {
+    const response = await api.post('/auth/collectors/activate', { token, password });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const startMfaEnrollment = async ({ employeeId, password }) => {
+  try {
+    const response = await api.post('/auth/mfa/enrollment/start', {
+      employee_id: employeeId,
+      password
+    });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
+      throw new Error(error.response.data.detail);
+    }
+    throw error;
+  }
+};
+
+export const confirmMfaEnrollment = async ({ employeeId, password, code }) => {
+  try {
+    const response = await api.post('/auth/mfa/enrollment/confirm', {
+      employee_id: employeeId,
+      password,
+      code
+    });
+    return response.data;
+  } catch (error) {
+    if (error.response?.data?.detail) {
       throw new Error(error.response.data.detail);
     }
     throw error;
@@ -201,8 +289,17 @@ export const updateUserProfile = async (profileData) => {
 };
 
 export const logoutUser = () => {
+  const token = localStorage.getItem('ecopulse_token');
   localStorage.removeItem('ecopulse_token');
   localStorage.removeItem('ecopulse_user');
+  if (!token) return Promise.resolve(false);
+
+  // Revoke the server-side session version as well as clearing this browser.
+  // The explicit header is needed because the request interceptor can no longer
+  // read the token after the local session has been cleared.
+  return api.post('/auth/logout', {}, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(() => true).catch(() => false);
 };
 
 export const resetPasswordRequest = async ({ identifier, role }) => {
@@ -222,9 +319,11 @@ export const generateWhatsAppVerification = async ({ fullName, phone, email, pas
   try {
     const payload = {
       full_name: fullName,
-      phone,
-      ward: ward || 'Ward 12'
+      phone
     };
+    if (ward?.trim()) {
+      payload.ward = ward.trim();
+    }
     if (email && email.trim()) {
       payload.email = email.trim();
     }

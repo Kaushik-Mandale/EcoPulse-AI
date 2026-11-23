@@ -14,7 +14,7 @@ import { getCurrentUser } from '../../services/authService';
  * - Handles multi-tab logout: storage event listener immediately revokes access if another tab logged out.
  * - Enforces role-based access control.
  */
-const ProtectedRoute = ({ children, allowedRoles }) => {
+const ProtectedRoute = ({ children, allowedRoles, requireSuperAdmin = false }) => {
   const location = useLocation();
   const [authState, setAuthState] = useState({
     status: 'loading', // 'loading' | 'authenticated' | 'unauthenticated'
@@ -85,10 +85,17 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
 
     if (!hasPermission) {
       // Redirect to the user's authorized home — never expose a denied dashboard
-      if (userRole === 'driver') return <Navigate to="/driver" replace />;
-      if (userRole === 'admin' || userRole === 'collector') return <Navigate to="/admin" replace />;
+      if (userRole === 'driver' || userRole === 'collector') return <Navigate to="/field-operations" replace />;
+      if (userRole === 'admin') return <Navigate to="/admin" replace />;
       return <Navigate to="/citizen" replace />;
     }
+  }
+
+  if (requireSuperAdmin && !(authState.user.role?.toLowerCase() === 'admin' && authState.user.is_super_admin)) {
+    return <Navigate to={authState.user.role?.toLowerCase() === 'admin' ? '/admin' : '/login'} replace />;
+  }
+  if (!requireSuperAdmin && authState.user.role?.toLowerCase() === 'admin' && authState.user.is_super_admin) {
+    return <Navigate to="/super-admin" replace />;
   }
 
   // ── Authenticated + Authorized ─────────────────────────────────────────────

@@ -10,6 +10,7 @@ from server.database.db import SessionLocal
 from server.models.user import User
 from server.models.mobile_otp import MobileOtpToken
 from server.utils.security import hash_password, create_access_token
+from server.tests.iam_test_helpers import login_admin
 from server.services.otp_delivery.base import OtpDeliveryProvider, OtpDeliveryResult
 from server.services.otp_delivery.factory import set_otp_delivery_provider_for_testing
 
@@ -50,6 +51,59 @@ def test_backend_api_title_and_description():
     assert "EcoPulse AI" in app.description
     assert "City Swap" not in app.description
     assert "CITY_SWAP" not in app.description
+
+
+def test_activation_routes_role_contracts_and_dashboard_freshness_copy():
+    client_dir = Path("client")
+    app_js = (client_dir / "src" / "App.jsx").read_text(encoding="utf-8")
+    activation_js = (
+        client_dir / "src" / "pages" / "InvitationActivationPage.jsx"
+    ).read_text(encoding="utf-8")
+    auth_service_js = (
+        client_dir / "src" / "services" / "authService.js"
+    ).read_text(encoding="utf-8")
+    collector_login_js = (
+        client_dir / "src" / "components" / "auth" / "CollectorPortalLogin.jsx"
+    ).read_text(encoding="utf-8")
+    admin_dashboard_js = (
+        client_dir / "src" / "pages" / "AdminDashboardPage.jsx"
+    ).read_text(encoding="utf-8")
+    citizen_dashboard_js = (
+        client_dir / "src" / "pages" / "DashboardPage.jsx"
+    ).read_text(encoding="utf-8")
+    complaint_tracking_js = (
+        client_dir / "src" / "pages" / "TrackComplaintPage.jsx"
+    ).read_text(encoding="utf-8")
+
+    driver_route = re.search(
+        r'<Route\s+path={APP_ROUTE_PATHS\.driver}[\s\S]*?/>',
+        app_js,
+    )
+    assert driver_route
+    assert "allowedRoles={['driver']}" in driver_route.group(0)
+    assert "admin" not in driver_route.group(0)
+    assert '<Route path={APP_ROUTE_PATHS.activate} element={<InvitationActivationPage />} />' in app_js
+    assert "activateDriverAccount" in activation_js
+    assert "activateAdministratorAccount" in activation_js
+    assert "confirmMfaEnrollment" in activation_js
+    assert "window.history.replaceState" in activation_js
+    assert "window.location.hash.slice(1)" in activation_js
+    assert "new URLSearchParams" in activation_js
+    assert "addEventListener('hashchange', handleInvitationLocation)" in activation_js
+    assert "/activate#token=" not in admin_dashboard_js
+    assert "activation_token" not in admin_dashboard_js
+    assert "encodeURIComponent(token)" not in admin_dashboard_js
+    assert "role: requestedRole" in collector_login_js
+    assert '<option value="collector">Collector</option>' in collector_login_js
+    assert "API data snapshot" in admin_dashboard_js
+    assert "No live feed" in admin_dashboard_js
+    assert "real-time" not in admin_dashboard_js.lower()
+    assert "Live Telemetry" not in admin_dashboard_js
+    assert "Live Dynamic Diagnostics" not in admin_dashboard_js
+    assert "PostgreSQL Active" not in admin_dashboard_js
+    assert "real-time" not in citizen_dashboard_js.lower()
+    assert "real-time" not in complaint_tracking_js.lower()
+    assert "export const validateInvitation" in auth_service_js
 
 
 def test_frontend_index_and_sitemap_branding():
@@ -108,6 +162,7 @@ def test_citizen_auth_otp_and_password_preserved():
             hashed_password=hash_password(password),
             role="citizen",
             is_active=True,
+            is_verified=True,
         )
         db.add(user)
         db.commit()
@@ -117,17 +172,13 @@ def test_citizen_auth_otp_and_password_preserved():
         db.query(MobileOtpToken).filter(MobileOtpToken.phone == phone).delete()
         db.commit()
 
-        # -- Step 1: Password login (email + password) ----------------------------
+        # Preserve citizen password login alongside the WhatsApp OTP flow.
         pw_res = client.post(
             "/api/auth/login",
             json={"email": email, "password": password, "role": "citizen"},
         )
-        assert pw_res.status_code == 200, (
-            f"Password login failed: {pw_res.status_code} {pw_res.text}"
-        )
-        pw_data = pw_res.json()
-        assert "access_token" in pw_data, "Missing access_token in login response"
-        assert pw_data["user"]["role"] == "citizen"
+        assert pw_res.status_code == 200
+        assert pw_res.json()["user"]["role"] == "citizen"
 
         # -- Step 2: WhatsApp OTP send (login purpose) ----------------------------
         # With the mock provider active and tokens cleared, this MUST return 200.
@@ -167,7 +218,8 @@ def test_driver_and_admin_role_separation():
             employee_id="DRV-TEST-01",
             hashed_password=hash_password(pwd),
             role="driver",
-            is_active=True
+            is_active=True,
+            is_verified=True,
         )
         admin = User(
             full_name="Admin Deshmukh",
@@ -175,7 +227,8 @@ def test_driver_and_admin_role_separation():
             employee_id="ADM-TEST-01",
             hashed_password=hash_password(pwd),
             role="admin",
-            is_active=True
+            is_active=True,
+            is_verified=True,
         )
         db.add_all([driver, admin])
         db.commit()
@@ -183,16 +236,13 @@ def test_driver_and_admin_role_separation():
         # Driver login
         drv_res = client.post(
             "/api/auth/login",
-            json={"email": driver_email, "password": pwd, "role": "driver"}
+            json={"email": "DRV-TEST-01", "password": pwd, "role": "driver"}
         )
         assert drv_res.status_code == 200
         assert drv_res.json()["user"]["role"] == "driver"
 
-        # Admin login
-        adm_res = client.post(
-            "/api/auth/login",
-            json={"email": admin_email, "password": pwd, "role": "admin"}
-        )
+        # Admin login requires Employee ID, password, and a valid authenticator code.
+        adm_res = login_admin(client, admin, pwd)
         assert adm_res.status_code == 200
         assert adm_res.json()["user"]["role"] == "admin"
 

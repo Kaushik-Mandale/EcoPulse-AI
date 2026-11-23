@@ -355,14 +355,13 @@ def test_webhook_status_processing_integration(db_session, monkeypatch):
     final_complaints_count = db_session.query(Complaint).count()
     assert final_complaints_count == initial_complaints_count
 
-def test_missing_migration_compatibility_check(monkeypatch):
+def test_missing_migration_compatibility_check_fails_closed_without_mutation(monkeypatch):
     """
-    check_mobile_otp_tokens_schema must detect missing columns, log a clear
-    error, return False, and NEVER execute ALTER TABLE or modify schemas at runtime.
+    The migration contract validator must raise on missing columns and never
+    execute ALTER TABLE or modify schemas at runtime.
     """
     from sqlalchemy import create_engine, text
     from server.models.mobile_otp import check_mobile_otp_tokens_schema
-    import logging
 
     # Create an in-memory test database with legacy mobile_otp_tokens table (no migration 005)
     legacy_engine = create_engine("sqlite:///:memory:")
@@ -383,29 +382,16 @@ def test_missing_migration_compatibility_check(monkeypatch):
         """))
         conn.commit()
 
-    # Capture logs
-    error_logs = []
-    class InterceptHandler(logging.Handler):
-        def emit(self, record):
-            error_logs.append(record.getMessage())
+    from server.database.initialization import SchemaValidationError
+    with pytest.raises(SchemaValidationError, match="005"):
+        check_mobile_otp_tokens_schema(legacy_engine)
 
-    logger = logging.getLogger("server.models.mobile_otp")
-    handler = InterceptHandler()
-    logger.addHandler(handler)
-    try:
-        is_compatible = check_mobile_otp_tokens_schema(legacy_engine)
-        assert is_compatible is False
-        assert any("SCHEMA COMPATIBILITY ERROR" in msg for msg in error_logs)
-        assert any("005_meta_otp_delivery_observability.sql" in msg for msg in error_logs)
-
-        # Verify table was NOT altered (schema remained untouched)
-        from sqlalchemy import inspect
-        insp = inspect(legacy_engine)
-        cols = {col["name"] for col in insp.get_columns("mobile_otp_tokens")}
-        assert "provider_message_id" not in cols
-        assert "delivery_status" not in cols
-    finally:
-        logger.removeHandler(handler)
+    # Verify table was NOT altered (schema remained untouched)
+    from sqlalchemy import inspect
+    insp = inspect(legacy_engine)
+    cols = {col["name"] for col in insp.get_columns("mobile_otp_tokens")}
+    assert "provider_message_id" not in cols
+    assert "delivery_status" not in cols
 
 
 def test_transaction_integrity_when_observability_commit_fails_preserves_otp_challenge(db_session, monkeypatch):

@@ -22,5 +22,9 @@ class DriverTaskResponse(BaseModel):
     location_name: str
     complaint_id: Optional[int] = None
     proof_image_url: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    rejection_reason: Optional[str] = None
+    collected_at: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

@@ -1,5 +1,9 @@
 from fastapi.testclient import TestClient
 from server.main import app
+from server.database.db import SessionLocal
+from server.models.user import User
+from server.services.auth_service import AuthService
+from server.tests.iam_test_helpers import citizen_access_token
 
 client = TestClient(app)
 
@@ -15,11 +19,7 @@ def test_health_check():
 
 def test_get_complaints():
     response = client.get("/api/complaints")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
-    if len(response.json()) > 0:
-        assert "location" in response.json()[0]
-        assert "type" in response.json()[0]
+    assert response.status_code == 401
 
 def test_create_complaint():
     payload = {
@@ -42,13 +42,14 @@ def test_driver_endpoints_security():
         assert response.status_code == 401
 
     # 2. Authenticate as Citizen
-    login_response = client.post("/api/auth/login", json={
-        "email": "priya@cityswap.io",
-        "password": "Password123!",
-        "role": "citizen"
-    })
-    assert login_response.status_code == 200
-    citizen_token = login_response.json()["access_token"]
+    db = SessionLocal()
+    try:
+        AuthService.seed_demo_users(db)
+        citizen = db.query(User).filter(User.email == "priya@cityswap.io").first()
+        assert citizen is not None
+        citizen_token = citizen_access_token(citizen)
+    finally:
+        db.close()
     citizen_headers = {"Authorization": f"Bearer {citizen_token}"}
 
     for url in ["/api/driver/tasks", "/api/driver/performance", "/api/driver/fuel-logs", "/api/driver/messages"]:
@@ -57,7 +58,7 @@ def test_driver_endpoints_security():
 
     # 3. Authenticate as Driver
     login_response2 = client.post("/api/auth/login", json={
-        "email": "ramesh@cityswap.io",
+        "email": "EMP-DRIVER-01",
         "password": "Password123!",
         "role": "driver"
     })
@@ -104,16 +105,27 @@ def test_driver_endpoints_security():
     assert response.json()["body"] == "Test message from driver"
 
 def test_track_complaint():
-    # Fetch complaints first to get a valid tracking number
-    res_list = client.get("/api/complaints")
-    assert res_list.status_code == 200
-    complaints = res_list.json()
-    assert len(complaints) > 0
-    tracking_id = complaints[0]["id"]
+    create_response = client.post("/api/complaints", json={
+        "location": "Secure Tracking Test Site",
+        "type": "Plastic Waste",
+        "ward": "Test Ward",
+        "description": "Private tracking test",
+        "latitude": 20.9,
+        "longitude": 74.7,
+    })
+    assert create_response.status_code == 201
+    created = create_response.json()
+    tracking_id = created["id"]
+    token = created["tracking_token"]
 
-    res_track = client.get(f"/api/complaints/track/{tracking_id}")
+    res_track = client.get(
+        f"/api/complaints/track/{tracking_id}",
+        headers={"X-Tracking-Token": token},
+    )
     assert res_track.status_code == 200
     assert res_track.json()["id"] == tracking_id
+    assert "db_id" not in res_track.json()
+    assert "tracking_token" not in res_track.json()
 
 def test_forgot_password():
     res = client.post(
@@ -148,5 +160,4 @@ def test_public_notifications():
     res = client.get("/api/notifications")
     assert res.status_code == 200
     assert isinstance(res.json(), list)
-
 
