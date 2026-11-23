@@ -23,10 +23,7 @@ BEGIN
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = current_schema() AND table_name = 'wards'
     ) THEN
-        UPDATE users u
-        SET ward = w.display_name
-        FROM wards w
-        WHERE u.ward_id = w.id;
+        EXECUTE 'UPDATE users u SET ward = w.display_name FROM wards w WHERE u.ward_id = w.id';
     END IF;
 END $$;
 

@@ -322,6 +322,31 @@ def test_postgres_concurrent_super_admin_bootstrap_uses_partial_unique_guard(pg_
     from server.scripts import bootstrap_super_admin
 
     _apply_009_010_to_legacy_schema(pg_engine)
+    with pg_engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS municipalities (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(40) UNIQUE NOT NULL,
+                name VARCHAR(120) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS wards (
+                id SERIAL PRIMARY KEY,
+                municipality_id INTEGER NOT NULL REFERENCES municipalities(id),
+                ward_number VARCHAR(30) NOT NULL,
+                display_name VARCHAR(120) NOT NULL,
+                locality_description TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            INSERT INTO municipalities (id, code, name) VALUES (1, 'STAGE8', 'Stage 8 Muni')
+            ON CONFLICT (id) DO NOTHING;
+            INSERT INTO wards (id, municipality_id, ward_number, display_name) VALUES (1, 1, '1', 'Stage 8 Ward 1')
+            ON CONFLICT (id) DO NOTHING;
+        """))
     suffix = os.urandom(4).hex().upper()
     employee_id = f"STAGE8-SA-{suffix}"
     monkeypatch.setenv("MUNICIPAL_EMPLOYEE_ALLOWLIST", employee_id)
@@ -363,6 +388,31 @@ def test_postgres_concurrent_staff_login_id_allocation_retries_unique_conflict(p
     from server.services import staff_provisioning_service
 
     _apply_009_010_to_legacy_schema(pg_engine)
+    with pg_engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS municipalities (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(40) UNIQUE NOT NULL,
+                name VARCHAR(120) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS wards (
+                id SERIAL PRIMARY KEY,
+                municipality_id INTEGER NOT NULL REFERENCES municipalities(id),
+                ward_number VARCHAR(30) NOT NULL,
+                display_name VARCHAR(120) NOT NULL,
+                locality_description TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            INSERT INTO municipalities (id, code, name) VALUES (1, 'STAGE8', 'Stage 8 Muni')
+            ON CONFLICT (id) DO NOTHING;
+            INSERT INTO wards (id, municipality_id, ward_number, display_name) VALUES (1, 1, '1', 'Stage 8 Ward 1')
+            ON CONFLICT (id) DO NOTHING;
+        """))
     suffix = os.urandom(4).hex().upper()
     employee_id = f"STAGE8-SA-{suffix}"
     monkeypatch.setenv("MUNICIPAL_EMPLOYEE_ALLOWLIST", employee_id)
@@ -396,7 +446,7 @@ def test_postgres_concurrent_staff_login_id_allocation_retries_unique_conflict(p
             request = StaffProvisionRequest(
                 full_name=f"Disposable Collector {number}", role="collector",
                 phone=f"98765002{number:02d}", email=f"stage8-collector-{suffix.lower()}-{number}@example.test",
-                ward="Stage8 Test Ward",
+                ward_id=1,
             )
             return staff_provisioning_service.provision_staff_account(session, actor, request)
 
