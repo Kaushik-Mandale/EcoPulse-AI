@@ -68,7 +68,7 @@ jobs:
       # Throwaway credentials local to the service container above.
       # Test modules require this explicit designation, a loopback host and a
       # disposable database name, then use only uniquely isolated schemas.
-      ECOLPULSE_DISPOSABLE_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/ecopulse_test
+      ECOLPULSE_DISPOSABLE_POSTGRES_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/ecopulse_test
       ECOLPULSE_DISPOSABLE_POSTGRES_AUTHORIZATION: DISPOSABLE
       # Keep the application engine off the disposable PG database; the PG test
       # modules build their own schema on ECOLPULSE_DISPOSABLE_POSTGRES_URL.
